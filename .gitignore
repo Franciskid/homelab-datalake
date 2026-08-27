@@ -1,0 +1,30 @@
+# Secrets — nothing in here ever gets committed
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+
+# Build artefacts: the warehouse is rebuildable from MinIO, so it is not tracked
+*.duckdb
+*.duckdb.wal
+warehouse/
+target/
+dbt_packages/
+logs/
+
+# Dagster local state
+tmp*/
+.dagster/
+dagster_home/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+
+# macOS
+.DS_Store
