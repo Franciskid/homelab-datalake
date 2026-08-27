@@ -280,38 +280,61 @@ For when there are thirty seconds, not five minutes.
 
 ## 6. Source A — NPM logs, and getting real visitor IPs
 
-### Restoring the real IP — do this first
+### Restoring the real IP — done, 27 Aug 2026
 
-Real IPs are wanted, and the fix is small. `nginx -V` confirms `--with-http_realip_module` is
-compiled in, and `nginx.conf` already includes an optional global snippet at
-`/data/nginx/custom/http_top.conf`. That directory does not exist yet; creating it applies the
-change to **every proxy host at once**, and survives container updates because it lives in the
-mounted volume.
+**The ranges were never the problem. One header name was.**
 
-```bash
-# on both hosts, as root
-mkdir -p /srv/npm/data/nginx/custom
-{ curl -s https://www.cloudflare.com/ips-v4; curl -s https://www.cloudflare.com/ips-v6; } \
-  | sed 's/^/set_real_ip_from /; s/$/;/' > /srv/npm/data/nginx/custom/http_top.conf
-cat >> /srv/npm/data/nginx/custom/http_top.conf <<'EOF'
+The plan here originally said to write Cloudflare's address ranges into a
+`set_real_ip_from` list. That turned out to be unnecessary: NPM maintains its own trust list at
+`conf.d/include/ip_ranges.conf` — 265 entries, covering **all 21 ranges Cloudflare currently
+publishes**. It was already trusting Cloudflare completely.
+
+What it does with that trust is read `real_ip_header X-Real-IP`. **Cloudflare does not send
+`X-Real-IP`; it sends `CF-Connecting-IP`.** So nginx trusted the connection, looked for a header
+that was never there, and left `$remote_addr` as the edge address. Six weeks of logs recorded
+Cloudflare instead of visitors because of one header name.
+
+The fix is one directive. It cannot go in the http context — NPM sets `real_ip_header` at
+`nginx.conf:69` and nginx rejects a duplicate in the same context, which is exactly how the
+first attempt failed. It goes in the **server** context instead, via
+`/data/nginx/custom/server_proxy.conf`, a path NPM includes in every proxy-host server block:
+
+```nginx
 real_ip_header CF-Connecting-IP;
-real_ip_recursive on;
-EOF
-docker exec npm-npm-1 nginx -t && docker exec npm-npm-1 nginx -s reload
 ```
 
-Verify by watching a request from a known address appear as itself rather than as `172.71.x`.
+Deployed file and instructions: [`infra/npm/`](infra/npm/). Deploy is `nginx -t` gated —
+a bad file here takes every service offline.
 
-Two things that matter more than the commands:
+**Result, measured across all 44 proxy hosts on 27 August:**
 
-- **`set_real_ip_from` must list only Cloudflare's ranges.** Trust a wider source and anyone
-  can forge `CF-Connecting-IP` and choose their own IP in your logs. This is the difference
-  between restoring an identity and letting visitors invent one.
-- **Fetch the ranges, don't paste them.** Cloudflare publishes them at the URLs above and they
-  change. A `curl` in a quarterly checklist is the whole maintenance burden.
+| | Requests | Cloudflare edges |
+|---|---|---|
+| Before 21:27 UTC | [withheld] | [count withheld] (**[rate withheld]**) |
+| After 21:27 UTC | [withheld] | 0 (**[rate withheld]**) |
 
-The log format needs no change: it already writes `$remote_addr`, and `real_ip` rewrites that
-variable in place. The `[Client …]` field simply starts containing the truth.
+`scripts/verify-real-ip.sh` reprints that by hour on demand.
+
+**Why this is safe, and worth being able to explain.** nginx only honours the header when the
+connecting socket is itself in a trusted range. A client connecting directly cannot forge an
+address, because its own address is not in Cloudflare's ranges. A request arriving without the
+header is left alone. The failure mode is falling back to the edge address — losing precision,
+never trusting a lie.
+
+The residual risk is narrow and real: something originating *from* Cloudflare's network, such as
+a Worker, connects from a trusted range and could set the header freely. Closing that means
+restricting ports 80/443 at the firewall to Cloudflare ranges so nothing else can reach the
+origin at all. Worth doing, not done — it can lock you out if a range list goes stale, so it
+needs more care than a config reload.
+
+**Not deployed to secondary, deliberately.** That host takes traffic directly: 8 of [count withheld]
+logged addresses were Cloudflare. `$remote_addr` there is already the visitor. Trusting
+`CF-Connecting-IP` would add a spoofable header for no benefit.
+
+**Maintenance is a check, not a deploy.** NPM regenerates its range list on container start, so
+`scripts/check-cloudflare-ranges.sh` compares it against Cloudflare's published list and says
+whether a restart is needed. Today: 22 published, 0 missing. A range added after NPM's last
+restart is simply not trusted yet — which fails safe.
 
 ### The cutover is a data event, not just a config change
 
@@ -542,8 +565,8 @@ zero-token failed LLM call. A seed where everything is clean tests nothing.
 Each stage ends somewhere publishable. The failure mode is an ambitious repo that is [rate withheld] done
 when someone asks for the link.
 
-**Stage 0 — the real-IP snippet on both hosts (§6).** Half an hour, and every day it waits is a
-day of `cdn_edge` rows. Do it before writing pipeline code.
+**Stage 0 — real-IP restoration. Done 27 Aug 2026 (§6).** One directive on primary; not needed
+on secondary. [rate withheld] edge addresses before, [rate withheld] after.
 
 **Stage 1 — NPM logs, both hosts, end to end.** Compose stack on `primary`, rsync from
 `secondary`, three-format parser with a reject table, enrich-then-hash at the boundary,
