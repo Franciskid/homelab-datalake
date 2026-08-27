@@ -20,77 +20,253 @@ exists), §5 (published vs private), §6 (the checklist).
 
 ---
 
-## 3. Design choices, and what was rejected
+## 3. Design choices, and how to defend them
 
-Every one of these has a cheaper-looking alternative already running on the box. That is what
-makes them worth writing down.
+Four decisions a technical interviewer will push on. Each is laid out the same way: **the
+question that actually decides it**, the numbers for this project, **where the line sits**, the
+strongest argument against, and what would change the answer.
 
-### Why Parquet files, and not HDFS + Spark
+The measurements everything below rests on:
 
-There is a Hadoop cluster on `primary` right now: namenode, datanode, resourcemanager,
-nodemanager, historyserver. Five containers. **It stores [volume withheld]** — one YARN state directory,
-nothing else, after two years.
+| | Value | How it was measured |
+|---|---|---|
+| NPM logs, primary | [volume withheld]/day ([measurement withheld]) | [count withheld] B over 4 days |
+| NPM logs, secondary | [volume withheld]/day | [count withheld] B over 5 days |
+| **All sources, raw** | **~[volume withheld]/day ≈ [volume withheld]/year** | camera, Jellyfin and LiteLLM are rounding errors next to the logs |
+| As Parquet (zstd + dictionary) | **~1–[volume withheld]/year** | 6–20× is normal for access logs: host, path and user-agent are highly repetitive, timestamps delta-encode |
+| primary | 8 cores, [volume withheld] RAM ([volume withheld] free), [volume withheld] disk ([volume withheld] free) | `nproc`, `free`, `df` |
 
-That is the whole argument, and it is sitting on the machine.
-
-[Private career context or unrelated service inventory omitted.]
-
-### Why DuckDB
-
-- One file. No server, no port, no user management, no backup story of its own — it is a build
-  artefact, rebuildable from MinIO.
-- Reads Parquet straight from S3 via `httpfs`, so exploration needs no load step.
-- Columnar and vectorised, which is exactly the shape of the workload: aggregates over a date
-  range.
-- **Not Postgres**, even though it is already running and free. It is row-oriented, so
-  `count(*) group by day` over ten million rows reads every row. Worse, it is the shared
-  database behind Keycloak, the AI platform and banking — putting analytical scans on it means
-  a bad query has a blast radius that includes the front door lock.
-- **Not ClickHouse.** Right answer at 100× this volume; another server to operate at this one.
-- **Honest limitation:** DuckDB is single-writer. Concurrent asset writes must be serialised.
-  Free at daily-batch cadence; it would hurt under streaming, which is the next section.
-
-### Why Dagster
-
-[Private career context or unrelated service inventory omitted.]
-
-### Why daily batch, and not streaming or socket pushes
-
-The strongest argument here is also on the box, and it is your own code.
-
-`homelab_homeapp` already streams: Kafka → Socket.io → Postgres, three containers
-(kafka, zookeeper, kafka-ui). What it has produced is the `Log` table —
-**[count withheld] rows, [volume withheld], of which [rate withheld] are CPU and RAM samples** nobody has ever queried.
-The broker carries two topics. Streaming was built, and what it delivered was volume.
-
-That is what streaming costs when the questions are daily questions. And they are:
-
-> *How much traffic did each service get last month? Which animals crossed the garden this
-> week? What did LLM calls cost in August? Which titles were added this quarter?*
-
-Every one is answered at day grain. A stream would deliver the same answers, later, after more
-plumbing. **Latency requirements drive architecture, and there isn't one here.**
-
-Three more reasons, in order of how much they matter:
-
-1. **Batch is re-runnable; a stream is not.** `PLAN.md`'s core property — re-running a
-   partition replaces it — is one line in batch. In streaming it is exactly-once delivery,
-   watermarks and state stores. Choosing batch is choosing to be able to fix yesterday.
-2. **Real-time alerting already exists, in the right place.** The camera app alerts on its own
-   events, live, where the context is. A lake that also tries to alert is a lake that is a bad
-   alerting system. Analysis and reaction are different jobs.
-3. **The one place freshness matters is handled without a broker.** Vision analysis lands
-   hours late (§7), so a polling sensor re-materialises today's partition when new events
-   appear. Hours, not days, and no new infrastructure.
-
-**The escape hatch is honest and cheap:** Kafka is already running. If a question ever appears
-that genuinely needs sub-minute data, add a streaming asset for that one source. Building the
-whole platform around a requirement that does not exist is how you end up with nine million
-rows of CPU samples.
+**Five years of this warehouse fits in the free RAM of the machine that produces it.** Nearly
+every argument below is a consequence of that one line.
 
 ---
 
-## 4. What is worth keeping, and what isn't
+### 3.1 Why not Spark and HDFS
+
+**The question that decides it:** Spark buys parallelism across machines and pays for it in
+coordination. Does the workload need the parallelism enough to cover the coordination?
+
+**The numbers.** A year is ~1–[volume withheld] of Parquet. The daily job processes ~[volume withheld]. Spark's fixed
+costs — JVM startup, executor allocation, task serialisation, and shuffle whenever data crosses
+a partition boundary — run from seconds locally to tens of seconds on a cluster, *before any
+work happens*. A single-node engine reads the whole year in roughly the time Spark spends
+deciding who will read it.
+
+**Where the line sits.** Not at a magic byte count — at the point where one machine can no
+longer finish the job inside its window. In practice that means:
+
+- data materially larger than RAM *and* a query pattern that cannot stream through it,
+- or a job long enough that a mid-run machine failure is likely, which is what Spark's lineage
+  and task retry actually protect against,
+- or a shared cluster where many teams need resource isolation.
+
+None of the three apply. A useful published reference for the general point is *Scalability! But
+at what COST?* (McSherry et al., HotOS 2015), which showed competent single-threaded
+implementations beating distributed graph systems on real datasets — the paper's own framing is
+that a system should have to justify the coordination it imposes. It is about graph workloads,
+not a universal law, but the framing is the right one and citing it accurately is better than
+citing it as gospel.
+
+**HDFS deserves its own answer, because it is not the same argument.** HDFS exists to do three
+things: store files bigger than one disk, replicate blocks for durability on unreliable
+commodity hardware, and put compute next to data. On one host with one disk: the first is
+irrelevant, the second is impossible — replication factor 1 is not durability, and the cluster
+here reports 11 under-replicated blocks, so it is degraded on top — and the third is
+meaningless. HDFS also stores its entire namespace in the NameNode's heap, which makes many
+small files expensive; daily partitions are exactly many small files.
+
+The deeper point, and the one worth leading with: **the industry decoupled storage from
+compute, and HDFS is the coupled design.** EMR, Databricks, Snowflake and BigQuery all read
+object storage. Choosing MinIO plus Parquet is choosing the architecture Spark itself now
+targets, not choosing "simple over serious."
+
+**The strongest argument against, and the answer.** *"Build for the scale you'll have, not the
+scale you have."* The honest reply is that this trades a small one-time cost for a recurring
+one. Premature distribution is paid every day — slower iteration, harder debugging, more to
+operate. Migrating later is paid once, and **is already cheap because the storage format is
+Spark's native format.** The expensive decision to reverse is the file format, and that one is
+made in Spark's favour. Point Spark at the same bucket and nothing else changes.
+
+That is the actual engineering claim: not *small data, simple tool*, but **I deferred the
+reversible decision and pre-committed on the irreversible one.**
+
+**What would change the answer.** A hundredfold volume increase — camera moving from event
+metadata to per-frame embeddings, or logs going from [count withheld] to [count withheld] lines a day. A join whose
+intermediate result exceeds one machine's memory. Or a genuine multi-tenant cluster with
+isolation requirements.
+
+---
+
+### 3.2 Why daily batch and not streaming
+
+**The question that decides it:** what decision gets made faster because the data arrived
+faster? Freshness has value only where it changes an action.
+
+**The numbers.** The questions this warehouse answers — traffic per service per month, garden
+crossings per week, LLM spend in August, titles added this quarter — are all day-grain. Not one
+of them changes if the data is four hours old rather than four seconds. Streaming would deliver
+identical answers, later, after considerably more plumbing.
+
+**The part that gets missed, and is worth leading with:** there *is* a real-time requirement in
+this system — motion detected, notification pushed — and it is already met, in the camera app,
+in-process, where the context lives. **The reactive path and the analytical path are different
+systems with different guarantees.** Pushing alerting through a lake makes the lake a slow
+alerting system and an unreliable warehouse at the same time. Keeping them separate is the
+design decision; batch is just what falls out of it.
+
+**What streaming actually costs**, named specifically, because "it's complex" is not an answer:
+
+1. **Exactly-once is real work.** At-least-once delivery plus an idempotent sink, or a
+   transactional sink. Dedup keys, state stores, TTLs on that state.
+2. **Late data forces a watermark policy.** How long do you hold a window open, and what
+   happens to a record arriving after it closed? This project has genuinely late data — vision
+   analysis lands hours after the event (§7). In batch the answer is one line: re-run the day.
+   In streaming it is a design.
+3. **Reprocessing is the hard one.** Find a bug in a transform and batch re-runs the affected
+   partitions. Streaming replays from the log — if retention still holds it — and every state
+   store built from the old logic is now wrong. This is the problem Lambda architecture existed
+   to work around and Kappa tried to solve, and neither is free.
+4. **Operational surface.** A broker is a stateful distributed system to run, monitor, upgrade
+   and rebalance. Three containers here, for two topics.
+5. **Debuggability.** A failed batch partition is a re-runnable unit with a log. A failed stream
+   is an offset plus in-flight state.
+
+**This matters directly for the goal.** `PLAN.md` §6 asks the repo to demonstrate idempotent
+loads, a working backfill path, and quality gates that fail the pipeline. All three are close to
+free in batch and are each a project in streaming. Choosing batch is choosing to be able to
+demonstrate the checklist rather than fight the substrate.
+
+**The strongest argument against, and the answer.** *"Streaming isn't only about latency — it
+smooths load and avoids the batch-window cascade where a late job delays everything after it."*
+True, and a fair point at scale. At [volume withheld]/day the nightly job finishes in seconds, so there is
+no window to overrun and no load to smooth.
+
+**Do not claim the architecture is purely batch — it isn't, and an interviewer will spot it.**
+The polling sensor in §10 re-materialises the current day when new camera events appear. That is
+micro-batch at a fifteen-minute cadence. The design already sits on a spectrum, and the
+defensible statement is *the freshness of each source is set by what its questions need*, not
+*we chose batch*.
+
+**On the Kafka pipeline already running here** — the sharp version, because the shallow version
+is unfair to it. That pipeline is not proof streaming is wrong; it is a **sink mismatch**.
+High-frequency host metrics were streamed into a relational log table. Measured, that table
+costs **[measurement withheld]** ([volume withheld] / [count withheld] rows). Prometheus, running on the same host,
+stores the same class of data as compressed time series — delta-of-delta timestamps, XOR-encoded
+values — at one to two bytes per sample. The transport was fine; the storage model was off by
+two orders of magnitude. The lesson to take is *match the storage model to the data's shape*,
+which is also why §4 declines to ingest those nine million rows.
+
+**What would change the answer.** A requirement to act within seconds on lake-derived state —
+"alert when this specific vehicle appears" — or a volume where a daily batch stops fitting its
+window. In either case the move is a streaming asset for that one source, not a rebuild:
+Kafka is already there.
+
+---
+
+### 3.3 Why DuckDB
+
+**The question that decides it:** what is the query shape, how many concurrent writers, and how
+much operational surface is the answer worth?
+
+**The query shape is OLAP** — scan a date range, filter, aggregate, group by a few dimensions.
+Three properties of a columnar engine matter here, and being able to name the mechanism is what
+separates a real answer from a preference:
+
+- **Projection.** A `count(*) group by day, country` over a twenty-column table reads two
+  columns. A row store reads all twenty, because the row is the unit of storage. That is close
+  to an order of magnitude of I/O on this schema.
+- **Encoding.** `host`, `user_agent` and `status` are low-cardinality and repeat constantly;
+  dictionary encoding turns them into small integers. Timestamps delta-encode. This is where the
+  6–20× Parquet compression comes from, and it is also why scans are fast — less to read.
+- **Vectorised execution.** DuckDB processes batches of ~[count withheld] values per operator call rather
+  than a row at a time, which keeps working sets in CPU cache and lets the compiler use SIMD.
+  Row-at-a-time interpretation is the thing it is avoiding.
+
+**Plus Parquet pushdown:** row groups carry min/max statistics per column chunk, so a
+`WHERE dt BETWEEN` prunes whole row groups before any bytes are read. Partitioning by date makes
+that pruning near-total.
+
+**Why not Postgres, which is already running.** Two reasons, technical first. It is row-oriented,
+so the projection argument above works against it on every analytical query, and it has no
+dictionary encoding for the repetitive string columns that dominate this schema. Second, and
+operationally: that instance is the shared database behind Keycloak, the AI platform and
+banking. An analytical scan there competes for buffer cache and connections with the front door
+lock. Blast radius is a real consideration, but it is the second argument, not the first.
+
+**Why not ClickHouse.** It is the right answer at high read concurrency or two orders more data,
+and it is a server with its own operational story — replication, merges, schema management. At
+this size it is a system to run for benefits nobody is claiming.
+
+**The limitations, volunteered before being asked** — this is the part that makes the answer
+credible:
+
+- **One writer process at a time.** Concurrent readers are fine, and multiple threads inside one
+  process are fine, but two Dagster processes cannot write the same file. Serialising a nightly
+  batch is free; under streaming ingest this would be disqualifying — which is one more reason
+  §3.2 lands where it does.
+- **No HA, no replication.** It is a file. The answer here is that it is a *build artefact*:
+  `dagster job execute` plus `dbt build` reconstructs it from MinIO, so the bucket is what gets
+  backed up.
+- **Not a serving layer for many concurrent users.** A team dashboard needs a server in front,
+  or precomputed extracts.
+- **Large joins can spill.** It handles it, but "fits in memory" remains the happy path.
+
+**What would change the answer.** Concurrent writers, dozens of simultaneous dashboard users,
+a need for row-level updates at scale, or crossing roughly a terabyte.
+
+---
+
+### 3.4 Why Dagster
+
+**The question that decides it:** what is the unit you reason about — *a task that ran*, or *a
+table that is up to date*?
+
+Airflow's primitive is a task execution keyed by a logical date. Dagster's is an **asset**: a
+named piece of data, its dependencies, and the history of which partitions have been
+materialised. That difference is not cosmetic here, for one specific reason.
+
+**The NPM input files do not map to days** (§6). Rotation is weekly, one file spans several
+dates, and a day's lines can live in the live log or in any of four gzipped siblings. So there
+is no filesystem fact that answers "is 14 August done?". **Something has to be the record of
+truth about partition state, and the choice is between the orchestrator and a table you write
+and maintain yourself.** Dagster models `(asset, partition)` as a first-class entity with
+materialisation history, so the answer is a query against the system rather than bookkeeping you
+have to keep correct. That is the concrete reason, and it is worth leading with over anything
+about declarative programming.
+
+The rest follows from the same model:
+
+- **Backfill is a range selection**, with per-partition runs and concurrency limits, not a script
+  with a date loop.
+- **Lineage is declared, not drawn.** Assets state their inputs and the graph is derived, so it
+  cannot silently disagree with what the code actually reads. In Airflow the DAG edges and the
+  real data dependencies are two separate things that drift.
+- **Asset checks are first-class**, which is how `PLAN.md` §6's "tests that fail the pipeline"
+  gets enforced at the orchestration layer and not only inside dbt.
+- **I/O managers separate *what is computed* from *where it lands*.** The same asset code writes
+  to a local directory in CI and to MinIO in production — that is precisely what makes the CI
+  story in §12 work without a second implementation.
+- **`dagster dev` runs the real definitions locally**, against the seed.
+- **The UI is the ingestion IHM** that `PLAN.md` §4 decided not to build.
+
+[Private career context or unrelated service inventory omitted.]
+
+**The costs, volunteered.** Smaller ecosystem and fewer integrations than Airflow. The asset
+abstraction takes a day to click if you have only used task schedulers. And Dagster's own
+footprint — daemon, webserver, metadata database — is not nothing on a homelab box already
+running 54 containers.
+
+**What would change the answer.** A team already standardised on something else. Or a workload
+that genuinely is "run this script at 3am" with no partitioning, no backfill and no lineage — at
+which point cron is the honest answer and Dagster is overhead.
+
+---
+
+### 3.5 The short versions
+
+For when there are thirty seconds, not five minutes.
+
+[Private career context or unrelated service inventory omitted.]
 
 [Private host inventory, source measurements, and access instructions omitted.]
 
