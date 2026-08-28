@@ -41,3 +41,18 @@ volumes:
   dagster_home:
   warehouse:
   geoip:
+
+# An explicit subnet, because Docker's default address pools are fully allocated on
+# this host: all fifteen private network ranges blocks and all fifteen private networks/20 blocks
+# are taken by the 34 networks already running. Without this, `compose up` fails with
+# "could not find an available, non-overlapping IPv4 address pool".
+#
+# 192.0.2.0/24 is free -- 198.51.100.0/24 and 203.0.113.0/29 are in use, and the LAN is
+# 198.51.100.0/24. A /24 is ample for two containers and leaves the rest of 10/8 alone.
+# The durable fix is a default-address-pools entry in /etc/docker/daemon.json, which
+# needs root and a daemon restart; this does not.
+networks:
+  default:
+    ipam:
+      config:
+        - subnet: 192.0.2.0/24
