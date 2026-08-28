@@ -17,9 +17,11 @@ services:
       - warehouse:/warehouse
       # NPM's live log volume, READ-ONLY. A pipeline able to corrupt the reverse
       # proxy's logs is a pipeline able to take every service on the box offline.
-      - /srv/npm/data/logs:/logs/primary:ro
+      - ${PRIMARY_LOG_DIR:-/srv/npm/data/logs}:/logs/primary:ro
       # secondary's logs, landed by scripts/sync-secondary-logs.sh on the host.
-      - /var/lib/homelab-datalake/logs/secondary:/logs/secondary:ro
+      # Path is configurable because the deploy user has no root: the default sits
+      # inside the deploy directory rather than under /var/lib.
+      - ${AMB_LOG_DIR:-./logs/secondary}:/logs/secondary:ro
       - geoip:/geoip:ro
 
   dagster-daemon:
@@ -31,8 +33,8 @@ services:
     volumes:
       - dagster_home:/dagster_home
       - warehouse:/warehouse
-      - /srv/npm/data/logs:/logs/primary:ro
-      - /var/lib/homelab-datalake/logs/secondary:/logs/secondary:ro
+      - ${PRIMARY_LOG_DIR:-/srv/npm/data/logs}:/logs/primary:ro
+      - ${AMB_LOG_DIR:-./logs/secondary}:/logs/secondary:ro
       - geoip:/geoip:ro
 
 volumes:

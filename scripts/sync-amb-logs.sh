@@ -11,11 +11,12 @@
 # four weekly generations and no more.
 #
 # Nightly, before the 03:00 schedule:
-#   30 2 * * * /opt/homelab-datalake/scripts/sync-secondary-logs.sh >> /var/log/datalake-sync.log 2>&1
+#   30 2 * * * /srv/projects/homelab-datalake/scripts/sync-secondary-logs.sh \
+#                >> /srv/projects/homelab-datalake/logs/sync.log 2>&1
 set -euo pipefail
 
 REMOTE="${1:-ssh-secondary.example.test}"
-DEST="${2:-/var/lib/homelab-datalake/logs/secondary}"
+DEST="${2:-$(cd "$(dirname "$0")/.." && pwd)/logs/secondary}"
 CONTAINER="${NPM_CONTAINER:-npm-npm-1}"
 
 mkdir -p "$DEST"
