@@ -21,6 +21,11 @@ COPY src ./src
 RUN pip install --no-cache-dir -e ".[geo]"
 
 COPY dbt ./dbt
+# Resolve dbt packages at build time. Installing them at runtime means every image
+# rebuild silently loses them and the next `dbt build` fails on a missing dependency
+# rather than on anything to do with the change being deployed.
+RUN cd dbt && dbt deps
+
 COPY scripts ./scripts
 
 RUN mkdir -p /dagster_home /warehouse /logs
