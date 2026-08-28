@@ -28,6 +28,41 @@ services:
       - ${AMB_LOG_DIR:-./logs/secondary}:/logs/secondary:ro
       - geoip:/geoip:ro
 
+  # Keycloak SSO in front of the Dagster UI.
+  #
+  # Dagster's webserver has no authentication of its own, so something must sit in
+  # front. oauth2-proxy rather than nginx basic auth because identity belongs in one
+  # place -- the same realm that holds every other account -- so access is granted and
+  # revoked in Keycloak like everything else, not in an htpasswd file nobody remembers.
+  #
+  # It proxies rather than only authenticating: nginx sends everything here, and only
+  # a request carrying a valid session for a user holding the datalake-user role is
+  # forwarded to Dagster. Dagster itself is reachable from nowhere else.
+  oauth2-proxy:
+    image: quay.io/oauth2-proxy/oauth2-proxy:v7.7.1
+    container_name: datalake-oauth2-proxy
+    restart: unless-stopped
+    depends_on: [dagster-webserver]
+    env_file: [.env]
+    environment:
+      OAUTH2_PROXY_PROVIDER: keycloak-oidc
+      OAUTH2_PROXY_HTTP_ADDRESS: 0.0.0.0:4180
+      OAUTH2_PROXY_UPSTREAMS: http://dagster-webserver:3000
+      # Trust the X-Forwarded-* headers nginx sets; without this oauth2-proxy builds
+      # redirect URLs from the internal address and the login loop never terminates.
+      OAUTH2_PROXY_REVERSE_PROXY: "true"
+      OAUTH2_PROXY_COOKIE_SECURE: "true"
+      # Straight to Keycloak instead of showing a "Sign in with..." interstitial.
+      OAUTH2_PROXY_SKIP_PROVIDER_BUTTON: "true"
+      # `roles` is what puts realm_access.roles in the token, which is what
+      # OAUTH2_PROXY_ALLOWED_ROLES is checked against.
+      OAUTH2_PROXY_SCOPE: "openid email profile roles"
+      # Authorisation is the role, not the address. Any realm account can
+      # authenticate; only one holding datalake-user gets through.
+      OAUTH2_PROXY_EMAIL_DOMAINS: "*"
+    expose:
+      - "4180"
+
   dagster-daemon:
     build: .
     container_name: datalake-daemon
