@@ -1,0 +1,74 @@
+version: 2
+
+models:
+  - name: fct_http_request
+    description: >
+      One row per HTTP request across both Nginx Proxy Manager instances. Client
+      addresses are hashed at ingestion and never stored; geography and network
+      operator are derived at that same boundary, before the address is discarded.
+    columns:
+      - name: request_key
+        description: Surrogate key. Not a natural key -- see the duplicate test below.
+        tests: [not_null]
+      - name: partition_date
+        tests: [not_null]
+      - name: npm_instance
+        description: Which NPM the request hit. primary fronts 44 hosts; secondary fronts the camera.
+        tests:
+          - not_null
+          - accepted_values: {values: ['primary', 'secondary']}
+      - name: requested_at
+        tests: [not_null]
+      - name: status
+        tests:
+          - not_null
+          - dbt_utils.accepted_range: {min_value: 100, max_value: 599}
+      - name: status_class
+        tests:
+          - not_null
+          - accepted_values:
+              values: ['informational', 'success', 'redirect', 'client_error', 'server_error']
+      - name: scheme
+        tests:
+          - accepted_values: {values: ['http', 'https']}
+      - name: client_trust
+        description: >
+          Whether the logged address named a visitor (`resolved`) or a Cloudflare
+          machine standing in for one (`cdn_edge`). `unknown` means no usable address.
+          Deliberately two meaningful values, not three: after the 27 Aug 2026 cutover a
+          restored address and an always-direct one are byte-identical, so claiming to
+          tell them apart would assert something the data does not contain.
+        tests:
+          - not_null
+          - accepted_values: {values: ['resolved', 'cdn_edge', 'unknown']}
+      - name: client_kind
+        tests:
+          - not_null
+          - accepted_values: {values: ['bot', 'browser', 'other', 'unknown']}
+      - name: client_ip_version
+        tests:
+          - accepted_values: {values: [4, 6], quote: false}
+      - name: log_format
+        description: Which of NPM's three line formats this row was parsed from.
+        tests:
+          - not_null
+          - accepted_values: {values: ['proxy', 'standard', 'combined']}
+      - name: bytes_sent
+        tests:
+          - not_null
+          - dbt_utils.accepted_range: {min_value: 0, inclusive: true}
+
+  - name: agg_traffic_daily
+    description: >
+      Daily traffic per instance, virtual host and audience type. `visitors` counts
+      only `resolved` rows -- see the model for why that exclusion is load-bearing.
+    columns:
+      - name: partition_date
+        tests: [not_null]
+      - name: requests
+        tests:
+          - not_null
+          - dbt_utils.accepted_range: {min_value: 1, inclusive: true}
+      - name: visitors
+        tests:
+          - dbt_utils.accepted_range: {min_value: 0, inclusive: true}

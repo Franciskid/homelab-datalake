@@ -28,3 +28,13 @@ venv/
 
 # macOS
 .DS_Store
+
+# Lake and warehouse are build artefacts, rebuildable from the source logs
+.lake/
+seed/
+.dagster_home/
+dbt/target/
+dbt/dbt_packages/
+dbt/logs/
+package-lock.yml
+dbt/.user.yml
