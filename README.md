@@ -133,6 +133,19 @@ column cannot reintroduce one.
 Verified against real traffic, not only fixtures: a day of production logs containing 57
 distinct client addresses produced [count withheld] rows, **none of which contained any of them**.
 
+**The same rule, turned on the repository.** The pipeline was careful and the repo was not:
+three real addresses reached git — two fixtures lifted from production logs while writing
+the very suite that asserts addresses never leak, and a scanner's address pasted into a
+document as an example log line. Two were replaced a few commits later, which felt like a
+fix and was not one. A deleted line is still in history, and history is what gets cloned.
+
+So history was rewritten to remove all three, and
+[the guard](tests/test_no_real_addresses_in_fixtures.py) now scans **every blob in every
+commit**, not just the working tree — the check that would have caught them. Anything
+outside RFC 5737, RFC 3849, private space and Cloudflare's published ranges fails the
+build. CI checks out at full depth for it, because a shallow clone would make that test
+skip silently and report green.
+
 **The LLM ledger: select the columns, leave the payload.**
 [`parsing/litellm_spend.py`](src/homelab_datalake/parsing/litellm_spend.py) reads [count withheld]
 calls ([spend withheld] since 16 June) with model, tokens, latency and cost. `messages`,
@@ -302,7 +315,7 @@ src/homelab_datalake/
   assets/               multi-partitioned assets and their checks
 dbt/models/             staging → intermediate → marts
 dbt/tests/              the guarantees, as SQL that fails the build
-scripts/                seed generator, log sync, real-IP verifiers
+scripts/                seed generator, real-IP verifiers
 infra/npm/              the deployed reverse-proxy config
 ```
 
