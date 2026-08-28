@@ -582,8 +582,16 @@ cannot reach that host (no route, no key), so cross-site SSH needs setting up be
 `scripts/sync-secondary-logs.sh` can run. Until then the `secondary` partition fails loudly rather
 than writing empty days.
 
-**Stage 2a — LiteLLM spend.** Promoted ahead of Jellyfin: no export to build, no PII, and it
-sets up the MCP demo. A day's work on top of Stage 1's scaffolding.
+**Stage 2a — LiteLLM spend. Built and deployed 28 Aug 2026.** [count withheld] calls and [spend withheld]
+backfilled over 73 daily partitions, 25 models, dbt 54/54 green. Read-only Postgres role
+scoped to the single table; prompts excluded by name; API key, caller address and end
+user hashed at the boundary. Schedule enabled at 03:15 UTC.
+
+Two bugs the tests caught: `is_self_hosted` came back with three values because a null
+`provider` propagated through an `OR` (`null = 'ollama'` is null, not false), and empty
+source tables were being created as placeholders that dbt could not compile against --
+they now carry their declared schema, which is also what keeps CI green with no
+database.
 
 **Stage 2b — Jellyfin.** API key, snapshot asset, star schema, TMDB enrichment. Touches no
 other repo.

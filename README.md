@@ -4,16 +4,17 @@ A lakehouse over a self-hosted homelab. Dagster lands daily partitions of revers
 logs into Parquet on MinIO; dbt models them in DuckDB; tests fail the build rather than
 log a warning.
 
-**Stage 1 ships the reverse-proxy logs, end to end.** Camera events, the media library
-and an LLM spend ledger come next — see [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md).
+**Two sources live:** reverse-proxy logs and the LiteLLM spend ledger. The media library
+and camera events come next — see [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md).
 
 This repo publishes the code, a synthetic seed and the reasoning. It does not publish the
 data — see [What is and isn't here](#what-is-and-isnt-here).
 
 ```
-NPM access logs (2 hosts)
-  → parse 3 formats → enrich geo/ASN → hash the address → Parquet on MinIO
-  → DuckDB → dbt staging / intermediate / marts → tests that fail the build
+NPM access logs (2 hosts)  ┐
+LiteLLM spend ledger       ┘→ redact at the boundary → Parquet on MinIO
+                            → DuckDB → dbt staging / intermediate / marts
+                            → tests that fail the build
 ```
 
 ## Run it in two minutes, with no homelab
@@ -128,6 +129,18 @@ column cannot reintroduce one.
 
 Verified against real traffic, not only fixtures: a day of production logs containing 57
 distinct client addresses produced [count withheld] rows, **none of which contained any of them**.
+
+**The LLM ledger: select the columns, leave the payload.**
+[`parsing/litellm_spend.py`](src/homelab_datalake/parsing/litellm_spend.py) reads [count withheld]
+calls ([spend withheld] since 16 June) with model, tokens, latency and cost. `messages`,
+`response` and `proxy_server_request` hold whole conversations and are excluded **by
+name**, not because they happen to be empty today — switching payload logging on must
+not silently start ingesting people's chats, and
+[a dbt test](dbt/tests/assert_no_prompt_payloads_in_warehouse.sql) fails if any of those
+names ever appear on the fact table. The API key is hashed too: the column holds both
+64-character hashes and 24-character literals, and nothing in it says which is which, so
+it is treated as a credential. The Postgres role names its one table rather than being
+granted the schema.
 
 **Partitioned by date *and* host.** The two proxies are on different machines and fail
 independently. `(2026-08-27, secondary)` breaking must not mark `(2026-08-27, primary)` broken,
