@@ -103,8 +103,10 @@ already running it.
 
 **Three log formats, dispatched by shape.**
 [`parsing/npm_log.py`](src/homelab_datalake/parsing/npm_log.py) handles NPM's `proxy` and
-`standard` formats plus stock nginx `combined`. Validated against **[count withheld] real lines from
-both hosts: zero rejects.** A line nothing matches is kept with its text, and
+`standard` formats plus stock nginx `combined`. Validated against real logs from both
+hosts: **[count withheld] lines parsed in 0.55 s, zero rejects** — [volume withheld] across 12 files on one core.
+That is the whole daily job, and it is the number behind "Spark's coordination would cost
+more than the work". A line nothing matches is kept with its text, and
 [a dbt test](dbt/tests/assert_reject_rate_within_threshold.sql) fails the build above [rate withheld].
 Silently dropping what you stop understanding is how a pipeline lies while the dashboard
 stays green.
@@ -115,6 +117,9 @@ every rotated sibling and filters by parsed timestamp. Slower than trusting a fi
 and the only version that survives a rotation landing mid-run. Files last modified before
 the partition day are pruned — on the camera host that is the difference between reading
 [volume withheld] and reading the ~[volume withheld] that could possibly contain the day.
+
+Checked against real traffic too: [count withheld] rows extracted from a day of production logs
+containing 57 distinct client addresses, **zero of which survived into any column**.
 
 **Enrich, then discard.** [`privacy.py`](src/homelab_datalake/privacy.py) is the only
 place a raw client address exists, and only in memory. Country, city and ASN are derived
