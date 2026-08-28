@@ -12,6 +12,13 @@ import duckdb
 import pyarrow as pa
 from dagster import AssetExecutionContext, MetadataValue, Output, asset
 
+from homelab_datalake.assets.jellyfin import (
+    _GENRE_SCHEMA,
+    _TITLE_SCHEMA,
+    GENRE_PREFIX,
+    TITLE_PREFIX,
+    jellyfin_library_raw,
+)
 from homelab_datalake.assets.litellm_spend import _SCHEMA as SPEND_SCHEMA
 from homelab_datalake.assets.litellm_spend import SPEND_PREFIX, litellm_spend_raw
 from homelab_datalake.assets.npm_access import (
@@ -69,7 +76,7 @@ def connect() -> duckdb.DuckDBPyConnection:
 
 
 @asset(
-    deps=[npm_access_raw, litellm_spend_raw],
+    deps=[npm_access_raw, litellm_spend_raw, jellyfin_library_raw],
     group_name="warehouse",
     compute_kind="duckdb",
     description=(
@@ -82,6 +89,8 @@ def npm_access_warehouse(context: AssetExecutionContext, lake: LakeStorage) -> O
         "raw.npm_access": (lake.duckdb_scan_target(RAW_PREFIX), ACCESS_SCHEMA),
         "raw.npm_access_rejects": (lake.duckdb_scan_target(REJECT_PREFIX), _REJECT_SCHEMA),
         "raw.litellm_spend": (lake.duckdb_scan_target(SPEND_PREFIX), SPEND_SCHEMA),
+        "raw.jellyfin_titles": (lake.duckdb_scan_target(TITLE_PREFIX), _TITLE_SCHEMA),
+        "raw.jellyfin_title_genres": (lake.duckdb_scan_target(GENRE_PREFIX), _GENRE_SCHEMA),
     }
     data_glob = tables["raw.npm_access"][0]
 
@@ -129,6 +138,7 @@ def npm_access_warehouse(context: AssetExecutionContext, lake: LakeStorage) -> O
             "npm_rows": counts["raw.npm_access"],
             "npm_rejects": counts["raw.npm_access_rejects"],
             "litellm_calls": counts["raw.litellm_spend"],
+            "jellyfin_titles": counts["raw.jellyfin_titles"],
             "npm_partitions_loaded": partitions,
             "source": MetadataValue.path(data_glob),
             "warehouse": MetadataValue.path(DUCKDB_PATH),

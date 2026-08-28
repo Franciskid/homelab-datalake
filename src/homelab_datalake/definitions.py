@@ -29,11 +29,11 @@ from dagster import (
     schedule,
 )
 
-from homelab_datalake.assets import litellm_spend, npm_access, warehouse
+from homelab_datalake.assets import jellyfin, litellm_spend, npm_access, warehouse
 from homelab_datalake.assets.npm_access import HOSTS, npm_partitions
 from homelab_datalake.resources import LakeStorage, NpmLogSources
 
-all_assets = load_assets_from_modules([npm_access, litellm_spend, warehouse])
+all_assets = load_assets_from_modules([npm_access, litellm_spend, jellyfin, warehouse])
 
 npm_daily_job = define_asset_job(
     name="npm_daily",
@@ -71,6 +71,28 @@ litellm_daily_job = define_asset_job(
 def litellm_daily_schedule(context: ScheduleEvaluationContext):
     day = context.scheduled_execution_time.date() - datetime.timedelta(days=1)
     yield RunRequest(run_key=f"litellm-{day.isoformat()}", partition_key=day.isoformat())
+
+
+jellyfin_daily_job = define_asset_job(
+    name="jellyfin_daily",
+    selection=AssetSelection.groups("jellyfin"),
+    partitions_def=jellyfin.library_partitions,
+    description="Snapshot the media library.",
+)
+
+
+@schedule(
+    job=jellyfin_daily_job,
+    cron_schedule="30 3 * * *",
+    default_status=DefaultScheduleStatus.STOPPED,
+    description=(
+        "Today's library at 03:30 UTC. Today, not yesterday: a snapshot describes the "
+        "library now, and dating it yesterday would invent a past that never existed."
+    ),
+)
+def jellyfin_daily_schedule(context: ScheduleEvaluationContext):
+    day = context.scheduled_execution_time.date()
+    yield RunRequest(run_key=f"jellyfin-{day.isoformat()}", partition_key=day.isoformat())
 
 
 @schedule(
@@ -126,8 +148,8 @@ def notify_on_failure(context):
 
 defs = Definitions(
     assets=all_assets,
-    jobs=[npm_daily_job, npm_backfill_job, litellm_daily_job],
-    schedules=[npm_daily_schedule, litellm_daily_schedule],
+    jobs=[npm_daily_job, npm_backfill_job, litellm_daily_job, jellyfin_daily_job],
+    schedules=[npm_daily_schedule, litellm_daily_schedule, jellyfin_daily_schedule],
     sensors=[notify_on_failure],
     resources={
         "lake": LakeStorage.from_env(),
