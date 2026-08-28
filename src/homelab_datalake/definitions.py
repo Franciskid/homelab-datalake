@@ -29,11 +29,11 @@ from dagster import (
     schedule,
 )
 
-from homelab_datalake.assets import jellyfin, litellm_spend, npm_access, warehouse
+from homelab_datalake.assets import camera, jellyfin, litellm_spend, npm_access, warehouse
 from homelab_datalake.assets.npm_access import HOSTS, npm_partitions
 from homelab_datalake.resources import LakeStorage, NpmLogSources
 
-all_assets = load_assets_from_modules([npm_access, litellm_spend, jellyfin, warehouse])
+all_assets = load_assets_from_modules([npm_access, litellm_spend, jellyfin, camera, warehouse])
 
 npm_daily_job = define_asset_job(
     name="npm_daily",
@@ -95,6 +95,46 @@ def jellyfin_daily_schedule(context: ScheduleEvaluationContext):
     yield RunRequest(run_key=f"jellyfin-{day.isoformat()}", partition_key=day.isoformat())
 
 
+camera_daily_job = define_asset_job(
+    name="camera_daily",
+    selection=AssetSelection.groups("camera"),
+    partitions_def=camera.camera_partitions,
+    description="Land one day of camera events, clips and logs.",
+)
+
+
+@schedule(
+    job=camera_daily_job,
+    cron_schedule="45 3 * * *",
+    default_status=DefaultScheduleStatus.STOPPED,
+    description="Yesterday's camera events at 03:45 UTC.",
+)
+def camera_daily_schedule(context: ScheduleEvaluationContext):
+    day = context.scheduled_execution_time.date() - datetime.timedelta(days=1)
+    yield RunRequest(run_key=f"camera-{day.isoformat()}", partition_key=day.isoformat())
+
+
+@schedule(
+    job=camera_daily_job,
+    cron_schedule="20 * * * *",
+    default_status=DefaultScheduleStatus.STOPPED,
+    description=(
+        "Re-reads the last two days hourly, because vision analysis lands hours after "
+        "the event. Without this the summaries and confidences for yesterday evening "
+        "would not appear until the next nightly run. Idempotent by construction: the "
+        "mart keeps the newest version of each event."
+    ),
+)
+def camera_late_arrival_schedule(context: ScheduleEvaluationContext):
+    today = context.scheduled_execution_time.date()
+    for back in (0, 1):
+        day = today - datetime.timedelta(days=back)
+        yield RunRequest(
+            run_key=f"camera-late-{day.isoformat()}-{context.scheduled_execution_time:%Y%m%d%H}",
+            partition_key=day.isoformat(),
+        )
+
+
 @schedule(
     job=npm_backfill_job,
     cron_schedule="0 3 * * *",
@@ -148,8 +188,9 @@ def notify_on_failure(context):
 
 defs = Definitions(
     assets=all_assets,
-    jobs=[npm_daily_job, npm_backfill_job, litellm_daily_job, jellyfin_daily_job],
-    schedules=[npm_daily_schedule, litellm_daily_schedule, jellyfin_daily_schedule],
+    jobs=[npm_daily_job, npm_backfill_job, litellm_daily_job, jellyfin_daily_job, camera_daily_job],
+    schedules=[npm_daily_schedule, litellm_daily_schedule, jellyfin_daily_schedule,
+               camera_daily_schedule, camera_late_arrival_schedule],
     sensors=[notify_on_failure],
     resources={
         "lake": LakeStorage.from_env(),

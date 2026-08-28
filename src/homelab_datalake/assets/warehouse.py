@@ -12,6 +12,15 @@ import duckdb
 import pyarrow as pa
 from dagster import AssetExecutionContext, MetadataValue, Output, asset
 
+from homelab_datalake.assets.camera import (
+    _CLIP_SCHEMA,
+    _EVENT_SCHEMA,
+    _LOG_SCHEMA,
+    CLIP_PREFIX,
+    EVENT_PREFIX,
+    LOG_PREFIX,
+    camera_events_raw,
+)
 from homelab_datalake.assets.jellyfin import (
     _GENRE_SCHEMA,
     _TITLE_SCHEMA,
@@ -76,7 +85,7 @@ def connect() -> duckdb.DuckDBPyConnection:
 
 
 @asset(
-    deps=[npm_access_raw, litellm_spend_raw, jellyfin_library_raw],
+    deps=[npm_access_raw, litellm_spend_raw, jellyfin_library_raw, camera_events_raw],
     group_name="warehouse",
     compute_kind="duckdb",
     description=(
@@ -91,6 +100,9 @@ def npm_access_warehouse(context: AssetExecutionContext, lake: LakeStorage) -> O
         "raw.litellm_spend": (lake.duckdb_scan_target(SPEND_PREFIX), SPEND_SCHEMA),
         "raw.jellyfin_titles": (lake.duckdb_scan_target(TITLE_PREFIX), _TITLE_SCHEMA),
         "raw.jellyfin_title_genres": (lake.duckdb_scan_target(GENRE_PREFIX), _GENRE_SCHEMA),
+        "raw.camera_events": (lake.duckdb_scan_target(EVENT_PREFIX), _EVENT_SCHEMA),
+        "raw.camera_clips": (lake.duckdb_scan_target(CLIP_PREFIX), _CLIP_SCHEMA),
+        "raw.camera_logs": (lake.duckdb_scan_target(LOG_PREFIX), _LOG_SCHEMA),
     }
     data_glob = tables["raw.npm_access"][0]
 
@@ -139,6 +151,7 @@ def npm_access_warehouse(context: AssetExecutionContext, lake: LakeStorage) -> O
             "npm_rejects": counts["raw.npm_access_rejects"],
             "litellm_calls": counts["raw.litellm_spend"],
             "jellyfin_titles": counts["raw.jellyfin_titles"],
+            "camera_events": counts["raw.camera_events"],
             "npm_partitions_loaded": partitions,
             "source": MetadataValue.path(data_glob),
             "warehouse": MetadataValue.path(DUCKDB_PATH),

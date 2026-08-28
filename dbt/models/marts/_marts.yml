@@ -211,3 +211,58 @@ models:
         tests: [not_null]
       - name: is_current
         tests: [not_null]
+
+  - name: fct_camera_event
+    description: >
+      One row per camera event, latest version. Vision analysis lands hours after the
+      event, so a partition is re-read as a matter of course; int_camera_events keeps
+      the newest version per event id.
+    columns:
+      - name: event_id
+        description: Unique here precisely because the intermediate model dedupes versions.
+        tests: [not_null, unique]
+      - name: partition_date
+        tests: [not_null]
+      - name: started_at
+        tests: [not_null]
+      - name: camera_id
+        tests: [not_null]
+      - name: lifecycle
+        tests:
+          - not_null
+          - accepted_values: {values: ['confirmed', 'dismissed', 'candidate']}
+      - name: rule_type
+        tests:
+          - not_null
+          - accepted_values: {values: ['motion', 'state', 'crossing']}
+      - name: dismissal_reason
+        description: >
+          Null when the event was not dismissed. The vocabulary comes from the camera
+          app; a value outside it means the app started emitting something this
+          pipeline does not understand, and the build should stop.
+        tests:
+          - accepted_values:
+              values: ['semantic_no_event', 'semantic_state_unchanged', 'human_correction',
+                       'recording_unavailable', 'analysis_failed', 'duplicate']
+      - name: direction
+        tests:
+          - accepted_values: {values: ['entrée', 'sortie']}
+      - name: zone_state
+        tests:
+          - accepted_values: {values: ['open', 'closed', 'partly_open']}
+      - name: confidence
+        description: >
+          Null means the model declined to commit, which is a different fact from a low
+          score and must stay distinguishable.
+        tests:
+          - dbt_utils.accepted_range: {min_value: 0, max_value: 1, inclusive: true}
+
+  - name: agg_camera_activity_daily
+    description: Daily activity by camera, zone and rule.
+    columns:
+      - name: partition_date
+        tests: [not_null]
+      - name: events
+        tests:
+          - not_null
+          - dbt_utils.accepted_range: {min_value: 1, inclusive: true}

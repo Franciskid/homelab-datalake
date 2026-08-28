@@ -24,3 +24,12 @@ sources:
         description: >
           Title-to-genre pairs. A separate table because a title has many genres and
           flattening them would mean a delimited string or genre_1/genre_2/genre_3.
+      - name: camera_events
+        description: >
+          Attention events. Not final when first written: vision analysis lands hours
+          later, so rows carry _extracted_at and the intermediate model keeps the
+          newest version per event id.
+      - name: camera_clips
+        description: Clip metadata. No paths, playlists or thumbnails.
+      - name: camera_logs
+        description: Activity log entries. Free-text titles are never exported.
