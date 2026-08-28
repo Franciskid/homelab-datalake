@@ -11,11 +11,12 @@
 # four weekly generations and no more.
 #
 # Nightly, before the 03:00 schedule:
-#   30 2 * * * /opt/homelab-datalake/scripts/sync-amb-logs.sh >> /var/log/datalake-sync.log 2>&1
+#   30 2 * * * /home/francois/projects/homelab-datalake/scripts/sync-amb-logs.sh \
+#                >> /home/francois/projects/homelab-datalake/logs/sync.log 2>&1
 set -euo pipefail
 
 REMOTE="${1:-sshamb.fraserv.fr}"
-DEST="${2:-/var/lib/homelab-datalake/logs/amb}"
+DEST="${2:-$(cd "$(dirname "$0")/.." && pwd)/logs/amb}"
 CONTAINER="${NPM_CONTAINER:-npm-npm-1}"
 
 mkdir -p "$DEST"
