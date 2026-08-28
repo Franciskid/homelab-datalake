@@ -4,16 +4,18 @@ A lakehouse over a self-hosted homelab. Dagster lands daily partitions of revers
 logs into Parquet on MinIO; dbt models them in DuckDB; tests fail the build rather than
 log a warning.
 
-**Three sources live:** reverse-proxy logs, the LiteLLM spend ledger, and the media
-library. Camera events come next — see [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md).
+**Four sources live:** reverse-proxy logs, the LiteLLM spend ledger, the media library
+and camera events. Next is the MCP layer — see
+[IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md).
 
 This repo publishes the code, a synthetic seed and the reasoning. It does not publish the
 data — see [What is and isn't here](#what-is-and-isnt-here).
 
 ```
 NPM access logs            ┐
-LiteLLM spend ledger       ┤→ redact at the boundary → Parquet on MinIO
-Jellyfin library           ┘
+LiteLLM spend ledger       ├→ redact at the boundary → Parquet on MinIO
+Jellyfin library           │
+Camera events (HTTPS+OIDC) ┘
                             → DuckDB → dbt staging / intermediate / marts
                             → tests that fail the build
 ```
@@ -165,6 +167,31 @@ and [count withheld] minutes for films of about 110 and 87 — wrong container m
 kept as reported and marked `is_runtime_plausible`; inventing a believable runtime would
 put a fabricated number in the warehouse, and widening the test would hide it. A separate
 test fails only if the share grows past [rate withheld].
+
+**Camera events: another site, reached over its URL with a token.** The camera platform
+runs elsewhere and is read the way anything else would be — its public URL with a
+Keycloak bearer token — not by opening a tunnel between the two sites. The token is a
+`client_credentials` grant carrying an `export:read` client role, so access is revoked
+in Keycloak beside every other account.
+
+The export endpoints
+([`export-auth.js`](https://github.com/Franciskid/homelab-camera), `export-routes.js` in
+that repo) verify the token's **signature** on every request. The camera app's existing
+auth reads JWT claims without verifying them, which is correct where it sits — that
+token came straight from Keycloak over TLS during a login redirect. Here the token
+arrives from whoever made the request, so the signature is the only thing between a real
+caller and someone who wrote their own JSON. Verified against all three cases: no token
+→ 401, forged signature → 401, real token → 200.
+
+Exports hand over analytics, not the house: no zone geometry (those polygons are a map
+of the property), no media, and `createdBy` becomes a salted hash.
+
+**Late-arriving analysis, described accurately.** Vision analysis lands hours after the
+event, so an hourly schedule re-reads the last two days. Re-materialising *replaces* a
+partition, which is what keeps the marts current — the dedup in
+[`int_camera_events`](dbt/models/intermediate/int_camera_events.sql) is a guard against a
+partition landing as several objects, not the mechanism, and measurement says so: three
+re-reads collapsed zero rows.
 
 **Partitioned by date *and* host.** The two proxies are on different machines and fail
 independently. `(2026-08-27, secondary)` breaking must not mark `(2026-08-27, primary)` broken,
