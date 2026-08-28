@@ -4,9 +4,9 @@ A lakehouse over a self-hosted homelab. Dagster lands daily partitions of revers
 logs into Parquet on MinIO; dbt models them in DuckDB; tests fail the build rather than
 log a warning.
 
-**Four sources live:** reverse-proxy logs, the LiteLLM spend ledger, the media library
-and camera events. Next is the MCP layer — see
-[IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md).
+**Four sources live** — reverse-proxy logs, the LiteLLM spend ledger, the media library
+and camera events — **and an MCP server on top**, so a model can ask the warehouse a
+question in words and get back a figure or a formatted Excel workbook.
 
 This repo publishes the code, a synthetic seed and the reasoning. It does not publish the
 data — see [What is and isn't here](#what-is-and-isnt-here).
@@ -18,6 +18,8 @@ Jellyfin library           │
 Camera events (HTTPS+OIDC) ┘
                             → DuckDB → dbt staging / intermediate / marts
                             → tests that fail the build
+                            → serving copy (marts only, read-only)
+                            → MCP: typed tools, Keycloak token, .xlsx out
 ```
 
 ## Run it in two minutes, with no homelab
@@ -36,10 +38,38 @@ export DUCKDB_PATH=$PWD/warehouse/datalake.duckdb DBT_PROFILES_DIR=$PWD/dbt
 mkdir -p "$DAGSTER_HOME"
 
 python scripts/generate_seed.py --days 3
+# The manifest dagster-dbt reads to build one asset per model. Before any dagster
+# command: without it the code location cannot load.
+(cd dbt && dbt deps && dbt parse)
+
 dagster asset materialize --select npm_access_raw --partition "2026-08-27|primary" \
   -m homelab_datalake.definitions
-dagster asset materialize --select warehouse_tables -m homelab_datalake.definitions
-cd dbt && dbt deps && dbt build
+
+# Warehouse, dbt models, tests and the serving copy -- the job that runs nightly.
+dagster job execute -j analytics_daily -m homelab_datalake.definitions
+```
+
+Then ask it something, over stdio, with no Keycloak and no server:
+
+```bash
+export DUCKDB_SERVING_PATH=$PWD/warehouse/serving.duckdb
+python -c "
+import asyncio, json
+from homelab_datalake.mcp.server import server
+r = asyncio.run(server.call_tool('web_traffic', {
+    'start': '2026-08-25', 'end': '2026-08-27', 'grain': 'day',
+    'measures': ['requests', 'visitors', 'server_error_pct']}))
+payload = r.structured_content or json.loads(r.content[0].text)
+print(json.dumps(payload['rows'], indent=2))
+"
+```
+
+```json
+[
+  {"period": "2026-08-25", "requests": 816, "visitors": 8, "server_error_pct": 9.314},
+  {"period": "2026-08-26", "requests": 816, "visitors": 8, "server_error_pct": 13.603},
+  {"period": "2026-08-27", "requests": 816, "visitors": 8, "server_error_pct": 10.294}
+]
 ```
 
 For the asset graph, per-partition status and the backfill dialog:
@@ -102,6 +132,123 @@ in the live log or any of four gzipped siblings. So nothing on the filesystem an
 partition)` as a first-class fact with a backfill UI over it; with Airflow that
 bookkeeping is yours to write and keep correct. Airflow remains the right call for a team
 already running it.
+
+## The MCP layer: typed tools, not text-to-SQL
+
+A model can ask this warehouse a question and get back a number or a formatted
+workbook. The interesting decision is what the tools *are*.
+
+**Not `run_sql(query: str)`.** That is the version you can build in a weekend, and it is
+the wrong one:
+
+- A string parameter is an unbounded interface. Anything the model can write, the
+  database will try — and the failure is silent, because a wrong join returns a number
+  rather than an error.
+- The schema becomes the API. Rename a column and you break callers you cannot see.
+- "Which of these?" is a task models are reliable at. "Write correct SQL against a
+  schema you have not seen" is one they are *plausible* at, which is worse.
+
+So a question is a typed structure — dataset, date range, grain, dimensions, measures,
+filters — and every name is looked up in
+[a registry](src/homelab_datalake/mcp/semantic.py) while every value is a bound
+parameter. **The model never supplies a fragment of SQL.** Injection is not mitigated,
+it is unrepresentable: there is no path from model output to query text.
+
+The cost is real and worth saying out loud: a question nobody anticipated needs a change
+to the registry rather than a cleverer prompt. That is the trade — a narrower surface
+that is right, over a wider one that is usually right.
+
+```
+llm_spend        spend, tokens, latency, failures — by model, provider, workload
+web_traffic      requests, visitors, error rates, geography — by host, status, client
+camera_activity  events, confirmations, confidence — by camera, zone, hour of day
+media_library    titles, runtime, resolution, ratings — one snapshot, never summed
+export_workbook  any of the above, as .xlsx with a provenance sheet
+list_datasets / describe_dataset   what exists, and what values each dimension takes
+```
+
+**What stops a model running a cartesian join at 3am.** There are no joins to ask for —
+a question addresses exactly one mart. Beyond that: a row cap applied as `LIMIT` so rows
+are never materialised and discarded; a date-range cap; and a wall-clock deadline
+enforced by a watchdog that calls `interrupt()`, because DuckDB has no statement timeout
+and a deadline nothing enforces is a comment. Measured: a runaway scan is cancelled in
+1.5s and the connection survives it.
+
+**The empty answer gets the most care**, because it is the failure mode that does not
+look like one. A model narrating a confident summary over zero rows is worse than an
+error. So an empty result says it is empty, says which range *does* hold data, says
+whether the requested window missed it entirely, and says not to estimate:
+
+```
+No rows matched. This is an empty result, not a zero.
+camera_activity holds data from 2026-08-07 to 2026-08-27.
+The requested range lies entirely outside that, so the window is the likely mistake.
+Do not summarise or estimate figures for this period.
+```
+
+Exports refuse outright rather than produce a sheet of headers with no rows — to a
+person that reads as "the answer is zero", which is a different claim.
+
+**A snapshot is not a stream of events.** `media_library` describes a moment, so a date
+range selects *which* snapshot to report rather than a span to aggregate. Summing titles
+across days would count each film once per day it sat on the disk — a number that looks
+like growth and is arithmetic.
+
+**Deliberately not exposed:** `client_hash` identifies one visitor across requests. It is
+in the fact table because visitor *counts* need it, but it is not a dimension — grouping
+by it would turn an aggregate tool into a per-person report, which is what the ingestion
+boundary exists to prevent. [A test](tests/test_mcp_query.py) fails if anyone adds it
+back for convenience.
+
+### The serving copy, and a stale-read that nothing would have reported
+
+DuckDB allows one writing process. Measured, not assumed: a **read-only** open also
+fails under that lock —
+
+```
+IO Error: Could not set lock on file ".../datalake.duckdb"
+```
+
+— so a reader pointed at the warehouse would not merely see stale data during the
+nightly build, it would raise for the length of it. Instead the build writes
+`datalake.duckdb`, and on success the marts are copied into `serving.duckdb` and swapped
+in atomically. Readers never contend with the build, and a failed build never reaches
+them.
+
+Two properties fall out, and both were the point:
+
+- **Only the marts are copied.** Not raw, not staging. "The serving layer cannot see raw
+  data" is a fact about the file rather than a promise about the code.
+- **The semantic layer is bound against the staged copy before the swap.** A dbt column
+  rename fails the deploy, with the previous copy still serving — instead of failing the
+  first question that happens to touch that column, weeks later.
+
+The subtle part: the serving copy is opened with `ATTACH`, not `duckdb.connect(path)`.
+DuckDB caches database instances **by path within a process**, so once one handle is
+open, a later `connect()` to the same path joins the cached instance rather than reading
+the file. After the nightly swap that means a "fresh" connection keeps returning the
+previous build's numbers for as long as any other handle lives — and **nothing raises**.
+Measured at 200 stale rows against 89 correct ones, and
+[pinned by a test](tests/test_serving.py) so it cannot be simplified away.
+
+### Authentication
+
+Bearer tokens against the same Keycloak realm as everything else, so revoking the
+pipeline's access is a toggle beside every other account rather than an edit to a file on
+a server. The token arrives from the caller, so its signature is the only thing
+separating a real client from someone who wrote their own JSON — it is verified against
+the realm's published keys on every request, never decoded and trusted. Authorisation is
+the `datalake:query` **client** role, which a realm role of the same name cannot satisfy.
+
+`/mcp` bypasses oauth2-proxy deliberately: its callers are programs, and a browser login
+flow is not something they can complete. It is authenticated differently, not less. The
+server refuses to start over HTTP with no issuer configured — an unauthenticated
+analytics endpoint is a worse outcome than one that is down, because nothing about it
+looks wrong.
+
+Verified from the public internet: no token → **401**; a garbage token → **401**; a
+forged token carrying perfect claims but signed with a key the realm never published →
+**401**.
 
 ## The parts worth reading
 
@@ -266,6 +413,14 @@ Identity lives in one place rather than in an htpasswd file nobody remembers: ac
 granted and revoked in Keycloak, next to every other account. Grant someone access by
 assigning them `datalake-user`; revoke by removing it.
 
+**`/mcp` is the one path that does not go through oauth2-proxy**, because its callers are
+programs and a browser login is not something they can complete. It verifies a
+Keycloak-signed bearer token carrying the `datalake:query` client role on every request,
+and refuses to start over HTTP if no issuer is configured. Setting it up needs one
+confidential client, `datalake-mcp`, with service accounts enabled and a client role
+`datalake:query` assigned to its own service account — the same shape as
+`datalake-exporter`, which the camera export uses.
+
 The vhost is [`infra/npm/http.conf`](infra/npm/http.conf), installed to NPM's custom
 include — a path NPM never rewrites, unlike the `proxy_host/<id>.conf` files it
 regenerates from its own database. That keeps the vhost in version control instead of
@@ -288,22 +443,45 @@ only in NPM's SQLite.
   and a partition that is green and empty is indistinguishable from a quiet day. A run
   that is green and wrong is worse than one that fails.
 
+**The nightly chain.** Sources land between 03:00 and 03:45; `analytics_daily` at 04:15
+rebuilds the warehouse, builds and tests every dbt model, and publishes the serving copy.
+Half an hour of slack rather than the couple of minutes the runs take, so a retry on a
+slow source still finishes before the marts are built — a mart built from a partition
+that had not landed yet is silently short by a day.
+
+| | |
+|---|---|
+| `npm_daily` | 03:00 — yesterday's logs, one run per host |
+| `litellm_daily` | 03:15 — yesterday's LLM spend |
+| `jellyfin_daily` | 03:30 — today's library snapshot |
+| `camera_daily` | 03:45 — yesterday's camera events |
+| `camera_late_arrival` | hourly — re-reads the last two days, because vision analysis lands late |
+| `analytics_daily` | 04:15 — warehouse, dbt, serving copy |
+
+Before this existed the sources refreshed nightly and the marts refreshed whenever
+somebody remembered to run `dbt build`. That is a way of being wrong that never announces
+itself, and a serving layer over stale marts is worse than no serving layer.
+
 ## What is and isn't here
 
 | | Published | Private |
 |---|---|---|
 | Pipeline code, dbt models, tests, CI | ✅ | |
+| The MCP server and its semantic layer | ✅ | |
 | Synthetic seed generator | ✅ | |
 | The reasoning, with its numbers | ✅ | |
 | Real logs, camera events, library data | | ✅ |
+| Generated workbooks | | ✅ |
 | Credentials, endpoints, network topology | | ✅ |
 
 Every address in this repository is from a documentation range (RFC 5737, RFC 3849), is
 private or reserved space, or is a published Cloudflare prefix. The seed is generated, not
 sampled. That rule is [enforced by a
-test](tests/test_no_real_addresses_in_fixtures.py) over every tracked file, because
-reviewing by eye did not work: two fixtures were copied straight out of the production
-logs while writing the suite that asserts addresses never leak.
+test](tests/test_no_real_addresses_in_fixtures.py) over every tracked file **and every
+commit**, because reviewing by eye did not work: two fixtures were copied straight out of
+the production logs while writing the suite that asserts addresses never leak, and a
+third — a scanner's address pasted into a document as an example log line — sat in
+history unnoticed until the check was widened to scan it.
 
 ## Layout
 
@@ -314,7 +492,13 @@ src/homelab_datalake/
   privacy.py            the PII boundary: enrich, hash, discard
   geo.py                MaxMind lookups, optional by design
   resources.py          MinIO or local disk behind one interface
-  assets/               multi-partitioned assets and their checks
+  serving.py            the read-only marts copy, and why it exists
+  assets/               partitioned assets, dbt models, the serving publish
+  mcp/semantic.py       what may be asked, in business vocabulary
+  mcp/query.py          validation, SQL construction, the limits
+  mcp/deliverables.py   .xlsx with a provenance sheet
+  mcp/auth.py           Keycloak bearer tokens, verified per request
+  mcp/server.py         the tool surface
 dbt/models/             staging → intermediate → marts
 dbt/tests/              the guarantees, as SQL that fails the build
 scripts/                seed generator, real-IP verifiers
