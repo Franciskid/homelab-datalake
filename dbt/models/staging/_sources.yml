@@ -18,3 +18,9 @@ sources:
           One row per LLM call from LiteLLM's spend ledger. Prompt and completion
           payloads are never selected; caller address, API key and end user are hashed
           at the ingestion boundary.
+      - name: jellyfin_titles
+        description: One row per movie per snapshot date. No paths, no playback history.
+      - name: jellyfin_title_genres
+        description: >
+          Title-to-genre pairs. A separate table because a title has many genres and
+          flattening them would mean a delimited string or genre_1/genre_2/genre_3.

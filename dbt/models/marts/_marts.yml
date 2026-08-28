@@ -131,3 +131,71 @@ models:
       - name: spend_usd
         tests:
           - dbt_utils.accepted_range: {min_value: 0, inclusive: true}
+
+  - name: fct_library_title
+    description: >
+      One row per movie per snapshot date. No file paths -- in this library they carry
+      the source site each file came from -- and no playback history.
+    columns:
+      - name: title_key
+        tests: [not_null, unique]
+      - name: item_id
+        tests: [not_null]
+      - name: snapshot_date
+        tests: [not_null]
+      - name: title
+        tests: [not_null]
+      - name: resolution_class
+        description: >
+          Bucketed from height by range, not equality. Real heights here include 1040,
+          1036, 816, 804 -- cropped and letterboxed encodes -- so equality bucketing
+          would scatter one logical resolution across a dozen values.
+        tests:
+          - accepted_values: {values: ['4K', '1080p', '720p', 'SD', 'low']}
+      - name: community_rating
+        tests:
+          - dbt_utils.accepted_range: {min_value: 0, max_value: 10, inclusive: true}
+      - name: runtime_minutes
+        tests:
+          - dbt_utils.accepted_range: {min_value: 0, max_value: 900, inclusive: true}
+      - name: is_enrichable
+        tests: [not_null]
+
+  - name: dim_genre
+    description: Genres, keyed by a hash so a metadata refresh renaming one cannot break joins.
+    columns:
+      - name: genre_key
+        tests: [not_null, unique]
+      - name: genre_name
+        tests: [not_null, unique]
+
+  - name: bridge_title_genre
+    description: >
+      The many-to-many between titles and genres, at snapshot grain. A bridge rather
+      than genre_1/genre_2/genre_3, which would truncate the tail -- some titles carry
+      six genres.
+    columns:
+      - name: title_key
+        tests:
+          - not_null
+          - relationships: {to: ref('fct_library_title'), field: title_key}
+      - name: genre_key
+        tests:
+          - not_null
+          - relationships: {to: ref('dim_genre'), field: genre_key}
+
+  - name: dim_title_scd2
+    description: >
+      Type-2 history over the daily snapshots: when a title arrived, when a rating
+      moved, when a file was re-encoded. Built as a pure function of the Parquet
+      partitions rather than dbt's stateful snapshot materialisation, so dropping the
+      warehouse and rebuilding produces identical history.
+    columns:
+      - name: title_version_key
+        tests: [not_null, unique]
+      - name: item_id
+        tests: [not_null]
+      - name: valid_from
+        tests: [not_null]
+      - name: is_current
+        tests: [not_null]

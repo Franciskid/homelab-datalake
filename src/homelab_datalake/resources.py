@@ -95,6 +95,28 @@ class LakeStorage(ConfigurableResource):
                         removed += 1
         return removed
 
+    def count_rows(self, key: str) -> int | None:
+        """Rows in one Parquet object, or None if it is not there.
+
+        Reads the file footer rather than the data: Parquet stores the row count in
+        its metadata, so this is a couple of range requests regardless of file size.
+        Used to compare a snapshot against the previous one without loading either.
+        """
+        import pyarrow.parquet as pq
+
+        try:
+            if self.uses_s3:
+                body = self._client().get_object(Bucket=self.bucket, Key=key)["Body"].read()
+                return pq.ParquetFile(io.BytesIO(body)).metadata.num_rows
+            path = Path(self.local_root) / key
+            if not path.exists():
+                return None
+            return pq.ParquetFile(path).metadata.num_rows
+        except Exception:  # noqa: BLE001 - a missing or unreadable prior snapshot is
+            # not an error: it means there is nothing to compare against, and the
+            # caller treats None as "first snapshot".
+            return None
+
     def duckdb_scan_target(self, prefix: str) -> str:
         """A glob DuckDB can read every partition through."""
         if self.uses_s3:
