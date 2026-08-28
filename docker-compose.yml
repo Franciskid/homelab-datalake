@@ -10,8 +10,12 @@ services:
     container_name: datalake-webserver
     restart: unless-stopped
     env_file: [.env]
-    ports:
-      - "127.0.0.1:3300:3000"
+    # No published port on purpose. Nginx Proxy Manager joins this network and
+    # reaches the UI by container name, so Dagster -- which has no authentication of
+    # its own -- is not listening anywhere an unauthenticated caller can reach.
+    # See infra/npm/http.conf.
+    expose:
+      - "3000"
     volumes:
       - dagster_home:/dagster_home
       - warehouse:/warehouse
