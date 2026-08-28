@@ -51,6 +51,10 @@ USER_AGENTS = [
     "curl/8.7.1",
     "python-requests/2.32.3",
     "Mozilla/5.0 (compatible; SomeBot/1.0; +http://example.test/bot)",
+    # A four-part version number. Address-shaped and not an address -- this exact
+    # string is what first failed the no-raw-addresses test against real traffic,
+    # so it stays in the seed to keep that fixed.
+    "Mozilla/5.0 (compatible; WhatsApp/10.0.2.1)",
     "-",
 ]
 
