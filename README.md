@@ -420,6 +420,8 @@ and refuses to start over HTTP if no issuer is configured. Setting it up needs o
 confidential client, `datalake-mcp`, with service accounts enabled and a client role
 `datalake:query` assigned to its own service account — the same shape as
 `datalake-exporter`, which the camera export uses.
+[`scripts/setup-keycloak-mcp.sh`](scripts/setup-keycloak-mcp.sh) creates it; it prompts
+for realm-admin credentials rather than reading them from anywhere.
 
 The vhost is [`infra/npm/http.conf`](infra/npm/http.conf), installed to NPM's custom
 include — a path NPM never rewrites, unlike the `proxy_host/<id>.conf` files it
@@ -505,7 +507,7 @@ src/homelab_datalake/
   mcp/server.py         the tool surface
 dbt/models/             staging → intermediate → marts
 dbt/tests/              the guarantees, as SQL that fails the build
-scripts/                seed generator, real-IP verifiers
+scripts/                seed generator, real-IP verifiers, Keycloak setup
 infra/npm/              the deployed reverse-proxy config
 ```
 
