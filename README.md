@@ -4,15 +4,16 @@ A lakehouse over a self-hosted homelab. Dagster lands daily partitions of revers
 logs into Parquet on MinIO; dbt models them in DuckDB; tests fail the build rather than
 log a warning.
 
-**Two sources live:** reverse-proxy logs and the LiteLLM spend ledger. The media library
-and camera events come next — see [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md).
+**Three sources live:** reverse-proxy logs, the LiteLLM spend ledger, and the media
+library. Camera events come next — see [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md).
 
 This repo publishes the code, a synthetic seed and the reasoning. It does not publish the
 data — see [What is and isn't here](#what-is-and-isnt-here).
 
 ```
-NPM access logs (2 hosts)  ┐
-LiteLLM spend ledger       ┘→ redact at the boundary → Parquet on MinIO
+NPM access logs            ┐
+LiteLLM spend ledger       ┤→ redact at the boundary → Parquet on MinIO
+Jellyfin library           ┘
                             → DuckDB → dbt staging / intermediate / marts
                             → tests that fail the build
 ```
@@ -141,6 +142,29 @@ names ever appear on the fact table. The API key is hashed too: the column holds
 64-character hashes and 24-character literals, and nothing in it says which is which, so
 it is treated as a credential. The Postgres role names its one table rather than being
 granted the schema.
+
+**The library: a star schema where one is actually the right shape.**
+[`parsing/jellyfin.py`](src/homelab_datalake/parsing/jellyfin.py) snapshots [count withheld] movies
+daily. Read through the API rather than the CSV export because `ProviderIds.Tmdb` comes
+back on **[rate withheld]** of titles, making enrichment a key lookup instead of fuzzy title
+matching — which is what gets remakes and translated titles wrong. Genres are a
+[bridge table](dbt/models/marts/bridge_title_genre.sql), not `genre_1/genre_2/genre_3`:
+a title averages three and some carry six. Resolution is bucketed by *range*, because
+real heights here are 1080, 1040, 1036, 816, 808, 804 — cropped and letterboxed encodes
+that equality bucketing would scatter across a dozen classes.
+[SCD2](dbt/models/marts/dim_title_scd2.sql) is a pure function of the Parquet
+partitions rather than dbt's stateful snapshot materialisation, so dropping the
+warehouse and rebuilding gives identical history. Two tests hold it: versions may not
+overlap, and exactly one may be current per title.
+
+Never stored: file paths (in this library they carry the name of the site each file came
+from), and playback history.
+
+**Bad source data is flagged, never corrected.** Two `mpeg2video` DVD rips report [count withheld]
+and [count withheld] minutes for films of about 110 and 87 — wrong container metadata. The value is
+kept as reported and marked `is_runtime_plausible`; inventing a believable runtime would
+put a fabricated number in the warehouse, and widening the test would hide it. A separate
+test fails only if the share grows past [rate withheld].
 
 **Partitioned by date *and* host.** The two proxies are on different machines and fail
 independently. `(2026-08-27, secondary)` breaking must not mark `(2026-08-27, primary)` broken,

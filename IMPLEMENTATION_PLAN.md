@@ -593,8 +593,9 @@ source tables were being created as placeholders that dbt could not compile agai
 they now carry their declared schema, which is also what keeps CI green with no
 database.
 
-**Stage 2b — Jellyfin.** API key, snapshot asset, star schema, TMDB enrichment. Touches no
-other repo.
+**Stage 2b — Jellyfin. Built and deployed 28 Aug 2026.** [count withheld] titles, [rate withheld] with a TMDB
+id, star schema with a genre bridge and SCD2, dbt 86/86 green. Schedule enabled at 03:30
+UTC. TMDB enrichment itself is still to do -- the keys are in place, the lookup is not.
 
 **Stage 2c — camera.** Three systems, so in order, each verifiable alone: Keycloak client →
 bearer middleware in `homelab_camera` → `/api/export/*` → Dagster asset → dbt vocabulary tests.
