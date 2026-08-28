@@ -27,6 +27,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # The address guard scans every commit, not just the working tree, so it
+          # needs the whole history. A shallow clone would make it skip silently --
+          # a green check that proved nothing.
+          fetch-depth: 0
 
       - uses: actions/setup-python@v5
         with:

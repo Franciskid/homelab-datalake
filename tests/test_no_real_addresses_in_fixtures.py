@@ -92,3 +92,66 @@ def test_no_real_addresses_in_tracked_files(path: Path):
         "Use RFC 5737 (192.0.2.0/24, 198.51.100.0/24, 203.0.113.0/24) or "
         "RFC 3849 (2001:db8::/32) instead."
     )
+
+
+# --- and the same rule, applied to every commit --------------------------------
+#
+# Checking the working tree is not enough, and this is not hypothetical: the two
+# fixtures above were removed in a later commit and stayed in history, where the
+# check above could not see them. A third one -- a scanner's address pasted into
+# the implementation plan as an example log line -- had been sitting there the
+# whole time and was only found by scanning history.
+#
+# History was rewritten to remove all three. This test is what stops that from
+# being a one-off cleanup: a leak that lives for a single commit is still a leak,
+# and "we deleted it in the next commit" is not a fix for anything that has been
+# pushed.
+
+
+def _history_blobs() -> dict[str, set[str]]:
+    """Every distinct version of every text file the repo has ever held.
+
+    Keyed by blob hash so a file that never changed is read once, not once per
+    commit -- the whole scan is a couple of seconds on this repo.
+    """
+    listing = subprocess.run(
+        ["git", "rev-list", "--all"],  # noqa: S607
+        cwd=REPO, capture_output=True, text=True, check=True,
+    ).stdout.split()
+
+    keep = {".py", ".sql", ".yml", ".yaml", ".md", ".conf", ".sh", ".toml"}
+    blobs: dict[str, set[str]] = {}
+    for commit in listing:
+        # S603: the argument is a commit hash git itself just printed, not input.
+        tree = subprocess.run(  # noqa: S603
+            ["git", "ls-tree", "-r", commit],  # noqa: S607
+            cwd=REPO, capture_output=True, text=True, check=True,
+        ).stdout
+        for line in tree.splitlines():
+            meta, _, path = line.partition("\t")
+            if Path(path).suffix not in keep:
+                continue
+            blobs.setdefault(meta.split()[2], set()).add(path)
+    return blobs
+
+
+def test_no_real_addresses_anywhere_in_history():
+    if (REPO / ".git" / "shallow").exists():
+        pytest.skip("shallow clone: history is not available to scan")
+
+    offenders: dict[str, set[str]] = {}
+    for blob, paths in _history_blobs().items():
+        # S603: blob is a hash from ls-tree above, not input.
+        text = subprocess.run(  # noqa: S603
+            ["git", "cat-file", "-p", blob],  # noqa: S607
+            cwd=REPO, capture_output=True, text=True, check=True,
+        ).stdout
+        found = {m for m in _literals(text) if not is_allowed(m)}
+        if found:
+            offenders.setdefault(sorted(paths)[0], set()).update(found)
+
+    assert not offenders, (
+        "these addresses appear in git history even though they are not in the "
+        f"working tree: { {k: sorted(v) for k, v in offenders.items()} }. "
+        "Removing them in a later commit does not remove them from the repository."
+    )
