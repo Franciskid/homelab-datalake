@@ -300,6 +300,16 @@ MEDIA_LIBRARY = Dataset(
         Dimension("is_runtime_plausible", "is_runtime_plausible",
                   "False for the handful of DVD rips that report a runtime of over a "
                   "day. Kept as reported and flagged, rather than corrected or dropped."),
+        # From TMDB, joined on the id Jellyfin stored. All null when no API key is
+        # configured, which is why `is_enriched` is a dimension rather than a footnote:
+        # a query can exclude unenriched titles instead of averaging over their nulls.
+        Dimension("original_language", "original_language",
+                  "Language the film was shot in, from TMDB."),
+        Dimension("production_country", "production_country",
+                  "Primary production country, ISO 3166-1, from TMDB."),
+        Dimension("is_enriched", "is_enriched",
+                  "True when TMDB data was found for this title. False for titles with "
+                  "no TMDB id, and for all titles when no API key is configured."),
     ),
     measures=(
         Measure("titles", "count(DISTINCT item_id)", "Distinct titles.", "titles"),
@@ -315,6 +325,23 @@ MEDIA_LIBRARY = Dataset(
                 "Titles carrying a community rating.", "titles"),
         Measure("enrichable_titles", "count(*) FILTER (WHERE is_enrichable)",
                 "Titles carrying a TMDB id.", "titles"),
+        Measure("enriched_titles", "count(*) FILTER (WHERE is_enriched)",
+                "Titles TMDB data was actually found for. Read this beside any TMDB "
+                "measure: they are averages over enriched titles only.", "titles"),
+        Measure("avg_tmdb_rating", "round(avg(tmdb_vote_average)::numeric, 2)",
+                "Mean TMDB rating, over titles that have one. Null when nobody voted, "
+                "rather than 0.0, which TMDB reports for an unrated film.", ""),
+        Measure("total_votes", "sum(tmdb_vote_count)", "TMDB votes across the shelf.",
+                "votes"),
+        Measure("median_budget_usd", "round(median(budget_usd)::numeric, 0)",
+                "Median production budget over titles TMDB has a figure for. Median "
+                "rather than mean: one blockbuster moves an average of a few hundred "
+                "films a long way.", "USD"),
+        Measure("median_revenue_usd", "round(median(revenue_usd)::numeric, 0)",
+                "Median box office, over titles TMDB has a figure for.", "USD"),
+        Measure("titles_with_budget", "count(*) FILTER (WHERE budget_usd IS NOT NULL)",
+                "Titles TMDB records a budget for. The denominator for the budget "
+                "measures -- an unknown budget is null, not zero.", "titles"),
     ),
     default_measures=("titles", "runtime_hours", "avg_community_rating"),
 )

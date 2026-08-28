@@ -33,3 +33,9 @@ sources:
         description: Clip metadata. No paths, playlists or thumbnails.
       - name: camera_logs
         description: Activity log entries. Free-text titles are never exported.
+      - name: tmdb_titles
+        description: >
+          Budget, revenue, original language and vote counts from TMDB, keyed by the
+          id Jellyfin already stored. A key lookup, never a title search, so a film
+          cannot be enriched with another film's box office. Empty when no API key is
+          configured -- enrichment is optional, exactly like geo.

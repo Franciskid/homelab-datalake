@@ -55,6 +55,8 @@ from homelab_datalake.assets.npm_access import (
     npm_access_raw,
 )
 from homelab_datalake.assets.npm_access import _SCHEMA as ACCESS_SCHEMA
+from homelab_datalake.assets.tmdb import _SCHEMA as _TMDB_SCHEMA
+from homelab_datalake.assets.tmdb import TMDB_PREFIX, tmdb_titles_raw
 from homelab_datalake.resources import LakeStorage
 
 # Resolved to an absolute path once, here, and written back to the environment.
@@ -89,6 +91,9 @@ _SOURCES = (
      "Clip metadata. No paths, playlists or thumbnails."),
     ("camera_logs", LOG_PREFIX, _LOG_SCHEMA, camera_events_raw,
      "Activity log entries. Free-text titles are never exported."),
+    ("tmdb_titles", TMDB_PREFIX, _TMDB_SCHEMA, tmdb_titles_raw,
+     ("Budget, revenue, language and vote counts by TMDB id. Empty when no API key "
+      "is configured, which leaves the library marts' enrichment columns null.")),
 )
 
 

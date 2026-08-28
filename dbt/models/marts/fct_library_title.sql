@@ -28,11 +28,28 @@ select
     audio_channels,
     studio,
 
-    tmdb_id,
+    titles.tmdb_id,
     imdb_id,
     -- Enrichment is a key lookup only while the key is present. Naming the gap as a
     -- column means a query can exclude it rather than silently averaging over titles
     -- that were never enriched.
-    (tmdb_id is not null) as is_enrichable
+    (titles.tmdb_id is not null) as is_enrichable,
 
-from {{ ref('stg_jellyfin_titles') }}
+    -- TMDB, joined on the id Jellyfin already stored -- never on the title, so a film
+    -- cannot pick up another film's box office. All null when no API key is
+    -- configured, which is a supported state rather than a broken one.
+    tmdb.original_language,
+    tmdb.production_country,
+    tmdb.tmdb_release_date,
+    tmdb.budget_usd,
+    tmdb.revenue_usd,
+    tmdb.revenue_to_budget,
+    tmdb.popularity                             as tmdb_popularity,
+    tmdb.vote_average                           as tmdb_vote_average,
+    tmdb.vote_count                             as tmdb_vote_count,
+    (tmdb.tmdb_id is not null)                  as is_enriched
+
+from {{ ref('stg_jellyfin_titles') }} titles
+-- Left, always: a missing enrichment must not remove a film from the library.
+left join {{ ref('stg_tmdb_titles') }} tmdb
+    on titles.tmdb_id = tmdb.tmdb_id
