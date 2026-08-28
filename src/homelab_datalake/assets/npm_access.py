@@ -27,7 +27,7 @@ from dagster import (
 )
 
 from homelab_datalake.geo import GeoEnricher
-from homelab_datalake.parsing.extract import extract_partition
+from homelab_datalake.parsing.extract import discover_logs, extract_partition
 from homelab_datalake.resources import LakeStorage, NpmLogSources
 
 # 27 July 2026 is the oldest line the servers still hold. NPM rotates weekly and
@@ -168,6 +168,19 @@ def npm_access_raw(
             f"log directory {log_dir!r} for host {host!r} is not readable. "
             "On primary this is a bind mount of NPM's /data/logs; for secondary it is "
             "populated by scripts/sync-secondary-logs.sh."
+        )
+
+    # An empty log directory is a configuration fault, not a quiet day, and the two
+    # must not look alike. secondary's logs arrive by rsync from another site;
+    # if that stops, this directory silently empties and every partition after it
+    # would succeed with zero rows. A run that is green and wrong is worse than a
+    # run that fails.
+    available = discover_logs(log_dir)
+    if not available:
+        raise FileNotFoundError(
+            f"no access logs found in {log_dir!r} for host {host!r}. This is a broken "
+            "mount or a stalled sync, not an empty day -- refusing to write an empty "
+            "partition that would look like one. For secondary, check scripts/sync-secondary-logs.sh."
         )
 
     geo = GeoEnricher.from_env()
