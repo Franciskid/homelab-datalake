@@ -17,6 +17,7 @@ select
 
     runtime_minutes,
     is_long_feature,
+    is_runtime_plausible,
     container,
     video_codec,
     video_height,
