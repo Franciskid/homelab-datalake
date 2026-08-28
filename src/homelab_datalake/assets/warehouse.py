@@ -1,8 +1,15 @@
-"""Loading the lake into DuckDB, and running dbt on top of it.
+"""Loading the lake into DuckDB, and publishing what the serving layer reads.
 
 The DuckDB file is a build artefact, not a source of truth. If it is lost, this
 asset plus `dbt build` reconstructs it from the Parquet in the lake. That is what
 sets the backup policy: the bucket is backed up, the warehouse is not.
+
+Each raw table is its own asset rather than one asset called "the warehouse". That
+is not decoration: dbt already declares `source('raw', 'camera_events')` in YAML, and
+naming the same thing on the Dagster side is what joins the two graphs. The lineage
+then runs unbroken from a Parquet partition, through the raw table, into staging and
+out to a mart -- so "what feeds this number" is a question the UI answers, rather
+than one somebody answers by reading two projects side by side.
 """
 
 import os
@@ -10,8 +17,18 @@ from pathlib import Path
 
 import duckdb
 import pyarrow as pa
-from dagster import AssetExecutionContext, MetadataValue, Output, asset
+from dagster import (
+    AssetExecutionContext,
+    AssetKey,
+    AssetSpec,
+    MaterializeResult,
+    MetadataValue,
+    Output,
+    asset,
+    multi_asset,
+)
 
+from homelab_datalake import serving
 from homelab_datalake.assets.camera import (
     _CLIP_SCHEMA,
     _EVENT_SCHEMA,
@@ -21,6 +38,7 @@ from homelab_datalake.assets.camera import (
     LOG_PREFIX,
     camera_events_raw,
 )
+from homelab_datalake.assets.dbt_marts import dbt_marts
 from homelab_datalake.assets.jellyfin import (
     _GENRE_SCHEMA,
     _TITLE_SCHEMA,
@@ -39,7 +57,39 @@ from homelab_datalake.assets.npm_access import (
 from homelab_datalake.assets.npm_access import _SCHEMA as ACCESS_SCHEMA
 from homelab_datalake.resources import LakeStorage
 
-DUCKDB_PATH = os.environ.get("DUCKDB_PATH", "warehouse/datalake.duckdb")
+# Resolved to an absolute path once, here, and written back to the environment.
+#
+# dbt reads DUCKDB_PATH out of the environment itself, and dagster-dbt runs it with
+# the dbt project as its working directory -- so a relative path means Dagster opens
+# ./warehouse/datalake.duckdb and dbt opens ./dbt/warehouse/datalake.duckdb. Two
+# files, no error: dbt cheerfully creates its own empty one and then fails to find a
+# source table, which reads as a broken model rather than a path problem. Normalising
+# once removes the possibility rather than documenting it.
+DUCKDB_PATH = str(Path(os.environ.get("DUCKDB_PATH", "warehouse/datalake.duckdb")).resolve())
+os.environ["DUCKDB_PATH"] = DUCKDB_PATH
+
+# The asset key for a dbt source is ["raw", <table>], so these keys are what connect
+# the two graphs. Change one and the dbt models silently detach from what feeds them,
+# which is why the names live in one list rather than being spelled out twice.
+_SOURCES = (
+    ("npm_access", RAW_PREFIX, ACCESS_SCHEMA, npm_access_raw,
+     "One row per HTTP request seen by an Nginx Proxy Manager instance."),
+    ("npm_access_rejects", REJECT_PREFIX, _REJECT_SCHEMA, npm_access_raw,
+     ("Lines no log format matched, kept with their text. The reject rate is a "
+      "data-quality signal, so these are never dropped.")),
+    ("litellm_spend", SPEND_PREFIX, SPEND_SCHEMA, litellm_spend_raw,
+     "One row per LLM call. Prompt and completion payloads are never selected."),
+    ("jellyfin_titles", TITLE_PREFIX, _TITLE_SCHEMA, jellyfin_library_raw,
+     "One row per film per snapshot date. No paths, no playback history."),
+    ("jellyfin_title_genres", GENRE_PREFIX, _GENRE_SCHEMA, jellyfin_library_raw,
+     "Title-to-genre pairs, kept separate because a title has many genres."),
+    ("camera_events", EVENT_PREFIX, _EVENT_SCHEMA, camera_events_raw,
+     "Attention events. Not final when first written: vision analysis lands later."),
+    ("camera_clips", CLIP_PREFIX, _CLIP_SCHEMA, camera_events_raw,
+     "Clip metadata. No paths, playlists or thumbnails."),
+    ("camera_logs", LOG_PREFIX, _LOG_SCHEMA, camera_events_raw,
+     "Activity log entries. Free-text titles are never exported."),
+)
 
 
 # DuckDB types for the Arrow types these schemas use. Deliberately a small explicit
@@ -84,43 +134,43 @@ def connect() -> duckdb.DuckDBPyConnection:
     return con
 
 
-@asset(
-    deps=[npm_access_raw, litellm_spend_raw, jellyfin_library_raw, camera_events_raw],
-    group_name="warehouse",
-    compute_kind="duckdb",
-    description=(
-        "Every landed partition, read from the lake into DuckDB under `raw`. Rebuilt in "
-        "full from Parquet each run, so the warehouse can never drift from the lake."
-    ),
+@multi_asset(
+    specs=[
+        AssetSpec(
+            key=AssetKey(["raw", name]),
+            deps=[upstream],
+            group_name="warehouse",
+            description=description,
+            kinds={"duckdb"},
+        )
+        for name, _prefix, _schema, upstream, description in _SOURCES
+    ],
+    # Not subsettable: the whole point is one full rebuild from the lake, so there is
+    # no cheaper path through this that materialising a single table would take.
+    can_subset=False,
 )
-def npm_access_warehouse(context: AssetExecutionContext, lake: LakeStorage) -> Output[dict]:
-    tables = {
-        "raw.npm_access": (lake.duckdb_scan_target(RAW_PREFIX), ACCESS_SCHEMA),
-        "raw.npm_access_rejects": (lake.duckdb_scan_target(REJECT_PREFIX), _REJECT_SCHEMA),
-        "raw.litellm_spend": (lake.duckdb_scan_target(SPEND_PREFIX), SPEND_SCHEMA),
-        "raw.jellyfin_titles": (lake.duckdb_scan_target(TITLE_PREFIX), _TITLE_SCHEMA),
-        "raw.jellyfin_title_genres": (lake.duckdb_scan_target(GENRE_PREFIX), _GENRE_SCHEMA),
-        "raw.camera_events": (lake.duckdb_scan_target(EVENT_PREFIX), _EVENT_SCHEMA),
-        "raw.camera_clips": (lake.duckdb_scan_target(CLIP_PREFIX), _CLIP_SCHEMA),
-        "raw.camera_logs": (lake.duckdb_scan_target(LOG_PREFIX), _LOG_SCHEMA),
-    }
-    data_glob = tables["raw.npm_access"][0]
+def warehouse_tables(context: AssetExecutionContext, lake: LakeStorage):
+    """Every landed partition, read from the lake into DuckDB under `raw`.
 
+    Rebuilt in full from Parquet on every run, so the warehouse cannot drift from
+    object storage: it holds what the lake holds, or the run fails.
+    """
     with connect() as con:
         lake.configure_duckdb(con)
         con.execute("CREATE SCHEMA IF NOT EXISTS raw;")
 
-        # A full rebuild rather than an incremental merge. At this volume it costs
-        # seconds, and it removes a whole class of bug: the warehouse cannot hold a
-        # row the lake no longer has. union_by_name tolerates a partition written
-        # before a column existed, which is the schema-evolution path.
-        for table, (pattern, schema) in tables.items():
+        counts: dict[str, int] = {}
+        for name, prefix, schema, _upstream, _description in _SOURCES:
+            pattern = lake.duckdb_scan_target(prefix)
+            table = f"raw.{name}"
             # The table names are module constants, never input. The glob is built
             # from configuration -- bucket name, local root -- so it is escaped
             # rather than trusted: a stray quote in an env var would otherwise end
             # the string literal and change the statement.
             safe_pattern = pattern.replace("'", "''")
             try:
+                # union_by_name tolerates a partition written before a column
+                # existed, which is the schema-evolution path.
                 con.execute(
                     f"CREATE OR REPLACE TABLE {table} AS "  # noqa: S608 - literal identifier
                     f"SELECT * FROM read_parquet('{safe_pattern}', union_by_name=true)"
@@ -133,27 +183,48 @@ def npm_access_warehouse(context: AssetExecutionContext, lake: LakeStorage) -> O
                     pattern, table,
                 )
                 con.execute(empty_table_ddl(table, schema))
+            counts[name] = con.execute(f"SELECT count(*) FROM {table}").fetchone()[0]  # noqa: S608
 
-        counts = {
-            name: con.execute(f"SELECT count(*) FROM {name}").fetchone()[0]  # noqa: S608
-            for name in tables
-        }
         partitions = (
             con.execute("SELECT count(DISTINCT (dt, host_source)) FROM raw.npm_access").fetchone()[0]
-            if counts["raw.npm_access"]
+            if counts["npm_access"]
             else 0
         )
 
-    return Output(
-        {"counts": counts, "partitions": partitions},
-        metadata={
-            "npm_rows": counts["raw.npm_access"],
-            "npm_rejects": counts["raw.npm_access_rejects"],
-            "litellm_calls": counts["raw.litellm_spend"],
-            "jellyfin_titles": counts["raw.jellyfin_titles"],
-            "camera_events": counts["raw.camera_events"],
-            "npm_partitions_loaded": partitions,
-            "source": MetadataValue.path(data_glob),
+    for name, prefix, _schema, _upstream, _description in _SOURCES:
+        metadata = {
+            "rows": counts[name],
+            "source": MetadataValue.path(lake.duckdb_scan_target(prefix)),
             "warehouse": MetadataValue.path(DUCKDB_PATH),
+        }
+        if name == "npm_access":
+            metadata["partitions_loaded"] = partitions
+        yield MaterializeResult(asset_key=AssetKey(["raw", name]), metadata=metadata)
+
+
+@asset(
+    deps=[dbt_marts],
+    group_name="warehouse",
+    compute_kind="duckdb",
+    description=(
+        "Publishes the marts to a separate read-only file for the MCP layer. Depends "
+        "on the dbt models, so a failed build never reaches readers -- they keep "
+        "serving the previous copy rather than half a rebuild."
+    ),
+)
+def warehouse_serving(context: AssetExecutionContext) -> Output[dict]:
+    published = serving.publish(DUCKDB_PATH)
+    context.log.info(
+        "published %d tables, %d rows, %.1f MB to %s",
+        len(published.tables), published.rows, published.bytes_written / 1e6, published.path,
+    )
+    return Output(
+        {"tables": published.tables, "rows": published.rows},
+        metadata={
+            "tables": len(published.tables),
+            "rows": published.rows,
+            "size_mb": round(published.bytes_written / 1e6, 2),
+            "path": MetadataValue.path(published.path),
+            "published": MetadataValue.text(", ".join(published.tables)),
         },
     )

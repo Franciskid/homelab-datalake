@@ -38,3 +38,7 @@ dbt/dbt_packages/
 dbt/logs/
 package-lock.yml
 dbt/.user.yml
+
+# Generated workbooks. These contain real figures from the warehouse and are
+# deliverables for a person, not source.
+exports/

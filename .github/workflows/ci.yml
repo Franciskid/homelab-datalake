@@ -43,6 +43,12 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e ".[dev]" "dbt-core>=1.9,<2" "dbt-duckdb>=1.9,<2"
 
+      - name: Resolve dbt packages and compile the manifest
+        # Before any dagster command: dagster-dbt reads the manifest to build one
+        # asset per model, so without this the code location cannot even load. The
+        # image does the same thing at build time.
+        run: cd dbt && dbt deps && dbt parse
+
       - name: Lint
         run: ruff check src scripts tests
 
@@ -77,13 +83,29 @@ jobs:
           echo "after =$after"
           test "$before" = "$after" || { echo "re-running a partition changed its output"; exit 1; }
 
-      - name: Load the warehouse
-        run: dagster asset materialize --select npm_access_warehouse -m homelab_datalake.definitions
+      - name: Build the analytics layer
+        # The whole downstream chain as one job -- load the warehouse, build and test
+        # every dbt model, publish the serving copy -- which is exactly what runs
+        # nightly in production. Running the same job here rather than a hand-written
+        # sequence of steps means CI cannot drift from what is actually scheduled.
+        #
+        # dbt's tests are the point of this step: reject rate, partition alignment,
+        # and the assertion that no raw address reached the fact table.
+        run: dagster job execute -j analytics_daily -m homelab_datalake.definitions
 
-      - name: dbt build
-        # Models and tests together. The tests are the point: reject rate, partition
-        # alignment, and the assertion that no raw address reached the fact table.
+      - name: Assert the serving copy holds only the marts
+        # The serving file is what the MCP layer reads. It must contain the marts and
+        # nothing else -- a raw or staging table in there would be a privacy boundary
+        # that exists only in intention.
         run: |
-          cd dbt
-          dbt deps
-          dbt build
+          python - <<'CHECK'
+          import duckdb
+          con = duckdb.connect("warehouse/serving.duckdb", read_only=True)
+          schemas = {s for (s,) in con.execute(
+              "SELECT DISTINCT schema_name FROM duckdb_tables()").fetchall()}
+          tables = con.execute(
+              "SELECT count(*) FROM duckdb_tables()").fetchone()[0]
+          print("schemas:", sorted(schemas), "tables:", tables)
+          assert schemas == {"marts"}, f"serving copy exposes more than the marts: {schemas}"
+          assert tables > 0, "serving copy is empty"
+          CHECK
