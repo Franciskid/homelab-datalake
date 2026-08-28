@@ -108,6 +108,14 @@ models:
         tests:
           - not_null
           - dbt_utils.accepted_range: {min_value: 0, inclusive: true}
+      - name: is_self_hosted
+        description: >
+          Whether the call went to a locally hosted model. Two values, never null --
+          it was three until a null `provider` propagated through an OR, which is the
+          kind of thing a not_null test on a boolean exists to catch.
+        tests: [not_null]
+      - name: was_cache_hit
+        tests: [not_null]
 
   - name: agg_llm_spend_daily
     description: >

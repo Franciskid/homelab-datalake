@@ -67,6 +67,11 @@ select
         else 'other'
     end                                             as workload,
 
-    (provider = 'ollama' or model like 'ollama%')   as is_self_hosted
+    -- coalesce is load-bearing. `provider` is null on ~[count withheld] rows, and in SQL
+    -- `null = 'ollama'` is null, not false -- so `null or false` yields null and the
+    -- column comes back with three values instead of two. A boolean that is sometimes
+    -- null silently drops rows from every `where is_self_hosted = false`.
+    coalesce(provider = 'ollama', false)
+      or coalesce(model like 'ollama%', false)      as is_self_hosted
 
 from renamed
