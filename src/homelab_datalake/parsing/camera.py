@@ -32,6 +32,13 @@ from datetime import time as dtime
 
 ENDPOINTS = ("events", "clips", "logs")
 
+# Both hosts sit behind Cloudflare, which rejects urllib's default User-Agent
+# ("Python-urllib/3.12") with a 403 before the request ever reaches the origin. That
+# looks exactly like an authorisation failure and is not one, so the agent is set
+# explicitly and named after this pipeline -- which also makes the traffic identifiable
+# in the very access logs this warehouse ingests.
+USER_AGENT = "homelab-datalake/1.0 (+https://data.example.test)"
+
 # A token is good for minutes; refresh a little early rather than discovering expiry
 # halfway through a backfill.
 _TOKEN_SKEW_SECONDS = 30
@@ -74,7 +81,12 @@ class _TokenCache:
         if not token_url.startswith("https://"):
             raise ValueError(f"CAMERA_OIDC_TOKEN_URL must be https, got {token_url!r}")
         request = urllib.request.Request(  # noqa: S310 - scheme checked above
-            token_url, data=data, headers={"Content-Type": "application/x-www-form-urlencoded"}
+            token_url,
+            data=data,
+            headers={
+                "Content-Type": "application/x-www-form-urlencoded",
+                "User-Agent": USER_AGENT,
+            },
         )
         with urllib.request.urlopen(request, timeout=30) as response:  # noqa: S310
             payload = json.loads(response.read().decode("utf-8"))
@@ -108,7 +120,12 @@ def fetch_ndjson(base_url: str, endpoint: str, token: str, start: datetime, end:
         raise ValueError(f"CAMERA_EXPORT_URL must be https, got {base_url!r}")
 
     request = urllib.request.Request(  # noqa: S310 - scheme checked above
-        url, headers={"Authorization": f"Bearer {token}", "Accept": "application/x-ndjson"}
+        url,
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/x-ndjson",
+            "User-Agent": USER_AGENT,
+        },
     )
     try:
         with urllib.request.urlopen(request, timeout=120) as response:  # noqa: S310

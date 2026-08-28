@@ -156,7 +156,13 @@ def fetch_page(base_url: str, api_key: str, start_index: int, limit: int) -> dic
     import json
 
     request = urllib.request.Request(  # noqa: S310 - scheme checked immediately above
-        url, headers={"Authorization": f'MediaBrowser Token="{api_key}"'}
+        url,
+        headers={
+            "Authorization": f'MediaBrowser Token="{api_key}"',
+            # Named explicitly for the same reason as the camera reader: Cloudflare
+            # rejects urllib's default agent, and this URL could move behind the proxy.
+            "User-Agent": "homelab-datalake/1.0 (+https://data.example.test)",
+        },
     )
     with urllib.request.urlopen(request, timeout=60) as response:  # noqa: S310
         return json.loads(response.read().decode("utf-8"))
