@@ -572,7 +572,15 @@ on secondary. [rate withheld] edge addresses before, [rate withheld] after.
 (validated on [count withheld] real lines, zero rejects), enrich-then-hash boundary, `client_trust`,
 multi-partitioned assets, MinIO landing, DuckDB, dbt through marts, 50 pytest cases and 30
 dbt nodes green, seed generator, CI, compose stack, rsync script, README.
-Outstanding before publishing: the Dagster UI screenshot, and a first real run on the server.
+**Deployed 28 Aug 2026** to `primary`, serving https://data.example.test behind Keycloak
+(client `datalake-web`, realm role `datalake-user`, oauth2-proxy with PKCE). First real
+run: [count withheld] rows over two days, **zero rejects**, [volume withheld] of Parquet, dbt 30/30 green.
+Schedule enabled at 03:00 UTC.
+
+Outstanding: the Dagster UI screenshot, and the secondary log sync — `primary`
+cannot reach that host (no route, no key), so cross-site SSH needs setting up before
+`scripts/sync-secondary-logs.sh` can run. Until then the `secondary` partition fails loudly rather
+than writing empty days.
 
 **Stage 2a — LiteLLM spend.** Promoted ahead of Jellyfin: no export to build, no PII, and it
 sets up the MCP demo. A day's work on top of Stage 1's scaffolding.

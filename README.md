@@ -170,13 +170,29 @@ the pin.
 
 ## Operating it
 
-Runs on the server, next to the sources. See
+Runs on the server, next to the sources — the UI is at **https://data.example.test**. See
 [IMPLEMENTATION_PLAN.md §5](IMPLEMENTATION_PLAN.md) for per-service access.
 
 ```bash
 cp .env.example .env      # set CLIENT_IP_HASH_SALT and the MinIO key
 docker compose up -d --build
 ```
+
+**The UI is behind Keycloak, and that is load-bearing.** Dagster's webserver has no
+authentication of its own: anyone reaching it can materialise assets, launch backfills
+and read run logs. So it is published on no host port at all, and the only route in is
+nginx → oauth2-proxy → Dagster. oauth2-proxy completes an OIDC login against the homelab
+realm with PKCE and forwards only sessions belonging to a user holding the
+`datalake-user` role.
+
+Identity lives in one place rather than in an htpasswd file nobody remembers: access is
+granted and revoked in Keycloak, next to every other account. Grant someone access by
+assigning them `datalake-user`; revoke by removing it.
+
+The vhost is [`infra/npm/http.conf`](infra/npm/http.conf), installed to NPM's custom
+include — a path NPM never rewrites, unlike the `proxy_host/<id>.conf` files it
+regenerates from its own database. That keeps the vhost in version control instead of
+only in NPM's SQLite.
 
 - NPM's log volume is mounted **read-only**. A pipeline that can corrupt the reverse
   proxy's logs is a pipeline that can take every service on the box offline.
@@ -189,6 +205,9 @@ docker compose up -d --build
   behaviour, so make it deliberate and dated.
 - Geo enrichment is optional. Without a MaxMind database the geo columns are null and
   everything else works — which is what keeps CI free of a licence key.
+- **An empty log directory fails the run.** It means a broken mount or a stalled sync,
+  and a partition that is green and empty is indistinguishable from a quiet day. A run
+  that is green and wrong is worse than one that fails.
 
 ## What is and isn't here
 
