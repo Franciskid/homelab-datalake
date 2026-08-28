@@ -9,7 +9,7 @@ carries both.
 """
 
 import os
-from datetime import date, datetime
+from datetime import date
 
 import pyarrow as pa
 from dagster import (
@@ -96,7 +96,7 @@ _REJECT_SCHEMA = pa.schema(
 
 def partition_keys(context: AssetExecutionContext) -> tuple[date, str]:
     keys = context.partition_key.keys_by_dimension
-    return datetime.strptime(keys["date"], "%Y-%m-%d").date(), keys["host"]
+    return date.fromisoformat(keys["date"]), keys["host"]
 
 
 def _object_key(prefix: str, host: str, day: date) -> str:

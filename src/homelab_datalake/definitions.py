@@ -82,16 +82,25 @@ def notify_on_failure(context):
     if not webhook:
         context.log.error("%s (no FAILURE_WEBHOOK_URL configured, not notifying)", message)
         return
+    # Refuse anything but http(s). urlopen also speaks file:// and ftp://, so an
+    # operator typo -- or an env var set from somewhere less trusted -- could turn a
+    # notification into a local file read.
+    if not webhook.startswith(("http://", "https://")):
+        context.log.error("FAILURE_WEBHOOK_URL must be http(s); refusing to open %r", webhook)
+        return
+
     try:
+        import json
         import urllib.request
 
-        request = urllib.request.Request(
+        request = urllib.request.Request(  # noqa: S310 - scheme checked above
             webhook,
-            data=f'{{"text": {message!r}}}'.encode(),
+            data=json.dumps({"text": message}).encode(),
             headers={"Content-Type": "application/json"},
         )
-        urllib.request.urlopen(request, timeout=10).close()
+        urllib.request.urlopen(request, timeout=10).close()  # noqa: S310
     except Exception:
+        # original run failure by raising a second one on top of it.
         context.log.exception("failure notification could not be delivered")
 
 

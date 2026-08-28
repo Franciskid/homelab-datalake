@@ -16,9 +16,9 @@ import glob
 import gzip
 import logging
 import os
+from collections.abc import Iterator
 from dataclasses import dataclass, field
-from datetime import date, datetime, time, timedelta, timezone
-from typing import Iterator
+from datetime import UTC, date, datetime, time, timedelta
 
 from homelab_datalake.geo import GeoEnricher
 from homelab_datalake.parsing.npm_log import ParsedLine, ParseStats, parse_line
@@ -44,7 +44,7 @@ class ExtractResult:
 def _open_log(path: str):
     if path.endswith(".gz"):
         return gzip.open(path, "rt", errors="replace")
-    return open(path, "rt", errors="replace")
+    return open(path, errors="replace")
 
 
 def discover_logs(log_dir: str) -> list[str]:
@@ -67,7 +67,7 @@ def _can_contain(path: str, day_start: datetime) -> bool:
     skipped for being too new.
     """
     try:
-        mtime = datetime.fromtimestamp(os.path.getmtime(path), tz=timezone.utc)
+        mtime = datetime.fromtimestamp(os.path.getmtime(path), tz=UTC)
     except OSError:
         return True  # unreadable stat is not a reason to silently skip data
     return mtime >= day_start
@@ -75,7 +75,7 @@ def _can_contain(path: str, day_start: datetime) -> bool:
 
 def iter_partition_lines(log_dir: str, day: date) -> Iterator[tuple[str, str]]:
     """Yield `(path, line)` for files that could hold lines from `day`."""
-    day_start = datetime.combine(day, time.min, tzinfo=timezone.utc)
+    day_start = datetime.combine(day, time.min, tzinfo=UTC)
     for path in discover_logs(log_dir):
         if not _can_contain(path, day_start):
             continue
@@ -101,7 +101,7 @@ def extract_partition(
     No raw address is ever put in `rows`, so nothing downstream can persist one.
     """
     geo = geo or GeoEnricher.from_env()
-    day_start = datetime.combine(day, time.min, tzinfo=timezone.utc)
+    day_start = datetime.combine(day, time.min, tzinfo=UTC)
     day_end = day_start + timedelta(days=1)
 
     result = ExtractResult(rows=[], rejects=[], stats=ParseStats(), geo_enabled=geo.enabled)
@@ -136,7 +136,7 @@ def extract_partition(
         fmt = parsed.log_format
         result.stats.by_format[fmt] = result.stats.by_format.get(fmt, 0) + 1
 
-        ts_utc = parsed.timestamp.astimezone(timezone.utc)
+        ts_utc = parsed.timestamp.astimezone(UTC)
         if not (day_start <= ts_utc < day_end):
             result.out_of_partition += 1
             continue

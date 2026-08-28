@@ -778,10 +778,11 @@ when someone asks for the link.
 **Stage 0 — real-IP restoration. Done 27 Aug 2026 (§6).** One directive on fraserv; not needed
 on amblevilleserv. 84.1% edge addresses before, 0% after.
 
-**Stage 1 — NPM logs, both hosts, end to end.** Compose stack on `fraserv`, rsync from
-`amblevilleserv`, three-format parser with a reject table, enrich-then-hash at the boundary,
-`client_ip_trust`, MinIO landing, dbt staging and one mart, tests, seed generator, CI, README
-with the Dagster UI screenshot and the 86% figure. **Stop and publish.**
+**Stage 1 — NPM logs, both hosts, end to end. Built 28 Aug 2026.** Three-format parser
+(validated on 10,818 real lines, zero rejects), enrich-then-hash boundary, `client_trust`,
+multi-partitioned assets, MinIO landing, DuckDB, dbt through marts, 50 pytest cases and 30
+dbt nodes green, seed generator, CI, compose stack, rsync script, README.
+Outstanding before publishing: the Dagster UI screenshot, and a first real run on the server.
 
 **Stage 2a — LiteLLM spend.** Promoted ahead of Jellyfin: no export to build, no PII, and it
 sets up the MCP demo. A day's work on top of Stage 1's scaffolding.
