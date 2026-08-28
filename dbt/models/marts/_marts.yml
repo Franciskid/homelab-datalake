@@ -156,8 +156,20 @@ models:
         tests:
           - dbt_utils.accepted_range: {min_value: 0, max_value: 10, inclusive: true}
       - name: runtime_minutes
+        description: >
+          As reported by Jellyfin, never corrected. Some mpeg2video DVD rips carry
+          container metadata an order of magnitude too long; those are flagged by
+          is_runtime_plausible rather than adjusted, so no fabricated number enters
+          the warehouse.
         tests:
-          - dbt_utils.accepted_range: {min_value: 0, max_value: 900, inclusive: true}
+          - dbt_utils.accepted_range:
+              min_value: 1
+              max_value: 600
+              inclusive: true
+              config:
+                where: "is_runtime_plausible"
+      - name: is_runtime_plausible
+        tests: [not_null]
       - name: is_enrichable
         tests: [not_null]
 

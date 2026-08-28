@@ -31,5 +31,15 @@ select
     *,
     -- HDR is bit depth, not codec: hevc is routinely 8-bit, and h264 10-bit exists.
     (video_bit_depth >= 10)                     as is_high_bit_depth,
-    (runtime_minutes >= 150)                    as is_long_feature
+    (runtime_minutes >= 150)                    as is_long_feature,
+
+    -- Some mpeg2video DVD rips report a duration an order of magnitude too long --
+    -- two titles here claim [count withheld] and [count withheld] minutes for films of about 110 and 87.
+    -- The container metadata is wrong, not the pipeline.
+    --
+    -- The value is kept exactly as reported rather than corrected: inventing a
+    -- plausible runtime would put a fabricated number in the warehouse and make the
+    -- problem invisible. Flagging it instead means every aggregate can exclude these
+    -- deliberately, and the count of them is itself a metric worth watching.
+    coalesce(runtime_minutes between 1 and 600, false) as is_runtime_plausible
 from renamed
