@@ -15,6 +15,7 @@ env:
   # deliberately breaks visitor-count continuity, which is why it is not a constant.
   CLIENT_IP_HASH_SALT: ci-salt-not-a-secret
   DATALAKE_LOCAL_ROOT: .lake
+  NPM_HOSTS: primary,secondary
   NPM_LOG_DIR_PRIMARY: seed/logs/primary
   NPM_LOG_DIR_SECONDARY: seed/logs/secondary
   DUCKDB_PATH: warehouse/datalake.duckdb
