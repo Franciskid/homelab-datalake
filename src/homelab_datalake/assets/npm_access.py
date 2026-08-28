@@ -36,7 +36,11 @@ from homelab_datalake.resources import LakeStorage, NpmLogSources
 # which is worse. See IMPLEMENTATION_PLAN.md section 6.
 LOG_RETENTION_START = "2026-07-27"
 
-HOSTS = ["fraserv", "amb"]
+# Which NPM instances this deployment ingests, from NPM_HOSTS (comma-separated).
+# An instance only belongs here once its log directory is actually mounted; listing
+# one that is not produces a partition that fails every night and tells you nothing
+# you did not already know.
+HOSTS = [h.strip() for h in os.environ.get("NPM_HOSTS", "fraserv").split(",") if h.strip()]
 
 npm_partitions = MultiPartitionsDefinition(
     {
@@ -166,15 +170,13 @@ def npm_access_raw(
     if not os.path.isdir(log_dir):
         raise FileNotFoundError(
             f"log directory {log_dir!r} for host {host!r} is not readable. "
-            "On fraserv this is a bind mount of NPM's /data/logs; for amb it is "
-            "populated by scripts/sync-amb-logs.sh."
+            "A read-only bind mount of that instance's NPM /data/logs."
         )
 
     # An empty log directory is a configuration fault, not a quiet day, and the two
-    # must not look alike. amblevilleserv's logs arrive by rsync from another site;
-    # if that stops, this directory silently empties and every partition after it
-    # would succeed with zero rows. A run that is green and wrong is worse than a
-    # run that fails.
+    # must not look alike. If a mount breaks, this directory silently empties and every
+    # partition after it would succeed with zero rows. A run that is green and wrong is
+    # worse than a run that fails.
     available = discover_logs(log_dir)
     if not available:
         raise FileNotFoundError(
