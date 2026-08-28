@@ -237,13 +237,19 @@ models:
           - accepted_values: {values: ['motion', 'state', 'crossing']}
       - name: dismissal_reason
         description: >
-          Null when the event was not dismissed. The vocabulary comes from the camera
-          app; a value outside it means the app started emitting something this
-          pipeline does not understand, and the build should stop.
+          Null when the event was not dismissed. A value outside this list means the
+          camera app started emitting something the pipeline does not understand, and
+          the build should stop rather than let an unknown category into the marts.
+
+          The list is every value the app's source can produce, not the set that
+          appeared in a sample. The first version was built from two months of observed
+          data and duly failed on `unchanged_state`, which is rarer than that window --
+          an enumeration read off the data is a sample, and a sample is not a contract.
         tests:
           - accepted_values:
-              values: ['semantic_no_event', 'semantic_state_unchanged', 'human_correction',
-                       'recording_unavailable', 'analysis_failed', 'duplicate']
+              values: ['semantic_no_event', 'semantic_state_unchanged', 'semantic_fallback',
+                       'human_correction', 'recording_unavailable', 'recording_failed',
+                       'unchanged_state', 'analysis_failed', 'duplicate']
       - name: direction
         tests:
           - accepted_values: {values: ['entrée', 'sortie']}
