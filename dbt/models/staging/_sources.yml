@@ -3,7 +3,7 @@ version: 2
 sources:
   - name: raw
     description: >
-      Parquet landed by Dagster, loaded into DuckDB by the npm_access_warehouse asset.
+      Parquet landed by Dagster, loaded into DuckDB by the warehouse_tables asset.
       Rebuilt in full from the lake on every run, so it cannot drift from object storage.
     schema: raw
     tables:

@@ -38,7 +38,7 @@ mkdir -p "$DAGSTER_HOME"
 python scripts/generate_seed.py --days 3
 dagster asset materialize --select npm_access_raw --partition "2026-08-27|primary" \
   -m homelab_datalake.definitions
-dagster asset materialize --select npm_access_warehouse -m homelab_datalake.definitions
+dagster asset materialize --select warehouse_tables -m homelab_datalake.definitions
 cd dbt && dbt deps && dbt build
 ```
 

@@ -2,10 +2,15 @@
 
 Two things worth noticing here, because they are the design and not boilerplate.
 
-The schedule builds *yesterday* at 03:00, after logrotate has moved and after the
-nightly rsync from secondary has landed. Building today's partition on a
-schedule would produce a partial day that a later run would have to correct, which
-is exactly the ambiguity daily partitions exist to remove.
+The schedules build *yesterday* at 03:00, after logrotate has moved. Building
+today's partition on a schedule would produce a partial day that a later run would
+have to correct, which is exactly the ambiguity daily partitions exist to remove.
+
+The sources land between 03:00 and 03:45, and `analytics_daily` at 04:15 turns them
+into marts and publishes the serving copy. That last job is what makes the numbers
+the MCP layer serves the same age as the data underneath -- before it existed the
+sources refreshed nightly and the marts refreshed whenever somebody remembered to
+run dbt, which is a way of being wrong that never announces itself.
 
 The failure sensor reuses the notification channel homelab_camera already has,
 rather than inventing one. Alerting on failure is on PLAN.md's checklist; a second
@@ -28,12 +33,22 @@ from dagster import (
     run_failure_sensor,
     schedule,
 )
+from dagster_dbt import DbtCliResource
 
-from homelab_datalake.assets import camera, jellyfin, litellm_spend, npm_access, warehouse
+from homelab_datalake.assets import (
+    camera,
+    dbt_marts,
+    jellyfin,
+    litellm_spend,
+    npm_access,
+    warehouse,
+)
 from homelab_datalake.assets.npm_access import HOSTS, npm_partitions
 from homelab_datalake.resources import LakeStorage, NpmLogSources
 
-all_assets = load_assets_from_modules([npm_access, litellm_spend, jellyfin, camera, warehouse])
+all_assets = load_assets_from_modules(
+    [npm_access, litellm_spend, jellyfin, camera, dbt_marts, warehouse]
+)
 
 npm_daily_job = define_asset_job(
     name="npm_daily",
@@ -149,6 +164,35 @@ def npm_daily_schedule(context: ScheduleEvaluationContext):
         yield RunRequest(run_key=f"npm-{host}-{day.isoformat()}", partition_key=key)
 
 
+# Everything downstream of the raw partitions: load the lake into DuckDB, build and
+# test the dbt models, then publish the serving copy. One job rather than three, so
+# there is no window in which the marts are newer than the warehouse or the serving
+# copy is newer than the marts.
+analytics_job = define_asset_job(
+    name="analytics_daily",
+    selection=AssetSelection.groups("warehouse") | AssetSelection.assets(dbt_marts.dbt_marts),
+    description=(
+        "Rebuild the warehouse from the lake, build and test the dbt models, publish "
+        "the serving copy the MCP layer reads."
+    ),
+)
+
+
+@schedule(
+    job=analytics_job,
+    cron_schedule="15 4 * * *",
+    default_status=DefaultScheduleStatus.STOPPED,
+    description=(
+        "04:15 UTC, after the last source lands at 03:45. Half an hour of slack rather "
+        "than the couple of minutes the runs actually take: a retry on a slow source "
+        "should still finish before the marts are built, and a mart built from a "
+        "partition that had not landed yet is silently short by a day."
+    ),
+)
+def analytics_daily_schedule(context: ScheduleEvaluationContext):
+    yield RunRequest(run_key=f"analytics-{context.scheduled_execution_time:%Y-%m-%d}")
+
+
 @run_failure_sensor(
     description="Posts pipeline failures to the existing homelab notification channel.",
     default_status=DefaultSensorStatus.STOPPED,
@@ -188,12 +232,15 @@ def notify_on_failure(context):
 
 defs = Definitions(
     assets=all_assets,
-    jobs=[npm_daily_job, npm_backfill_job, litellm_daily_job, jellyfin_daily_job, camera_daily_job],
+    jobs=[npm_daily_job, npm_backfill_job, litellm_daily_job, jellyfin_daily_job,
+          camera_daily_job, analytics_job],
     schedules=[npm_daily_schedule, litellm_daily_schedule, jellyfin_daily_schedule,
-               camera_daily_schedule, camera_late_arrival_schedule],
+               camera_daily_schedule, camera_late_arrival_schedule,
+               analytics_daily_schedule],
     sensors=[notify_on_failure],
     resources={
         "lake": LakeStorage.from_env(),
         "npm_logs": NpmLogSources.from_env(),
+        "dbt": DbtCliResource(project_dir=dbt_marts.dbt_project),
     },
 )
