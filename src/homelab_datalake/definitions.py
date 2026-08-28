@@ -12,6 +12,7 @@ rather than inventing one. Alerting on failure is on PLAN.md's checklist; a seco
 alerting stack to maintain is not.
 """
 
+import datetime
 import os
 
 from dagster import (
@@ -28,17 +29,17 @@ from dagster import (
     schedule,
 )
 
-from homelab_datalake.assets import npm_access, warehouse
+from homelab_datalake.assets import litellm_spend, npm_access, warehouse
 from homelab_datalake.assets.npm_access import HOSTS, npm_partitions
 from homelab_datalake.resources import LakeStorage, NpmLogSources
 
-all_assets = load_assets_from_modules([npm_access, warehouse])
+all_assets = load_assets_from_modules([npm_access, litellm_spend, warehouse])
 
 npm_daily_job = define_asset_job(
     name="npm_daily",
     selection=AssetSelection.groups("npm"),
     partitions_def=npm_partitions,
-    description="Land one day of NPM logs for one host, then rebuild the warehouse.",
+    description="Land one day of NPM logs for one host.",
 )
 
 # The raw asset alone, for backfills that should not rebuild the warehouse per day.
@@ -53,6 +54,25 @@ npm_backfill_job = define_asset_job(
 )
 
 
+litellm_daily_job = define_asset_job(
+    name="litellm_daily",
+    selection=AssetSelection.groups("litellm"),
+    partitions_def=litellm_spend.spend_partitions,
+    description="Land one day of LiteLLM spend.",
+)
+
+
+@schedule(
+    job=litellm_daily_job,
+    cron_schedule="15 3 * * *",
+    default_status=DefaultScheduleStatus.STOPPED,
+    description="Yesterday's LLM spend, at 03:15 UTC -- after the log partitions.",
+)
+def litellm_daily_schedule(context: ScheduleEvaluationContext):
+    day = context.scheduled_execution_time.date() - datetime.timedelta(days=1)
+    yield RunRequest(run_key=f"litellm-{day.isoformat()}", partition_key=day.isoformat())
+
+
 @schedule(
     job=npm_backfill_job,
     cron_schedule="0 3 * * *",
@@ -61,7 +81,7 @@ npm_backfill_job = define_asset_job(
 )
 def npm_daily_schedule(context: ScheduleEvaluationContext):
     """One run per host, so a failure on one machine does not block the other."""
-    day = (context.scheduled_execution_time.date() - __import__("datetime").timedelta(days=1))
+    day = context.scheduled_execution_time.date() - datetime.timedelta(days=1)
     for host in HOSTS:
         key = MultiPartitionKey({"date": day.isoformat(), "host": host})
         yield RunRequest(run_key=f"npm-{host}-{day.isoformat()}", partition_key=key)
@@ -106,8 +126,8 @@ def notify_on_failure(context):
 
 defs = Definitions(
     assets=all_assets,
-    jobs=[npm_daily_job, npm_backfill_job],
-    schedules=[npm_daily_schedule],
+    jobs=[npm_daily_job, npm_backfill_job, litellm_daily_job],
+    schedules=[npm_daily_schedule, litellm_daily_schedule],
     sensors=[notify_on_failure],
     resources={
         "lake": LakeStorage.from_env(),
