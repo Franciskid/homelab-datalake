@@ -596,14 +596,48 @@ database.
 
 **Stage 2b — Jellyfin. Built and deployed 28 Aug 2026.** [count withheld] titles, [rate withheld] with a TMDB
 id, star schema with a genre bridge and SCD2, dbt 86/86 green. Schedule enabled at 03:30
-UTC. TMDB enrichment itself is still to do -- the keys are in place, the lookup is not.
+UTC. TMDB enrichment needs an API key from themoviedb.org -- free, but it needs an
+account -- so it is built the way geo enrichment is: optional, with null columns when no
+key is set, so CI never needs a credential.
 
 **Stage 2c — camera.** Three systems, so in order, each verifiable alone: Keycloak client →
 bearer middleware in `homelab_camera` → `/api/export/*` → Dagster asset → dbt vocabulary tests.
 Needs the container healthy again first.
 
-**Stage 3 — MCP server.** Unchanged from `PLAN.md` §7. Typed tools over the marts, read-only
-DuckDB, row caps and timeouts, `.xlsx` output. Lead with the spend question.
+**Stage 3 — MCP server. Built and deployed 29 Aug 2026.** Live at
+`https://data.example.test/mcp`, behind a Keycloak bearer token.
+
+Four dataset tools plus discovery and export, over a semantic layer of dimensions and
+measures. No tool takes SQL: a question is a typed structure whose every name is looked
+up in a registry and whose every value is a bound parameter, so there is no path from
+model output to query text. Bounded by a row cap applied as `LIMIT`, a date-range cap,
+and a wall-clock deadline enforced by a watchdog calling `interrupt()` -- DuckDB has no
+statement timeout, so without that the deadline would be a comment.
+
+Two things this stage forced that were not in the plan:
+
+**The marts were not on a schedule.** The sources refreshed nightly; the marts refreshed
+whenever somebody ran `dbt build` by hand. A serving layer over stale marts is worse than
+none, so dbt became `@dbt_assets` -- one Dagster asset per model rather than one opaque
+asset shelling out, because a single green dot for twenty models is what cron already
+gives you. The lineage now runs unbroken from a Parquet partition to a mart, and
+`analytics_daily` at 04:15 rebuilds the whole chain.
+
+**DuckDB allows one writing process, and a read-only open fails under that lock** rather
+than blocking -- so a reader pointed at the warehouse would have raised for the length of
+every nightly build. Hence a serving copy, holding only the marts, swapped in atomically
+after a successful build. It is opened by `ATTACH` and not `duckdb.connect(path)`,
+because DuckDB caches database instances by path within a process: after the swap a
+"fresh" connect keeps returning the previous build's numbers while any other handle is
+open, and nothing raises. Measured at [measurement withheld] stale rows against the corrected result.
+
+Verified in production: 107/107 dbt tests, 10 marts and [count withheld] rows published, and from
+the public internet no token / garbage token / forged-but-well-formed token all rejected
+with 401.
+
+**Outstanding on this stage:** the Keycloak client `datalake-mcp` and its `datalake:query`
+client role have to be created by hand -- creating a client needs realm admin
+credentials. Until then the endpoint is live and correctly refuses everything.
 
 ---
 
