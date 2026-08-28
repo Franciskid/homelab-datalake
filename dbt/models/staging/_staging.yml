@@ -1,0 +1,40 @@
+version: 2
+
+models:
+  - name: stg_tmdb_titles
+    description: >
+      TMDB reference data, one row per id. Optional: empty when no API key is
+      configured, which leaves every enrichment column in the library marts null.
+    columns:
+      - name: tmdb_id
+        description: >
+          The join key into the library. Uniqueness is not cosmetic here -- it is what
+          keeps the left join in fct_library_title from fanning out. A duplicate id
+          would silently multiply every title count, runtime sum and rating average in
+          the library marts, and nothing else in the build would notice.
+        tests:
+          - not_null
+          - unique
+      - name: vote_average
+        description: >
+          Nulled when nobody voted. TMDB reports 0.0 for an unrated film, which is not
+          a rating of zero and would drag any average towards it.
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+              max_value: 10
+              # Only where a rating exists; the null case is the point of the column.
+              config: {where: "vote_average is not null"}
+      - name: budget_usd
+        description: >
+          Null rather than 0 when TMDB has no figure. A film that cost nothing and a
+          film nobody recorded a budget for are different rows.
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 1
+              config: {where: "budget_usd is not null"}
+      - name: revenue_usd
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 1
+              config: {where: "revenue_usd is not null"}
