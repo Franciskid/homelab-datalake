@@ -200,8 +200,12 @@ docker compose up -d --build
 | Real logs, camera events, library data | | ✅ |
 | Credentials, endpoints, network topology | | ✅ |
 
-Every address in this repository is from a documentation range (RFC 5737, RFC 3849) or is
-a published Cloudflare prefix. The seed is generated, not sampled.
+Every address in this repository is from a documentation range (RFC 5737, RFC 3849), is
+private or reserved space, or is a published Cloudflare prefix. The seed is generated, not
+sampled. That rule is [enforced by a
+test](tests/test_no_real_addresses_in_fixtures.py) over every tracked file, because
+reviewing by eye did not work: two fixtures were copied straight out of the production
+logs while writing the suite that asserts addresses never leak.
 
 ## Layout
 
