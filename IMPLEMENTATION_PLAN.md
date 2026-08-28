@@ -782,7 +782,15 @@ on amblevilleserv. 84.1% edge addresses before, 0% after.
 (validated on 10,818 real lines, zero rejects), enrich-then-hash boundary, `client_trust`,
 multi-partitioned assets, MinIO landing, DuckDB, dbt through marts, 50 pytest cases and 30
 dbt nodes green, seed generator, CI, compose stack, rsync script, README.
-Outstanding before publishing: the Dagster UI screenshot, and a first real run on the server.
+**Deployed 28 Aug 2026** to `fraserv`, serving https://data.fraserv.fr behind Keycloak
+(client `datalake-web`, realm role `datalake-user`, oauth2-proxy with PKCE). First real
+run: 30,048 rows over two days, **zero rejects**, 325 KiB of Parquet, dbt 30/30 green.
+Schedule enabled at 03:00 UTC.
+
+Outstanding: the Dagster UI screenshot, and the amblevilleserv log sync — `fraserv`
+cannot reach that host (no route, no key), so cross-site SSH needs setting up before
+`scripts/sync-amb-logs.sh` can run. Until then the `amb` partition fails loudly rather
+than writing empty days.
 
 **Stage 2a — LiteLLM spend.** Promoted ahead of Jellyfin: no export to build, no PII, and it
 sets up the MCP demo. A day's work on top of Stage 1's scaffolding.
