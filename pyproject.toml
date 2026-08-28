@@ -1,0 +1,41 @@
+[project]
+name = "homelab-datalake"
+version = "0.1.0"
+description = "A lakehouse over homelab sources: reverse-proxy logs, camera events, media library."
+requires-python = ">=3.11"
+dependencies = [
+    "dagster>=1.9",
+    "dagster-webserver>=1.9",
+    "dagster-duckdb>=0.25",
+    "dagster-dbt>=0.25",
+    "dbt-core>=1.9",
+    "dbt-duckdb>=1.9",
+    "duckdb>=1.1",
+    "pyarrow>=18",
+    "boto3>=1.35",
+]
+
+[project.optional-dependencies]
+# Geo enrichment is optional on purpose: the pipeline runs without a MaxMind
+# database and simply leaves the geo columns null. CI must never need a licence key.
+geo = ["geoip2>=4.8"]
+dev = ["pytest>=8", "ruff>=0.8"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.dagster]
+module_name = "homelab_datalake.definitions"
+code_location_name = "homelab_datalake"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"

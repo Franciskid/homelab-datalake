@@ -1,0 +1,19 @@
+# The path comes from DUCKDB_PATH so Dagster, dbt and CI all point at one file
+# rather than three places to keep in sync.
+#
+# TimeZone is pinned to UTC and that is load-bearing, not tidiness. Casting a
+# TIMESTAMP WITH TIME ZONE to a date renders it in the *session* timezone, so on a
+# Europe/Paris machine a request logged at 23:30 UTC lands on the next day. The
+# pipeline would then assign rows to different partitions depending on which
+# machine ran it -- a backfill on a laptop and one on the server would disagree,
+# which breaks the "re-running a partition replaces it exactly" property outright.
+# assert_partition_date_matches_timestamp fails if this setting is ever removed.
+homelab_datalake:
+  target: dev
+  outputs:
+    dev:
+      type: duckdb
+      path: "{{ env_var('DUCKDB_PATH', 'warehouse/datalake.duckdb') }}"
+      threads: 4
+      settings:
+        TimeZone: UTC
