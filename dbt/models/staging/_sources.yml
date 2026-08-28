@@ -13,3 +13,8 @@ sources:
         description: >
           Lines no log format matched, kept with their raw text. Never dropped: the
           reject rate is a data-quality signal, and a silent drop would hide a format change.
+      - name: litellm_spend
+        description: >
+          One row per LLM call from LiteLLM's spend ledger. Prompt and completion
+          payloads are never selected; caller address, API key and end user are hashed
+          at the ingestion boundary.

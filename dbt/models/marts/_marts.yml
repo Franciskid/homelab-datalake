@@ -72,3 +72,54 @@ models:
       - name: visitors
         tests:
           - dbt_utils.accepted_range: {min_value: 0, inclusive: true}
+
+  - name: fct_llm_call
+    description: >
+      One row per LLM call through the LiteLLM proxy: model, tokens, latency and cost.
+      Prompts and completions are never ingested. Caller address, API key and end user
+      are hashed at the ingestion boundary -- the API key because nothing in that
+      column distinguishes a hash from a live credential, so it is treated as one.
+    columns:
+      - name: call_key
+        description: LiteLLM's request_id. A genuine natural key, unlike the proxy logs'.
+        tests: [not_null, unique]
+      - name: partition_date
+        tests: [not_null]
+      - name: started_at
+        tests: [not_null]
+      - name: status
+        tests:
+          - not_null
+          - accepted_values: {values: ['success', 'failure', 'unknown']}
+      - name: workload
+        tests:
+          - not_null
+          - accepted_values: {values: ['completion', 'embedding', 'mcp', 'other']}
+      - name: client_trust
+        tests:
+          - not_null
+          - accepted_values: {values: ['resolved', 'cdn_edge', 'unknown']}
+      - name: spend_usd
+        description: LiteLLM's own figure, never recomputed -- see the staging model.
+        tests:
+          - not_null
+          - dbt_utils.accepted_range: {min_value: 0, inclusive: true}
+      - name: total_tokens
+        tests:
+          - not_null
+          - dbt_utils.accepted_range: {min_value: 0, inclusive: true}
+
+  - name: agg_llm_spend_daily
+    description: >
+      Daily spend by model and workload. Latency is reported as a median because one
+      long agent run drags a mean far enough to hide what a normal call costs in time.
+    columns:
+      - name: partition_date
+        tests: [not_null]
+      - name: calls
+        tests:
+          - not_null
+          - dbt_utils.accepted_range: {min_value: 1, inclusive: true}
+      - name: spend_usd
+        tests:
+          - dbt_utils.accepted_range: {min_value: 0, inclusive: true}

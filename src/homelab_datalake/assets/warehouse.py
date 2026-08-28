@@ -11,6 +11,7 @@ from pathlib import Path
 import duckdb
 from dagster import AssetExecutionContext, MetadataValue, Output, asset
 
+from homelab_datalake.assets.litellm_spend import SPEND_PREFIX, litellm_spend_raw
 from homelab_datalake.assets.npm_access import RAW_PREFIX, REJECT_PREFIX, npm_access_raw
 from homelab_datalake.resources import LakeStorage
 
@@ -33,18 +34,21 @@ def connect() -> duckdb.DuckDBPyConnection:
 
 
 @asset(
-    deps=[npm_access_raw],
-    group_name="npm",
+    deps=[npm_access_raw, litellm_spend_raw],
+    group_name="warehouse",
     compute_kind="duckdb",
     description=(
-        "Every landed NPM partition, read from the lake into DuckDB as `raw.npm_access` "
-        "and `raw.npm_access_rejects`. Rebuilt in full from Parquet each run, so the "
-        "warehouse can never drift from the lake."
+        "Every landed partition, read from the lake into DuckDB under `raw`. Rebuilt in "
+        "full from Parquet each run, so the warehouse can never drift from the lake."
     ),
 )
 def npm_access_warehouse(context: AssetExecutionContext, lake: LakeStorage) -> Output[dict]:
-    data_glob = lake.duckdb_scan_target(RAW_PREFIX)
-    reject_glob = lake.duckdb_scan_target(REJECT_PREFIX)
+    tables = {
+        "raw.npm_access": lake.duckdb_scan_target(RAW_PREFIX),
+        "raw.npm_access_rejects": lake.duckdb_scan_target(REJECT_PREFIX),
+        "raw.litellm_spend": lake.duckdb_scan_target(SPEND_PREFIX),
+    }
+    data_glob = tables["raw.npm_access"]
 
     with connect() as con:
         lake.configure_duckdb(con)
@@ -54,10 +58,7 @@ def npm_access_warehouse(context: AssetExecutionContext, lake: LakeStorage) -> O
         # seconds, and it removes a whole class of bug: the warehouse cannot hold a
         # row the lake no longer has. union_by_name tolerates a partition written
         # before a column existed, which is the schema-evolution path.
-        for table, pattern in (
-            ("raw.npm_access", data_glob),
-            ("raw.npm_access_rejects", reject_glob),
-        ):
+        for table, pattern in tables.items():
             # The table names are module constants, never input. The glob is built
             # from configuration -- bucket name, local root -- so it is escaped
             # rather than trusted: a stray quote in an env var would otherwise end
@@ -76,18 +77,23 @@ def npm_access_warehouse(context: AssetExecutionContext, lake: LakeStorage) -> O
                     f"CREATE OR REPLACE TABLE {table} AS SELECT * FROM (SELECT 1) WHERE false"  # noqa: S608
                 )
 
-        rows = con.execute("SELECT count(*) FROM raw.npm_access").fetchone()[0]
-        rejects = con.execute("SELECT count(*) FROM raw.npm_access_rejects").fetchone()[0]
-        partitions = con.execute(
-            "SELECT count(DISTINCT (dt, host_source)) FROM raw.npm_access"
-        ).fetchone()[0] if rows else 0
+        counts = {
+            name: con.execute(f"SELECT count(*) FROM {name}").fetchone()[0]  # noqa: S608
+            for name in tables
+        }
+        partitions = (
+            con.execute("SELECT count(DISTINCT (dt, host_source)) FROM raw.npm_access").fetchone()[0]
+            if counts["raw.npm_access"]
+            else 0
+        )
 
     return Output(
-        {"rows": rows, "rejects": rejects, "partitions": partitions},
+        {"counts": counts, "partitions": partitions},
         metadata={
-            "rows": rows,
-            "rejects": rejects,
-            "partitions_loaded": partitions,
+            "npm_rows": counts["raw.npm_access"],
+            "npm_rejects": counts["raw.npm_access_rejects"],
+            "litellm_calls": counts["raw.litellm_spend"],
+            "npm_partitions_loaded": partitions,
             "source": MetadataValue.path(data_glob),
             "warehouse": MetadataValue.path(DUCKDB_PATH),
         },

@@ -13,6 +13,7 @@ dependencies = [
     "duckdb>=1.1",
     "pyarrow>=18",
     "boto3>=1.35",
+    "psycopg[binary]>=3.2",
 ]
 
 [project.optional-dependencies]
@@ -50,3 +51,6 @@ ignore = ["E501"]  # line-length is enforced by the formatter, not as an error
 
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["S101"]  # asserts are the point of a test file
+# LiteLLM stores `timestamp without time zone`. These fixtures are naive on purpose --
+# reproducing what the database actually hands back is the point of the test.
+"tests/test_litellm_spend.py" = ["S101", "DTZ001"]
