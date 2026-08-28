@@ -153,3 +153,20 @@ def test_cloudflare_client_is_labelled_as_a_cdn_edge(tmp_path):
 def test_empty_directory_yields_nothing_without_failing(tmp_path):
     r = extract_partition(str(tmp_path), date(2026, 8, 27), "test", SALT, NO_GEO)
     assert r.rows == [] and r.rejects == [] and r.stats.total == 0
+
+
+def test_a_directory_with_no_access_logs_is_distinguishable_from_a_quiet_day(tmp_path):
+    """An empty directory means a broken mount or a stalled sync, not zero traffic.
+
+    The asset raises on this rather than writing an empty partition, because a
+    partition that is green and empty looks exactly like a genuinely quiet day, and
+    the pipeline would keep reporting success while receiving nothing at all.
+    """
+    (tmp_path / "proxy-host-1_error.log").write_text("not an access log\n")
+    assert discover_logs(str(tmp_path)) == []
+
+    # An access log with no lines for the day is the *other* case, and stays legal.
+    _write(tmp_path, "proxy-host-1_access.log", [_proxy_line("01/Jan/2026:10:00:00 +0000")])
+    assert discover_logs(str(tmp_path))
+    r = extract_partition(str(tmp_path), date(2026, 8, 27), "test", SALT, NO_GEO)
+    assert r.rows == [] and r.out_of_partition == 1
