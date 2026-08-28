@@ -63,6 +63,34 @@ services:
     expose:
       - "4180"
 
+  # The MCP server: typed analytical tools over the marts, for models to call.
+  #
+  # It reads the *serving copy*, not the warehouse, so a query never contends with
+  # the nightly build -- DuckDB allows one writing process, and a read-only open
+  # fails outright under that lock rather than waiting.
+  #
+  # No published port, like everything else here. Nginx reaches it by container name
+  # and it verifies a Keycloak-signed bearer token on every request, so being on this
+  # network is not itself authorisation.
+  datalake-mcp:
+    build: .
+    container_name: datalake-mcp
+    restart: unless-stopped
+    env_file: [.env]
+    command: ["python", "-m", "homelab_datalake.mcp.server"]
+    environment:
+      MCP_TRANSPORT: streamable-http
+      MCP_PORT: "3333"
+      MCP_PUBLIC_URL: https://data.example.test/mcp
+    expose:
+      - "3333"
+    volumes:
+      # Read-only: this container answers questions, it does not build anything. If
+      # it could write to the warehouse volume it could also take the write lock and
+      # stall the nightly job.
+      - warehouse:/warehouse:ro
+      - exports:/exports
+
   dagster-daemon:
     build: .
     container_name: datalake-daemon
@@ -79,6 +107,7 @@ volumes:
   dagster_home:
   warehouse:
   geoip:
+  exports:
 
 # An explicit subnet, because Docker's default address pools are fully allocated on
 # this host: all fifteen private network ranges blocks and all fifteen private networks/20 blocks

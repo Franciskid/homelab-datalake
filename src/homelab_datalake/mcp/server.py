@@ -18,9 +18,11 @@ from __future__ import annotations
 
 import os
 from typing import Annotated, Any
+from urllib.parse import urlparse
 
 from mcp.server.auth.settings import AuthSettings
 from mcp.server.mcpserver import MCPServer
+from mcp.server.transport_security import TransportSecuritySettings
 from pydantic import Field
 
 from homelab_datalake.mcp import query as q
@@ -364,10 +366,24 @@ def main() -> None:
                 "network without authentication -- set it to the Keycloak realm URL, "
                 "or use MCP_TRANSPORT=stdio for a local client."
             )
-        server.settings.host = os.environ.get("MCP_HOST", "0.0.0.0")  # noqa: S104 - in a
-        # container, bound to the compose network; nothing publishes this port and the
-        # reverse proxy is the only route in.
-        server.settings.port = int(os.environ.get("MCP_PORT", "3333"))
+        public = os.environ.get("MCP_PUBLIC_URL", "https://data.example.test/mcp")
+        hostname = urlparse(public).hostname or "data.example.test"
+        server.run(
+            transport=transport,
+            # Bound to the compose network inside a container: nothing publishes this
+            # port, and the reverse proxy is the only route in.
+            host=os.environ.get("MCP_HOST", "0.0.0.0"),  # noqa: S104 - see above
+            port=int(os.environ.get("MCP_PORT", "3333")),
+            # DNS-rebinding protection stays on, but it has to be told the public
+            # name: nginx forwards the original Host header, so without this every
+            # proxied request is rejected as an unexpected host.
+            transport_security=TransportSecuritySettings(
+                enable_dns_rebinding_protection=True,
+                allowed_hosts=[hostname, f"{hostname}:443", "datalake-mcp:3333"],
+                allowed_origins=[f"https://{hostname}"],
+            ),
+        )
+        return
     server.run(transport=transport)
 
 
