@@ -31,7 +31,12 @@ from homelab_datalake.resources import LakeStorage
 # quietly invent a past. The start date is when collection began.
 LIBRARY_START = "2026-08-28"
 
-library_partitions = DailyPartitionsDefinition(start_date=LIBRARY_START)
+# end_offset=1 makes *today* a valid partition, which the log assets deliberately do
+# not do. The difference is what the partition means: a log partition covers a day that
+# has to be over before it is complete, while a snapshot describes the library at the
+# moment it is taken. Dating today's snapshot yesterday would be recording a state that
+# never existed on that date.
+library_partitions = DailyPartitionsDefinition(start_date=LIBRARY_START, end_offset=1)
 
 TITLE_PREFIX = "raw/jellyfin_titles"
 GENRE_PREFIX = "raw/jellyfin_title_genres"
