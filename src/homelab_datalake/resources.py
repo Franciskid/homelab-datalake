@@ -151,9 +151,10 @@ class LakeStorage(ConfigurableResource):
 class NpmLogSources(ConfigurableResource):
     """Where each host's NPM logs are readable from, inside the Dagster container.
 
-    primary's are a read-only bind mount of the live NPM volume. secondary's
-    are a nightly rsync (scripts/sync-secondary-logs.sh) because that host is a different
-    machine -- see IMPLEMENTATION_PLAN.md section 2.
+    primary's are a read-only bind mount of the live NPM volume. Only the instances
+    actually mounted are ingested -- NPM_HOSTS decides, and it defaults to primary
+    alone. The two sites are never joined at the host level; anything read across
+    them goes over its public URL with a token, as the camera source does.
     """
 
     # ConfigurableResource is a Pydantic model, which deep-copies field

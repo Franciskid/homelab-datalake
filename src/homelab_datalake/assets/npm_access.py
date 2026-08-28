@@ -181,8 +181,9 @@ def npm_access_raw(
     if not available:
         raise FileNotFoundError(
             f"no access logs found in {log_dir!r} for host {host!r}. This is a broken "
-            "mount or a stalled sync, not an empty day -- refusing to write an empty "
-            "partition that would look like one. For secondary, check scripts/sync-secondary-logs.sh."
+            "mount, not an empty day -- refusing to write an empty partition that would "
+            "look like one. Check the bind mount, and that NPM_HOSTS names only hosts "
+            "whose log directory is actually mounted."
         )
 
     geo = GeoEnricher.from_env()

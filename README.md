@@ -273,8 +273,10 @@ only in NPM's SQLite.
 
 - NPM's log volume is mounted **read-only**. A pipeline that can corrupt the reverse
   proxy's logs is a pipeline that can take every service on the box offline.
-- The other host's logs arrive by `scripts/sync-secondary-logs.sh`, nightly, before the 03:00
-  schedule.
+- **Only the instances actually mounted are ingested.** `NPM_HOSTS` decides, and it
+  defaults to `primary` alone. The two sites are deliberately not joined at the host
+  level — no cross-site SSH, no shared filesystem. Anything read across them goes over
+  its public URL with a Keycloak token, the way the camera source does.
 - **Backfill reaches about five weeks and no further.** NPM rotates weekly and keeps four
   generations. Once this runs, the lake is the only long-term history — which is a real
   reason for it to exist.

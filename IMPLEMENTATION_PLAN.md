@@ -577,10 +577,11 @@ dbt nodes green, seed generator, CI, compose stack, rsync script, README.
 run: [count withheld] rows over two days, **zero rejects**, [volume withheld] of Parquet, dbt 30/30 green.
 Schedule enabled at 03:00 UTC.
 
-Outstanding: the Dagster UI screenshot, and the secondary log sync — `primary`
-cannot reach that host (no route, no key), so cross-site SSH needs setting up before
-`scripts/sync-secondary-logs.sh` can run. Until then the `secondary` partition fails loudly rather
-than writing empty days.
+Only `primary` is ingested. The other host's logs are **out of scope by decision, not
+by accident**: joining the two sites at the host level would mean a permanent trust
+relationship between them, and the rule here is that they talk over public URLs with
+tokens or not at all. `NPM_HOSTS` names what is mounted, and an unmounted host fails
+loudly rather than writing empty days that would read as quiet ones.
 
 **Stage 2a — LiteLLM spend. Built and deployed 28 Aug 2026.** [count withheld] calls and [spend withheld]
 backfilled over 73 daily partitions, 25 models, dbt 54/54 green. Read-only Postgres role
