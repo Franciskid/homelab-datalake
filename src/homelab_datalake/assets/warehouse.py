@@ -58,16 +58,23 @@ def npm_access_warehouse(context: AssetExecutionContext, lake: LakeStorage) -> O
             ("raw.npm_access", data_glob),
             ("raw.npm_access_rejects", reject_glob),
         ):
+            # The table names are module constants, never input. The glob is built
+            # from configuration -- bucket name, local root -- so it is escaped
+            # rather than trusted: a stray quote in an env var would otherwise end
+            # the string literal and change the statement.
+            safe_pattern = pattern.replace("'", "''")
             try:
                 con.execute(
-                    f"CREATE OR REPLACE TABLE {table} AS "
-                    f"SELECT * FROM read_parquet('{pattern}', union_by_name=true)"
+                    f"CREATE OR REPLACE TABLE {table} AS "  # noqa: S608 - literal identifier
+                    f"SELECT * FROM read_parquet('{safe_pattern}', union_by_name=true)"
                 )
             except duckdb.IOException:
                 # No partitions landed yet. An empty table is the honest state --
                 # better than a missing one, which would fail dbt with a confusing error.
                 context.log.warning("no objects under %s; creating %s empty", pattern, table)
-                con.execute(f"CREATE OR REPLACE TABLE {table} AS SELECT * FROM (SELECT 1) WHERE false")
+                con.execute(
+                    f"CREATE OR REPLACE TABLE {table} AS SELECT * FROM (SELECT 1) WHERE false"  # noqa: S608
+                )
 
         rows = con.execute("SELECT count(*) FROM raw.npm_access").fetchone()[0]
         rejects = con.execute("SELECT count(*) FROM raw.npm_access_rejects").fetchone()[0]

@@ -6,7 +6,7 @@ was separately validated against [count withheld] real lines from both hosts wit
 rejects; these tests pin the behaviour that validation confirmed.
 """
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 
@@ -37,7 +37,7 @@ def test_proxy_format_fields():
     r = parse_line(PROXY)
     assert isinstance(r, ParsedLine)
     assert r.log_format == "proxy"
-    assert r.timestamp == datetime(2026, 8, 27, 20, 42, 55, tzinfo=timezone.utc)
+    assert r.timestamp == datetime(2026, 8, 27, 20, 42, 55, tzinfo=UTC)
     assert (r.client, r.host, r.method, r.scheme) == ("203.0.113.7", "tv.example.test", "GET", "https")
     assert (r.status, r.bytes_sent, r.sent_to) == (200, 97, "192.0.2.10")
     assert r.upstream_status == "200"

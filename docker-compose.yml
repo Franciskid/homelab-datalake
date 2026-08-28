@@ -1,0 +1,41 @@
+# Runs on primary, next to the sources. See IMPLEMENTATION_PLAN.md section 2.
+#
+# The webserver and the daemon are separate services on purpose: the daemon runs
+# schedules, sensors and backfills, and the UI must stay reachable to diagnose a
+# failure even when the daemon is the thing that has fallen over.
+
+services:
+  dagster-webserver:
+    build: .
+    container_name: datalake-webserver
+    restart: unless-stopped
+    env_file: [.env]
+    ports:
+      - "127.0.0.1:3300:3000"
+    volumes:
+      - dagster_home:/dagster_home
+      - warehouse:/warehouse
+      # NPM's live log volume, READ-ONLY. A pipeline able to corrupt the reverse
+      # proxy's logs is a pipeline able to take every service on the box offline.
+      - /srv/npm/data/logs:/logs/primary:ro
+      # secondary's logs, landed by scripts/sync-secondary-logs.sh on the host.
+      - /var/lib/homelab-datalake/logs/secondary:/logs/secondary:ro
+      - geoip:/geoip:ro
+
+  dagster-daemon:
+    build: .
+    container_name: datalake-daemon
+    restart: unless-stopped
+    env_file: [.env]
+    command: ["dagster-daemon", "run", "-m", "homelab_datalake.definitions"]
+    volumes:
+      - dagster_home:/dagster_home
+      - warehouse:/warehouse
+      - /srv/npm/data/logs:/logs/primary:ro
+      - /var/lib/homelab-datalake/logs/secondary:/logs/secondary:ro
+      - geoip:/geoip:ro
+
+volumes:
+  dagster_home:
+  warehouse:
+  geoip:

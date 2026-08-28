@@ -115,7 +115,7 @@ class LakeStorage(ConfigurableResource):
         con.execute(f"SET s3_use_ssl={'true' if self.endpoint.startswith('https') else 'false'};")
 
     @classmethod
-    def from_env(cls) -> "LakeStorage":
+    def from_env(cls) -> LakeStorage:
         return cls(
             endpoint=os.environ.get("DATALAKE_S3_ENDPOINT", ""),
             bucket=os.environ.get("DATALAKE_S3_BUCKET", "datalake"),
@@ -134,7 +134,9 @@ class NpmLogSources(ConfigurableResource):
     machine -- see IMPLEMENTATION_PLAN.md section 2.
     """
 
-    directories: dict[str, str] = {}
+    # ConfigurableResource is a Pydantic model, which deep-copies field
+    # defaults per instance, so this shared-mutable-default is not one.
+    directories: dict[str, str] = {}  # noqa: RUF012
 
     def directory_for(self, host: str) -> str:
         try:
@@ -146,7 +148,7 @@ class NpmLogSources(ConfigurableResource):
             ) from None
 
     @classmethod
-    def from_env(cls) -> "NpmLogSources":
+    def from_env(cls) -> NpmLogSources:
         return cls(
             directories={
                 "primary": os.environ.get("NPM_LOG_DIR_PRIMARY", "./seed/logs/primary"),

@@ -27,7 +27,7 @@ from __future__ import annotations
 
 import argparse
 import random
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta, timezone
 from pathlib import Path
 
 HOSTS = {
@@ -45,8 +45,8 @@ PATHS = [
 ]
 
 USER_AGENTS = [
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36",
+    ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+     "(KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36"),
     "Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) AppleWebKit/605.1.15",
     "curl/8.7.1",
     "python-requests/2.32.3",
@@ -67,7 +67,7 @@ STATUSES = [200] * 12 + [204, 301, 302, 304, 400, 401, 403, 404, 404, 499, 500, 
 
 
 def proxy_line(ts: datetime, host: str, path: str, client: str, status: int,
-               ua: str, length: int, upstream: str = None) -> str:
+               ua: str, length: int, upstream: str | None = None) -> str:
     stamp = ts.strftime("%d/%b/%Y:%H:%M:%S %z")
     upstream = upstream or str(status)
     return (
@@ -100,7 +100,7 @@ def generate_day(rng: random.Random, day: date, instance: str, count: int) -> di
     files["fallback_access.log"] = []
 
     for _ in range(count):
-        ts = datetime.combine(day, datetime.min.time(), tzinfo=timezone.utc) + timedelta(
+        ts = datetime.combine(day, datetime.min.time(), tzinfo=UTC) + timedelta(
             seconds=rng.randrange(86400)
         )
         idx = rng.randrange(len(vhosts))
@@ -116,7 +116,7 @@ def generate_day(rng: random.Random, day: date, instance: str, count: int) -> di
             proxy_line(ts, vhost, path, client, status, ua, length)
         )
 
-    base = datetime.combine(day, datetime.min.time(), tzinfo=timezone.utc)
+    base = datetime.combine(day, datetime.min.time(), tzinfo=UTC)
 
     # --- the awkward cases, one of each, always present -----------------------
     files["fallback_access.log"] += [
@@ -134,7 +134,7 @@ def generate_day(rng: random.Random, day: date, instance: str, count: int) -> di
         combined_line(base + timedelta(hours=6), "198.51.100.4",
                       "GET /wp-login.php HTTP/1.1", 404, "Mozilla/5.0 (Windows NT 10.0)", 183),
     ]
-    first = f"proxy-host-1_access.log"
+    first = "proxy-host-1_access.log"
     files[first] += [
         # A query string carrying a token. Must not survive into the warehouse.
         proxy_line(base + timedelta(hours=7), vhosts[0], "/reset?token=hunter2-secret",
@@ -167,7 +167,9 @@ def main() -> int:
     args = parser.parse_args()
 
     end = date.fromisoformat(args.end) if args.end else date(2026, 8, 27)
-    rng = random.Random(args.seed)
+    # Deterministic by design: the same --seed must produce byte-identical files
+    # so a CI failure reproduces locally. Nothing here is a secret.
+    rng = random.Random(args.seed)  # noqa: S311
     root = Path(args.out)
 
     written = 0

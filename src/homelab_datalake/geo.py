@@ -27,8 +27,16 @@ try:  # pragma: no cover - exercised by absence, not by tests
     import geoip2.errors
 
     _GEOIP2_AVAILABLE = True
+    # AddressNotFoundError covers "MaxMind has no record"; ValueError covers a
+    # malformed address reaching this far. Anything else is a real fault and should
+    # surface rather than be swallowed.
+    _LOOKUP_MISS: tuple[type[BaseException], ...] = (
+        geoip2.errors.AddressNotFoundError,
+        ValueError,
+    )
 except ImportError:  # pragma: no cover
     _GEOIP2_AVAILABLE = False
+    _LOOKUP_MISS = (ValueError,)
 
 
 @dataclass(frozen=True)
@@ -56,7 +64,7 @@ class GeoEnricher:
         self._asn_reader = self._open(asn_db, "ASN")
 
     @classmethod
-    def from_env(cls) -> "GeoEnricher":
+    def from_env(cls) -> GeoEnricher:
         return cls(os.environ.get("GEOIP_CITY_DB"), os.environ.get("GEOIP_ASN_DB"))
 
     @staticmethod
@@ -84,21 +92,24 @@ class GeoEnricher:
             return EMPTY
         country_code = country_name = city = as_org = None
         asn = None
+        # A miss is the normal case, not an error: private ranges, reserved blocks and
+        # addresses MaxMind has no record of all land here. Debug-level, because at
+        # [volume withheld] of logs a day a warning per miss would drown the run log.
         if self._city_reader is not None:
             try:
                 r = self._city_reader.city(address)
                 country_code = r.country.iso_code
                 country_name = r.country.name
                 city = r.city.name
-            except Exception:
-                pass  # a private or unlisted address is a miss, not an error
+            except _LOOKUP_MISS:
+                logger.debug("no city record for a client address")
         if self._asn_reader is not None:
             try:
                 r = self._asn_reader.asn(address)
                 asn = r.autonomous_system_number
                 as_org = r.autonomous_system_organization
-            except Exception:
-                pass
+            except _LOOKUP_MISS:
+                logger.debug("no ASN record for a client address")
         return GeoInfo(country_code, country_name, city, asn, as_org)
 
     def close(self) -> None:
@@ -106,5 +117,5 @@ class GeoEnricher:
             if reader is not None:
                 try:
                     reader.close()
-                except Exception:
-                    pass
+                except OSError:
+                    logger.debug("MaxMind reader did not close cleanly")

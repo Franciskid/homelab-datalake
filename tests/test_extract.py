@@ -7,7 +7,7 @@ whole design exists to survive.
 
 import gzip
 import os
-from datetime import date, datetime, timezone
+from datetime import UTC, date
 
 from homelab_datalake.geo import GeoEnricher
 from homelab_datalake.parsing.extract import discover_logs, extract_partition
@@ -73,7 +73,7 @@ def test_non_utc_offsets_are_normalised_before_the_day_filter(tmp_path):
     ])
     r = extract_partition(str(tmp_path), date(2026, 8, 27), "test", SALT, NO_GEO)
     assert {row["path"] for row in r.rows} == {"/same-day-utc", "/previous-day-utc"}
-    assert all(row["timestamp"].tzinfo == timezone.utc for row in r.rows)
+    assert all(row["timestamp"].tzinfo == UTC for row in r.rows)
 
 
 def test_extraction_is_idempotent(tmp_path):

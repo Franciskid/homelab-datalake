@@ -1,0 +1,83 @@
+name: CI
+
+# Everything here runs against a generated synthetic seed, with no secrets and no
+# network access to the homelab. That is the point: a green run on a fork means the
+# pipeline genuinely works, not that the interesting parts were skipped.
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  # A throwaway salt. Production's lives in .env and is never committed -- rotating it
+  # deliberately breaks visitor-count continuity, which is why it is not a constant.
+  CLIENT_IP_HASH_SALT: ci-salt-not-a-secret
+  DATALAKE_LOCAL_ROOT: .lake
+  NPM_LOG_DIR_PRIMARY: seed/logs/primary
+  NPM_LOG_DIR_SECONDARY: seed/logs/secondary
+  DUCKDB_PATH: warehouse/datalake.duckdb
+  DAGSTER_HOME: /tmp/dagster_home
+  DBT_PROFILES_DIR: dbt
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]" "dbt-core>=1.9,<2" "dbt-duckdb>=1.9,<2"
+
+      - name: Lint
+        run: ruff check src scripts tests
+
+      - name: Unit tests
+        run: pytest -q
+
+      - name: Generate the synthetic seed
+        run: python scripts/generate_seed.py --days 3
+
+      - name: Land every partition
+        # One run per (date, host), exactly as the schedule does in production, so CI
+        # exercises the real partitioning rather than a single-shot shortcut.
+        run: |
+          mkdir -p "$DAGSTER_HOME"
+          for day in 2026-08-25 2026-08-26 2026-08-27; do
+            for host in primary secondary; do
+              dagster asset materialize --select npm_access_raw \
+                --partition "$day|$host" -m homelab_datalake.definitions
+            done
+          done
+
+      - name: Assert a re-run replaces a partition exactly
+        # The property PLAN.md is built around, checked rather than claimed: the same
+        # inputs must produce a byte-identical object.
+        run: |
+          target=".lake/raw/npm_access/host=primary/dt=2026-08-27/data.parquet"
+          before=$(sha256sum "$target" | cut -d' ' -f1)
+          dagster asset materialize --select npm_access_raw \
+            --partition "2026-08-27|primary" -m homelab_datalake.definitions
+          after=$(sha256sum "$target" | cut -d' ' -f1)
+          echo "before=$before"
+          echo "after =$after"
+          test "$before" = "$after" || { echo "re-running a partition changed its output"; exit 1; }
+
+      - name: Load the warehouse
+        run: dagster asset materialize --select npm_access_warehouse -m homelab_datalake.definitions
+
+      - name: dbt build
+        # Models and tests together. The tests are the point: reject rate, partition
+        # alignment, and the assertion that no raw address reached the fact table.
+        run: |
+          cd dbt
+          dbt deps
+          dbt build

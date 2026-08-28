@@ -17,9 +17,9 @@ from homelab_datalake.privacy import (
     TRUST_CDN_EDGE,
     TRUST_RESOLVED,
     TRUST_UNKNOWN,
+    classify_trust,
     hash_client,
     network_of,
-    classify_trust,
     redact_client,
     strip_query,
 )

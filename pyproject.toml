@@ -39,3 +39,14 @@ pythonpath = ["src"]
 [tool.ruff]
 line-length = 100
 target-version = "py311"
+
+# Pinned explicitly so a ruff upgrade cannot quietly change what CI enforces.
+# The security and datetime rules earn their place here specifically: this codebase
+# handles personal data (S) and assigns rows to days from timestamps (DTZ), and both
+# have already caught a real bug.
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "S", "DTZ", "RUF", "BLE", "ISC", "C4"]
+ignore = ["E501"]  # line-length is enforced by the formatter, not as an error
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["S101"]  # asserts are the point of a test file
