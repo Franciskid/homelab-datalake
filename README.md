@@ -118,9 +118,6 @@ and the only version that survives a rotation landing mid-run. Files last modifi
 the partition day are pruned — on the camera host that is the difference between reading
 [volume withheld] and reading the ~[volume withheld] that could possibly contain the day.
 
-Checked against real traffic too: [count withheld] rows extracted from a day of production logs
-containing 57 distinct client addresses, **zero of which survived into any column**.
-
 **Enrich, then discard.** [`privacy.py`](src/homelab_datalake/privacy.py) is the only
 place a raw client address exists, and only in memory. Country, city and ASN are derived
 while the address is still in hand; then it becomes a salted HMAC and a /24 or /48
@@ -128,6 +125,9 @@ network, and the original is dropped. Every chart survives; no identifier does. 
 no raw landing zone, because that zone is the leak. A
 [dbt test](dbt/tests/assert_no_raw_ip_addresses.sql) re-checks the fact table, so a future
 column cannot reintroduce one.
+
+Verified against real traffic, not only fixtures: a day of production logs containing 57
+distinct client addresses produced [count withheld] rows, **none of which contained any of them**.
 
 **Partitioned by date *and* host.** The two proxies are on different machines and fail
 independently. `(2026-08-27, secondary)` breaking must not mark `(2026-08-27, primary)` broken,
