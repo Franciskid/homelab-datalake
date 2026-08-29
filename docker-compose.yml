@@ -60,6 +60,21 @@ services:
       # It binds the authorisation code to the client that requested it, so a code
       # intercepted in the redirect cannot be exchanged by anyone else.
       OAUTH2_PROXY_CODE_CHALLENGE_METHOD: S256
+      # Keep the tokens out of the session cookie.
+      #
+      # By default oauth2-proxy stores the access, ID and refresh tokens in the
+      # cookie. Keycloak's tokens are verbose -- a service account with a single role
+      # is already [count withheld] bytes -- so a real user's session runs to roughly [volume withheld]
+      # against a [count withheld]-byte limit, and oauth2-proxy splits it across numbered
+      # cookies with a warning. That splitting is where the login loop came from.
+      #
+      # Nothing downstream needs those tokens: Dagster has no authentication of its
+      # own and is never handed one. The role check happens when the session is
+      # created and its result is what the session carries, so authorisation is
+      # unchanged. The cost is no silent token refresh -- the session simply expires
+      # and asks for a login again, which for a UI is the right trade against a
+      # cookie that does not survive being split.
+      OAUTH2_PROXY_SESSION_COOKIE_MINIMAL: "true"
     expose:
       - "4180"
 
