@@ -24,7 +24,16 @@
 
 set -euo pipefail
 
+# Two realms, doing two different jobs -- worth keeping apart in the names, because
+# mixing them up gives an "invalid user credentials" error that looks like a wrong
+# password:
+#
+#   ADMIN_REALM  where the administrator account lives, and where the login happens.
+#   REALM        where the client is created, alongside every other homelab client.
+ADMIN_REALM="${ADMIN_REALM:-master}"
+ADMIN_USER="${ADMIN_USER:-operator}"
 REALM="${REALM:-homelab}"
+
 CONTAINER="${KEYCLOAK_CONTAINER:-keycloak}"
 SERVER="${KEYCLOAK_URL:-http://localhost:8282}"
 CLIENT_ID="${CLIENT_ID:-datalake-mcp}"
@@ -32,13 +41,12 @@ ROLE="${ROLE:-datalake:query}"
 
 kc() { docker exec -i "$CONTAINER" /opt/keycloak/bin/kcadm.sh "$@"; }
 
-ADMIN_USER="${ADMIN_USER:-admin}"
-
-echo "Logging in to $SERVER as $ADMIN_USER (override with ADMIN_USER=...)."
+echo "Logging in to $SERVER as $ADMIN_USER in realm $ADMIN_REALM."
+echo "Creating the client in realm $REALM."
 # No --password: kcadm prompts for it itself, so the password is never an argument,
 # never in this script, and never in the shell history.
 docker exec -it "$CONTAINER" /opt/keycloak/bin/kcadm.sh config credentials \
-  --server "$SERVER" --realm master --user "$ADMIN_USER"
+  --server "$SERVER" --realm "$ADMIN_REALM" --user "$ADMIN_USER"
 
 echo
 echo "Creating client $CLIENT_ID in realm $REALM..."
