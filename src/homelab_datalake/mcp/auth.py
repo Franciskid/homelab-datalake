@@ -27,6 +27,8 @@ import os
 import jwt
 from mcp.server.auth.provider import AccessToken
 
+from homelab_datalake.useragent import DEFAULT_HEADERS
+
 logger = logging.getLogger(__name__)
 
 REQUIRED_ROLE = "datalake:query"
@@ -46,10 +48,18 @@ class KeycloakTokenVerifier:
         # PyJWKClient caches the key set and refetches on an unknown `kid`, so a key
         # rotation in Keycloak is picked up without a restart and without a fetch per
         # request.
+        #
+        # The User-Agent is load-bearing, not cosmetic. Keycloak sits behind
+        # Cloudflare, which answers urllib's default agent with a 403 before the
+        # request reaches the origin -- and PyJWKClient uses urllib. The result was
+        # that every properly signed token was rejected, because the signing keys
+        # could not be downloaded at all. It presents as an auth failure and is a
+        # network one, which is the third time that trap has been sprung here.
         self._keys = jwt.PyJWKClient(
             f"{self.issuer}/protocol/openid-connect/certs",
             cache_keys=True,
             lifespan=600,
+            headers=DEFAULT_HEADERS,
         )
 
     async def verify_token(self, token: str) -> AccessToken | None:
@@ -63,6 +73,17 @@ class KeycloakTokenVerifier:
                 options={"verify_aud": _VERIFY_AUDIENCE},
                 leeway=30,
             )
+        except jwt.PyJWKClientError as error:
+            # Not a bad token: the key set could not be fetched or did not contain the
+            # key. Logged loudly because it rejects *every* caller and is an outage,
+            # not a scan -- and it is indistinguishable from an auth failure to whoever
+            # is on the other end.
+            logger.error(
+                "cannot verify tokens: the JWKS at %s could not be read (%s). "
+                "Every request will be refused until this is fixed.",
+                f"{self.issuer}/protocol/openid-connect/certs", error,
+            )
+            return None
         except jwt.PyJWTError as error:
             # Logged at debug: a failed verification is an ordinary event on a public
             # endpoint, and logging it loudly would turn a scan into an alert storm.
