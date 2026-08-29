@@ -26,7 +26,7 @@ from mcp.server.transport_security import TransportSecuritySettings
 from pydantic import Field
 
 from homelab_datalake.mcp import query as q
-from homelab_datalake.mcp.auth import REQUIRED_ROLE, verifier_from_env
+from homelab_datalake.mcp.auth import verifier_from_env
 from homelab_datalake.mcp.deliverables import ExportError, write_workbook
 from homelab_datalake.mcp.semantic import DATASETS, GRAINS, TOTAL_GRAIN, get_dataset
 from homelab_datalake.mcp.warehouse import Warehouse
@@ -40,11 +40,29 @@ MAX_SAMPLE_VALUES = 25
 # afterwards: a server that exists for a moment without its verifier is a server that
 # can be started that way by mistake.
 _verifier = verifier_from_env()
+# No `required_scopes`, and that is deliberate.
+#
+# Authorisation here is a Keycloak *client role* (`datalake:query` under
+# resource_access), not an OAuth *scope*. Declaring it as a required scope made the
+# protected-resource metadata advertise `scopes_supported: ["datalake:query"]`, so a
+# spec-compliant client dutifully asked Keycloak for that scope -- and Keycloak
+# rejected the whole authorization request, because no scope by that name exists in
+# the realm:
+#
+#     error=invalid_scope  error_description=Invalid scopes: openid datalake:query
+#
+# Advertising a scope the authorization server has never heard of breaks every client
+# that reads the metadata, while leaving a hand-made token working perfectly. Roles
+# still travel in the token and the verifier still requires the role, so nothing is
+# loosened: the check simply happens where it actually lives.
+#
+# The alternative is to create a matching client scope in Keycloak and keep both
+# mechanisms. That is defensible, but it is a second thing to configure and a second
+# thing to get out of step, for an authorisation decision that is already made.
 _auth = (
     AuthSettings(
         issuer_url=_verifier.issuer,
         resource_server_url=os.environ.get("MCP_PUBLIC_URL", "https://data.example.test/mcp"),
-        required_scopes=[REQUIRED_ROLE],
     )
     if _verifier
     else None

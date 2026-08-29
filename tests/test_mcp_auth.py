@@ -149,3 +149,29 @@ def asyncio_run(coro):
     import asyncio
 
     return asyncio.run(coro)
+
+
+def test_no_scope_is_advertised_that_keycloak_does_not_know():
+    """The bug that bounced every spec-compliant client at the authorization step.
+
+    Authorisation here is a Keycloak client role, not an OAuth scope. Declaring it as
+    a required scope put `scopes_supported: ["datalake:query"]` in the
+    protected-resource metadata, so a client asked Keycloak for that scope and the
+    whole authorization request was rejected:
+
+        error=invalid_scope  Invalid scopes: openid datalake:query
+
+    A hand-made token kept working throughout, which is exactly why this survived
+    testing. If a scope is advertised again, it has to exist in the realm.
+    """
+    from homelab_datalake.mcp import server as server_module
+
+    settings = server_module._auth
+    if settings is None:
+        import pytest as _pytest
+
+        _pytest.skip("no issuer configured in this environment")
+    assert not settings.required_scopes, (
+        "required_scopes is advertised to clients as scopes_supported; only declare "
+        "scopes that exist in the Keycloak realm"
+    )
