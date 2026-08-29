@@ -303,13 +303,16 @@ MEDIA_LIBRARY = Dataset(
         # From TMDB, joined on the id Jellyfin stored. All null when no API key is
         # configured, which is why `is_enriched` is a dimension rather than a footnote:
         # a query can exclude unenriched titles instead of averaging over their nulls.
-        Dimension("original_language", "original_language",
-                  "Language the film was shot in, from TMDB."),
         Dimension("production_country", "production_country",
-                  "Primary production country, ISO 3166-1, from TMDB."),
+                  "Primary production country. From the library snapshot, so it is "
+                  "populated regardless of whether TMDB enrichment is configured."),
+        Dimension("original_language", "original_language",
+                  "Language the film was shot in. Needs TMDB enrichment -- the library "
+                  "has no field for it -- so it is null when no API key is set."),
         Dimension("is_enriched", "is_enriched",
-                  "True when TMDB data was found for this title. False for titles with "
-                  "no TMDB id, and for all titles when no API key is configured."),
+                  "True when the TMDB figures were fetched for this title. Affects only "
+                  "budget, revenue, popularity, vote count and original language; "
+                  "ratings, titles, countries and dates come from the library itself."),
     ),
     measures=(
         Measure("titles", "count(DISTINCT item_id)", "Distinct titles.", "titles"),
@@ -319,20 +322,22 @@ MEDIA_LIBRARY = Dataset(
         Measure("avg_runtime_minutes",
                 "round(avg(runtime_minutes) FILTER (WHERE is_runtime_plausible)::numeric, 1)",
                 "Mean runtime, excluding implausible values.", "min"),
+        # This *is* the TMDB rating. Jellyfin fetches it from TMDB during a scan and
+        # stores it as CommunityRating, at [rate withheld] coverage -- so there is no second
+        # rating measure behind an API key, because there is no second rating.
         Measure("avg_community_rating", "round(avg(community_rating)::numeric, 2)",
-                "Mean community rating over titles that have one.", ""),
+                "Mean rating over titles that have one. This is TMDB's vote average, "
+                "which the library already holds -- no enrichment needed.", ""),
         Measure("rated_titles", "count(*) FILTER (WHERE community_rating IS NOT NULL)",
                 "Titles carrying a community rating.", "titles"),
         Measure("enrichable_titles", "count(*) FILTER (WHERE is_enrichable)",
                 "Titles carrying a TMDB id.", "titles"),
         Measure("enriched_titles", "count(*) FILTER (WHERE is_enriched)",
-                "Titles TMDB data was actually found for. Read this beside any TMDB "
-                "measure: they are averages over enriched titles only.", "titles"),
-        Measure("avg_tmdb_rating", "round(avg(tmdb_vote_average)::numeric, 2)",
-                "Mean TMDB rating, over titles that have one. Null when nobody voted, "
-                "rather than 0.0, which TMDB reports for an unrated film.", ""),
-        Measure("total_votes", "sum(tmdb_vote_count)", "TMDB votes across the shelf.",
-                "votes"),
+                "Titles the TMDB figures were fetched for. Read this beside the budget, "
+                "revenue and vote measures: they cover enriched titles only.", "titles"),
+        Measure("total_votes", "sum(tmdb_vote_count)",
+                "TMDB votes across the shelf. Needs enrichment; the rating itself does "
+                "not.", "votes"),
         Measure("median_budget_usd", "round(median(budget_usd)::numeric, 0)",
                 "Median production budget over titles TMDB has a figure for. Median "
                 "rather than mean: one blockbuster moves an average of a few hundred "

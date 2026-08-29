@@ -1,11 +1,20 @@
-"""TMDB enrichment: the facts Jellyfin does not have.
+"""TMDB enrichment: only the four facts Jellyfin genuinely does not have.
 
-Jellyfin knows what is on the disk -- codec, resolution, runtime, the rating the
-community gave it. It does not know what the film cost, what it earned, what language
-it was shot in, or how many people rated it. Those are the columns that turn a
-catalogue into something you can ask questions of: does the 4K shelf skew towards
-recent blockbusters, is the collection mostly anglophone, does budget predict anything
-about what actually gets watched.
+This module started much larger and was cut down, because most of it was re-fetching
+data the library already held. Jellyfin queries TMDB itself when it matches a file, so
+`CommunityRating` **is** TMDB's vote average, and the original title, production
+country and release date all come back from Jellyfin at 99.8-[rate withheld] coverage. Asking
+TMDB for those again would mean an API key, a rate limit and a network round trip to
+re-derive what is already on disk -- and every one of those columns would sit null
+until somebody created an account, for no reason at all.
+
+What Jellyfin has no field for, and only these:
+
+    budget · revenue · popularity · vote_count · original_language
+
+Those are what turn a catalogue into something answerable -- does the 4K shelf skew to
+expensive films, is the collection mostly anglophone -- and they are the only reason
+this module still exists.
 
 **Optional, exactly like geo enrichment**, and for the same reason. TMDB requires a
 free account, so without a key every column comes back null and the pipeline runs
@@ -48,33 +57,20 @@ MAX_ATTEMPTS = 4
 
 @dataclass(frozen=True)
 class TmdbFacts:
-    """What is kept. Deliberately a short list.
+    """What is kept. Deliberately a short list, and shorter than it first was.
 
-    No overview, no tagline, no poster path, no cast. Prose and images are not what a
-    warehouse is for, they are the bulk of the payload, and an overview column would
-    be a free-text field flowing into a system whose whole design is that free text
-    does not.
+    No overview, no tagline, no poster path, no cast: prose and images are not what a
+    warehouse is for, and they are the bulk of the payload. No vote average, original
+    title, release date or production country either -- Jellyfin already has all four,
+    so keeping them here would mean two columns for one fact and a needless API key.
     """
 
     tmdb_id: int
     original_language: str | None
-    original_title: str | None
-    release_date: str | None
     budget_usd: int | None
     revenue_usd: int | None
     popularity: float | None
-    vote_average: float | None
     vote_count: int | None
-    is_adult: bool | None
-    status: str | None
-    production_country: str | None
-
-
-def _first_country(payload: dict) -> str | None:
-    countries = payload.get("production_countries") or []
-    if not countries:
-        return None
-    return countries[0].get("iso_3166_1")
 
 
 def _positive_or_none(value) -> int | None:
@@ -96,17 +92,12 @@ def parse_movie(payload: dict) -> TmdbFacts:
     return TmdbFacts(
         tmdb_id=int(payload["id"]),
         original_language=payload.get("original_language") or None,
-        original_title=payload.get("original_title") or None,
-        release_date=payload.get("release_date") or None,
         budget_usd=_positive_or_none(payload.get("budget")),
         revenue_usd=_positive_or_none(payload.get("revenue")),
         popularity=payload.get("popularity"),
-        vote_average=payload.get("vote_average"),
-        # A vote average over zero votes is 0.0, which is not a rating of zero.
+        # The count, not the average: the average is already in the library as
+        # `community_rating`, and the count is what says whether to trust it.
         vote_count=payload.get("vote_count"),
-        is_adult=payload.get("adult"),
-        status=payload.get("status") or None,
-        production_country=_first_country(payload),
     )
 
 

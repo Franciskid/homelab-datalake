@@ -6,6 +6,9 @@ select
     snapshot_date,
 
     title,
+    -- The title as released. Differs from `title` wherever Jellyfin shows a localised
+    -- name, which in this library is most of it.
+    original_title,
     production_year,
     decade,
     premiere_date,
@@ -27,6 +30,9 @@ select
     audio_codec,
     audio_channels,
     studio,
+    -- From Jellyfin's ProductionLocations, not from TMDB: it is already there, at
+    -- [rate withheld] coverage, having been fetched from TMDB during the scan.
+    production_country,
 
     titles.tmdb_id,
     imdb_id,
@@ -35,17 +41,16 @@ select
     -- that were never enriched.
     (titles.tmdb_id is not null) as is_enrichable,
 
-    -- TMDB, joined on the id Jellyfin already stored -- never on the title, so a film
-    -- cannot pick up another film's box office. All null when no API key is
-    -- configured, which is a supported state rather than a broken one.
+    -- The figures Jellyfin has no field for, joined on the id Jellyfin already
+    -- stored -- never on the title, so a film cannot pick up another film's box
+    -- office. Null when no API key is configured, which is a supported state: the
+    -- rating, original title, country and dates above all come from Jellyfin and are
+    -- populated either way.
     tmdb.original_language,
-    tmdb.production_country,
-    tmdb.tmdb_release_date,
     tmdb.budget_usd,
     tmdb.revenue_usd,
     tmdb.revenue_to_budget,
     tmdb.popularity                             as tmdb_popularity,
-    tmdb.vote_average                           as tmdb_vote_average,
     tmdb.vote_count                             as tmdb_vote_count,
     (tmdb.tmdb_id is not null)                  as is_enriched
 

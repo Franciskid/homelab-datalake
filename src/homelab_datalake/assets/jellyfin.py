@@ -51,6 +51,7 @@ _TITLE_SCHEMA = pa.schema(
         ("dt", pa.date32()),
         ("item_id", pa.string()),
         ("title", pa.string()),
+        ("original_title", pa.string()),
         ("production_year", pa.int32()),
         ("premiere_date", pa.date32()),
         ("added_at", pa.timestamp("us", tz="UTC")),
@@ -69,6 +70,7 @@ _TITLE_SCHEMA = pa.schema(
         ("tmdb_id", pa.string()),
         ("imdb_id", pa.string()),
         ("studio", pa.string()),
+        ("production_country", pa.string()),
         ("decade", pa.int32()),
     ]
 )

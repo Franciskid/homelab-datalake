@@ -5,9 +5,14 @@ second, and snapshots are what SCD2 wants anyway -- an incremental sync would be
 code, more state, and no faster.
 
 Reading the API rather than the CSV export matters for one concrete reason:
-`ProviderIds.Tmdb` comes back as a real identifier on **[rate withheld]** of titles. TMDB
+`ProviderIds.Tmdb` comes back as a real identifier on **[rate withheld]** of titles. Any later
 enrichment is then a key lookup instead of fuzzy title matching, which is what gets
 remakes and translated titles wrong.
+
+Most of what people reach for TMDB to get is already here, because Jellyfin fetched it
+from TMDB during the scan: the community rating *is* TMDB's vote average, and the
+original title and production country come back at [rate withheld] and [rate withheld]. Only figures
+Jellyfin has no field for -- budget, revenue, popularity, vote count -- need the API.
 
 Deliberately not requested: `/Sessions` and `/Users`. Playback history is personal and
 adds nothing the metadata does not. `Path` and `Overview` are requested by the field
@@ -20,12 +25,17 @@ import os
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
 
-# Requested from the API. `Path` is included because Jellyfin will not return
-# MediaSources without it on some versions, and it is discarded below rather than
-# stored -- see the note in `_title_row`.
+# Requested from the API.
+#
+# `OriginalTitle` and `ProductionLocations` are here because Jellyfin already holds
+# them -- it fetched them from TMDB itself when it matched the file. Measured across
+# the library: [rate withheld] and [rate withheld] coverage. The same goes for `CommunityRating`, which
+# *is* TMDB's vote average. Calling TMDB again for any of these would mean a network
+# round trip, an API key and a rate limit, to re-derive what is already on disk.
 FIELDS = (
     "Genres,ProviderIds,ProductionYear,PremiereDate,CommunityRating,CriticRating,"
-    "OfficialRating,RunTimeTicks,DateCreated,MediaStreams,Studios,Container"
+    "OfficialRating,RunTimeTicks,DateCreated,MediaStreams,Studios,Container,"
+    "OriginalTitle,ProductionLocations"
 )
 
 PAGE_SIZE = 500
@@ -110,6 +120,9 @@ def _title_row(item: dict, snapshot_day: date) -> dict:
         "dt": snapshot_day,
         "item_id": item.get("Id"),
         "title": item.get("Name"),
+        # The title as released, which differs from `title` whenever Jellyfin is
+        # showing a localised name -- this library is largely French-labelled.
+        "original_title": item.get("OriginalTitle"),
         "production_year": year,
         "premiere_date": (_parse_timestamp(item.get("PremiereDate")) or datetime.min.replace(tzinfo=UTC)).date()
         if item.get("PremiereDate") else None,
@@ -129,6 +142,10 @@ def _title_row(item: dict, snapshot_day: date) -> dict:
         "tmdb_id": providers.get("Tmdb"),
         "imdb_id": providers.get("Imdb"),
         "studio": (item.get("Studios") or [{}])[0].get("Name"),
+        # First location only. TMDB lists co-production countries in order and the
+        # first is the primary one; keeping the list would need a bridge table for a
+        # question nobody has asked.
+        "production_country": (item.get("ProductionLocations") or [None])[0],
         "decade": (year // 10) * 10 if year else None,
     }
 

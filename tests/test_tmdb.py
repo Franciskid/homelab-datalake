@@ -42,16 +42,32 @@ def test_the_kept_fields_are_parsed():
     assert facts.budget_usd == 160000000
     assert facts.revenue_usd == 825532764
     assert facts.vote_count == 34000
-    assert facts.production_country == "GB"  # the first, deterministically
+
+
+def test_nothing_jellyfin_already_has_is_fetched_again():
+    """The reason this module is five columns and not thirteen.
+
+    Jellyfin queries TMDB itself during a scan, so the vote average (it stores it as
+    CommunityRating), the original title, the release date and the production country
+    are already in the daily snapshot at 99.8-[rate withheld] coverage. Keeping them here would
+    mean two columns for one fact, and would leave them null until somebody created a
+    TMDB account -- for data that was on disk the whole time.
+    """
+    kept = set(vars(tmdb.parse_movie(MOVIE)))
+    assert kept == {
+        "tmdb_id", "original_language", "budget_usd", "revenue_usd",
+        "popularity", "vote_count",
+    }
+    for redundant in ("vote_average", "original_title", "release_date",
+                      "production_country"):
+        assert redundant not in kept, f"{redundant} is already in the library snapshot"
 
 
 def test_prose_and_images_are_not_kept():
     """A warehouse is not the place for free text, and it is most of the payload."""
     facts = tmdb.parse_movie(MOVIE)
-    stored = vars(facts).values()
-    assert not any(
-        isinstance(v, str) and ("thief" in v or v.endswith(".jpg")) for v in stored
-    )
+    stored = [v for v in vars(facts).values() if isinstance(v, str)]
+    assert not any("thief" in v or v.endswith(".jpg") for v in stored)
     assert not hasattr(facts, "overview")
 
 
@@ -66,12 +82,6 @@ def test_a_real_zero_stays_distinguishable():
     """Nothing legitimately has a budget of exactly zero, so 0 always means unknown."""
     assert tmdb._positive_or_none(0) is None
     assert tmdb._positive_or_none(1) == 1
-
-
-def test_a_film_with_no_country_does_not_raise():
-    assert tmdb.parse_movie({**MOVIE, "production_countries": []}).production_country is None
-    assert tmdb.parse_movie({k: v for k, v in MOVIE.items()
-                             if k != "production_countries"}).production_country is None
 
 
 # --- the client -----------------------------------------------------------------
