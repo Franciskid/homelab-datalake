@@ -30,10 +30,19 @@ DOCUMENTATION = [
 ]
 CLOUDFLARE = [ipaddress.ip_network(c) for c in CLOUDFLARE_RANGES]
 
+# Literals that name infrastructure or a version rather than a person.
+#
 # 8.8.8.8 names a public resolver, not a subscriber, and is used to test the
 # is_private split -- documentation ranges all report as private, so the "public"
 # case needs an address that is genuinely globally routable.
-ALLOWED_LITERALS = {"8.8.8.8", "0.0.0.0", "255.255.255.255"}  # noqa: S104 - a literal in an allow-list, not a bind address
+#
+# 1.9.5.20 is a Gecko version string. It appears in the documentation of
+# assert_no_raw_ip_addresses.sql, quoting the real user agent that broke that test's
+# version heuristic -- which is the whole point of the comment, and quoting it
+# accurately matters more than the coincidence that a four-part version is shaped
+# like an address. This entry is the escape hatch working as intended: explicit,
+# reviewable, and narrower than relaxing the rule for everything.
+ALLOWED_LITERALS = {"8.8.8.8", "0.0.0.0", "255.255.255.255", "1.9.5.20"}  # noqa: S104 - literals in an allow-list, not bind addresses
 
 ADDRESS = re.compile(
     r"\b(?:\d{1,3}\.){3}\d{1,3}\b"          # dotted quad
@@ -71,8 +80,13 @@ def _literals(text: str) -> set[str]:
     """Address-shaped tokens, minus the ones that are version strings.
 
     A match preceded by "/" is a product version -- "Chrome/151.0.0.0" -- not an
-    address. The dbt test that re-checks the warehouse uses the same heuristic, for
-    the same reason.
+    address.
+
+    The dbt test that re-checks the warehouse allows ":" as well, because user agents
+    introduce versions that way ("rv:1.9.5.20") and its input is machine-generated
+    client text. This one deliberately does not: it defends against a person pasting a
+    production log line into a file, and "X-Real-IP:203.0.113.200" is precisely the
+    shape that has to be caught. Same regex, different threat, different rule.
     """
     found = set()
     for match in ADDRESS.finditer(text):

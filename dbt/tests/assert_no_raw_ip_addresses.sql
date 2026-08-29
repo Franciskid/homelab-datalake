@@ -8,16 +8,34 @@
 -- `request_host` because the Host header legitimately contains addresses -- scanners
 -- send them, and that is a fact worth keeping rather than laundering.
 --
--- Version strings are the false positive to defeat: "Chrome/151.0.0.0" and
--- "WhatsApp/10.0.2.1" are address-shaped and are not addresses. The first version of
--- this test carried a hard-coded list of product names and duly failed on real
--- traffic the first time a product outside the list appeared. The rule that actually
--- holds is structural: an address-shaped token immediately preceded by "/" is a
--- version. RE2, which DuckDB uses, has no lookbehind, so the preceding character is
--- matched explicitly instead -- it must not be a slash, a digit or a dot, which also
--- prevents matching the tail of a longer version string.
+-- Version strings are the false positive to defeat, and this rule has now been wrong
+-- twice, in the same way both times.
+--
+-- First it carried a hard-coded list of product names, and failed on real traffic the
+-- moment a product outside the list appeared ("WhatsApp/10.0.2.1"). That was replaced
+-- with a structural rule: a token immediately preceded by "/" is a version. Which
+-- then failed on
+--
+--     Mozilla/5.0 (X11; Linux x86_64; rv:1.9.5.20) Gecko/ Firefox/9.0
+--
+-- because Gecko introduces its version with "rv:" and not with a slash. Both times
+-- the vocabulary came from the sample in front of me rather than from the format.
+--
+-- So: "/" or ":" immediately before the token means a version. A leaked address is
+-- not written that way -- a header value that reached the wrong column arrives as
+-- "X-Real-IP: 203.0.113.4", with a space, and is still caught. Nothing
+-- numeric distinguishes 1.9.5.20 from an address, so position is the only signal there is.
+--
+-- RE2, which DuckDB uses, has no lookbehind, so the preceding character is matched
+-- explicitly -- it must not be a slash, a colon, a digit or a dot, the last two
+-- preventing a match on the tail of a longer version string.
+--
+-- The pytest guard over the repository deliberately does NOT allow ":" here. It
+-- defends against a different thing: a human pasting a production log line into a
+-- file, where "X-Real-IP:203.0.113.200" is exactly the shape to catch. This test's
+-- input is machine-generated client text that is full of legitimate versions.
 
-{% set address = '(^|[^/0-9.])(\d{1,3}\.){3}\d{1,3}(\D|$)' %}
+{% set address = '(^|[^/:0-9.])(\d{1,3}\.){3}\d{1,3}(\D|$)' %}
 
 select
     'path' as column_name, path as offending_value, count(*) as occurrences
