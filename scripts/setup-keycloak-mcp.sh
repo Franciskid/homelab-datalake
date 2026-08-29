@@ -32,8 +32,9 @@ ROLE="${ROLE:-datalake:query}"
 
 kc() { docker exec -i "$CONTAINER" /opt/keycloak/bin/kcadm.sh "$@"; }
 
-echo "Logging in to $SERVER as a realm admin."
-read -rp "  admin username: " ADMIN_USER
+ADMIN_USER="${ADMIN_USER:-admin}"
+
+echo "Logging in to $SERVER as $ADMIN_USER (override with ADMIN_USER=...)."
 # No --password: kcadm prompts for it itself, so the password is never an argument,
 # never in this script, and never in the shell history.
 docker exec -it "$CONTAINER" /opt/keycloak/bin/kcadm.sh config credentials \
