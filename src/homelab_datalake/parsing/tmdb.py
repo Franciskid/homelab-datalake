@@ -38,10 +38,11 @@ import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 
+from homelab_datalake.useragent import USER_AGENT
+
 logger = logging.getLogger(__name__)
 
 API_ROOT = "https://api.themoviedb.org/3"
-USER_AGENT = "homelab-datalake/1.0 (+https://data.example.test)"
 
 # TMDB's documented limit is around [count withheld] requests/second. This is well under it: the
 # whole library is ~[count withheld] titles and runs once, then only for titles not yet enriched,

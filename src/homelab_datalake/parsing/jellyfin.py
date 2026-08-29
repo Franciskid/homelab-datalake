@@ -25,6 +25,8 @@ import os
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
 
+from homelab_datalake.useragent import USER_AGENT
+
 # Requested from the API.
 #
 # `OriginalTitle` and `ProductionLocations` are here because Jellyfin already holds
@@ -178,7 +180,7 @@ def fetch_page(base_url: str, api_key: str, start_index: int, limit: int) -> dic
             "Authorization": f'MediaBrowser Token="{api_key}"',
             # Named explicitly for the same reason as the camera reader: Cloudflare
             # rejects urllib's default agent, and this URL could move behind the proxy.
-            "User-Agent": "homelab-datalake/1.0 (+https://data.example.test)",
+            "User-Agent": USER_AGENT,
         },
     )
     with urllib.request.urlopen(request, timeout=60) as response:  # noqa: S310

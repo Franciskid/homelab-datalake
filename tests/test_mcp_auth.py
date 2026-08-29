@@ -108,3 +108,44 @@ def test_serving_over_the_network_without_an_issuer_refuses_to_start(monkeypatch
     monkeypatch.setenv("MCP_TRANSPORT", "streamable-http")
     with pytest.raises(SystemExit, match="MCP_OIDC_ISSUER"):
         server_module.main()
+
+
+def test_the_jwks_client_identifies_itself():
+    """The bug that made every valid token fail.
+
+    Keycloak sits behind Cloudflare, which answers urllib's default agent with a 403
+    before the request reaches the origin -- and PyJWKClient uses urllib. The signing
+    keys could not be downloaded, so every correctly signed token was rejected. It
+    looks exactly like an auth problem and is a network one.
+    """
+    from homelab_datalake.useragent import USER_AGENT
+
+    checker = KeycloakTokenVerifier(issuer=ISSUER, client_id=CLIENT)
+    sent = getattr(checker._keys, "headers", None) or {}
+    assert sent.get("User-Agent") == USER_AGENT
+    assert "urllib" not in sent.get("User-Agent", "").lower()
+
+
+def test_an_unreachable_key_set_is_not_mistaken_for_a_bad_token(monkeypatch, caplog):
+    """It rejects every caller, so it is an outage and must not be logged as a scan."""
+    import logging
+
+    import jwt as pyjwt
+
+    checker = KeycloakTokenVerifier(issuer=ISSUER, client_id=CLIENT)
+
+    def unreachable(_token):
+        raise pyjwt.PyJWKClientError("Fail to fetch data from the url")
+
+    monkeypatch.setattr(checker._keys, "get_signing_key_from_jwt", unreachable)
+    with caplog.at_level(logging.ERROR):
+        assert asyncio_run(checker.verify_token("anything")) is None
+    assert any("JWKS" in r.message or "jwks" in r.message.lower() for r in caplog.records), (
+        "an unreachable key set must be reported, not swallowed at debug level"
+    )
+
+
+def asyncio_run(coro):
+    import asyncio
+
+    return asyncio.run(coro)

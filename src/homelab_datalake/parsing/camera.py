@@ -30,14 +30,13 @@ from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from datetime import time as dtime
 
+# Both hosts sit behind Cloudflare, which rejects urllib's default agent with a 403
+# before the request reaches the origin -- see homelab_datalake.useragent for why this
+# now lives in one place.
+from homelab_datalake.useragent import USER_AGENT
+
 ENDPOINTS = ("events", "clips", "logs")
 
-# Both hosts sit behind Cloudflare, which rejects urllib's default User-Agent
-# ("Python-urllib/3.12") with a 403 before the request ever reaches the origin. That
-# looks exactly like an authorisation failure and is not one, so the agent is set
-# explicitly and named after this pipeline -- which also makes the traffic identifiable
-# in the very access logs this warehouse ingests.
-USER_AGENT = "homelab-datalake/1.0 (+https://data.example.test)"
 
 # A token is good for minutes; refresh a little early rather than discovering expiry
 # halfway through a backfill.
