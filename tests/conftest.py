@@ -85,26 +85,27 @@ CREATE OR REPLACE TABLE marts.fct_library_title AS
 SELECT
     'k' || i || '-' || d AS title_key, 'item' || i AS item_id,
     (DATE '2026-08-25' + d) AS snapshot_date,
-    'Film ' || i AS title, 1990 + (i % 30) AS production_year,
+    'Film ' || i AS title, 'Original ' || i AS original_title,
+    1990 + (i % 30) AS production_year,
     ((1990 + (i % 30)) / 10) * 10 AS decade,
     CASE WHEN i % 4 = 0 THEN '4K'
          WHEN i % 4 = 1 THEN '1080p' ELSE '720p' END AS resolution_class,
     'h264' AS video_codec, 'aac' AS audio_codec, 'mkv' AS container,
     'PG' AS official_rating, 'Studio ' || (i % 5) AS studio,
+    -- From Jellyfin, so populated whether or not TMDB enrichment is configured.
+    CASE WHEN i % 40 <> 0 THEN 'US' END AS production_country,
     CASE WHEN i % 50 = 0 THEN 1700 ELSE 90 + (i % 60) END AS runtime_minutes,
     (i % 50 <> 0) AS is_runtime_plausible, (i % 3 = 0) AS is_long_feature,
     (i % 2 = 0) AS is_high_bit_depth, (i % 20 <> 0) AS is_enrichable,
     CASE WHEN i % 6 <> 0 THEN 5.0 + (i % 50) / 10.0 END AS community_rating,
-    -- TMDB enrichment, null for some rows on purpose: unenriched titles are a
-    -- supported state, not a broken one, and the measures have to survive them.
+    -- TMDB enrichment: only the figures Jellyfin has no field for. Null for some
+    -- rows on purpose -- unenriched titles are a supported state, not a broken one,
+    -- and every measure has to survive them.
     CASE WHEN i % 7 <> 0 THEN 'en' END AS original_language,
-    CASE WHEN i % 7 <> 0 THEN 'US' END AS production_country,
-    CASE WHEN i % 7 <> 0 THEN DATE '2005-01-01' + i END AS tmdb_release_date,
     CASE WHEN i % 9 = 0 THEN 20000000 END AS budget_usd,
     CASE WHEN i % 9 = 0 THEN 55000000 END AS revenue_usd,
     CASE WHEN i % 9 = 0 THEN 2.75 END AS revenue_to_budget,
     CASE WHEN i % 7 <> 0 THEN (i % 90) / 3.0 END AS tmdb_popularity,
-    CASE WHEN i % 7 <> 0 THEN 4.0 + (i % 60) / 10.0 END AS tmdb_vote_average,
     CASE WHEN i % 7 <> 0 THEN 100 + i END AS tmdb_vote_count,
     (i % 7 <> 0) AS is_enriched
 FROM (SELECT i::INTEGER AS i FROM range(0, 120) t(i)),

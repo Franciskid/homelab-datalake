@@ -5,6 +5,7 @@ renamed as (
         dt                                      as snapshot_date,
         item_id,
         title,
+        nullif(original_title, '')              as original_title,
         production_year,
         premiere_date,
         added_at,
@@ -23,6 +24,7 @@ renamed as (
         nullif(tmdb_id, '')                     as tmdb_id,
         nullif(imdb_id, '')                     as imdb_id,
         nullif(studio, '')                      as studio,
+        nullif(production_country, '')          as production_country,
         decade
     from source
 )

@@ -3,8 +3,11 @@ version: 2
 models:
   - name: stg_tmdb_titles
     description: >
-      TMDB reference data, one row per id. Optional: empty when no API key is
-      configured, which leaves every enrichment column in the library marts null.
+      The few TMDB figures Jellyfin has no field for, one row per id. Optional: empty
+      when no API key is configured, which leaves budget, revenue, popularity, vote
+      count and original language null. Everything else in the library marts -- the
+      rating, the original title, the production country, the dates -- comes from the
+      Jellyfin snapshot and is unaffected.
     columns:
       - name: tmdb_id
         description: >
@@ -15,16 +18,15 @@ models:
         tests:
           - not_null
           - unique
-      - name: vote_average
+      - name: vote_count
         description: >
-          Nulled when nobody voted. TMDB reports 0.0 for an unrated film, which is not
-          a rating of zero and would drag any average towards it.
+          How many people rated it on TMDB. Kept while the average is not: the average
+          is already in the library as community_rating, and the count is what says
+          whether to trust it.
         tests:
           - dbt_utils.accepted_range:
               min_value: 0
-              max_value: 10
-              # Only where a rating exists; the null case is the point of the column.
-              config: {where: "vote_average is not null"}
+              config: {where: "vote_count is not null"}
       - name: budget_usd
         description: >
           Null rather than 0 when TMDB has no figure. A film that cost nothing and a
