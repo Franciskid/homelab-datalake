@@ -439,12 +439,16 @@ only in NPM's SQLite.
   reason for it to exist.
 - Rotating `CLIENT_IP_HASH_SALT` breaks continuity in visitor counts. That is correct
   behaviour, so make it deliberate and dated.
-- **Enrichment is optional, everywhere it appears.** Without a MaxMind database the geo
-  columns are null; without a `TMDB_API_KEY` the budget, revenue, language and vote
-  columns are null. Everything else runs either way, which is what keeps CI free of any
-  credential — and it means the repo can be cloned and built by someone who is not you.
-  TMDB is a *key* lookup on the id Jellyfin already stored, never a title search, so a
-  film cannot be enriched with another film's box office.
+- **Enrichment is optional, and deliberately small.** Without a MaxMind database the geo
+  columns are null. Without a `TMDB_API_KEY`, five columns are null — budget, revenue,
+  popularity, vote count and original language — and *nothing else*, because Jellyfin
+  already queried TMDB when it matched each file. Measured across [count withheld] titles: the
+  community rating (which **is** TMDB's vote average) [rate withheld], original title [rate withheld],
+  production country [rate withheld], release date [rate withheld]. An earlier version of this fetched all
+  of those again and left them null pending an API key, which was simply wrong: it put
+  a credential between the warehouse and data already on disk. What remains is a *key*
+  lookup on the id Jellyfin stored, never a title search, so a film cannot pick up
+  another film's box office.
 - **An empty log directory fails the run.** It means a broken mount or a stalled sync,
   and a partition that is green and empty is indistinguishable from a quiet day. A run
   that is green and wrong is worse than one that fails.

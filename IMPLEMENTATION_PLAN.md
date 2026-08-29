@@ -596,9 +596,16 @@ database.
 
 **Stage 2b — Jellyfin. Built and deployed 28 Aug 2026.** [count withheld] titles, [rate withheld] with a TMDB
 id, star schema with a genre bridge and SCD2, dbt 86/86 green. Schedule enabled at 03:30
-UTC. TMDB enrichment needs an API key from themoviedb.org -- free, but it needs an
-account -- so it is built the way geo enrichment is: optional, with null columns when no
-key is set, so CI never needs a credential.
+UTC.
+
+TMDB enrichment was built and then cut down. Most of what it fetched, Jellyfin already
+had: it queries TMDB itself during a scan, so `CommunityRating` **is** TMDB's vote
+average, and the original title, production country and release date come back at
+[rate withheld], [rate withheld] and [rate withheld]. Fetching those again put an API key between the warehouse and
+data already on disk, and left the columns null until somebody made an account. Those
+four now come from the library snapshot. TMDB keeps only what Jellyfin has no field
+for -- budget, revenue, popularity, vote count, original language -- and stays optional
+in the way geo is, so CI never needs a credential.
 
 **Stage 2c — camera.** Three systems, so in order, each verifiable alone: Keycloak client →
 bearer middleware in `homelab_camera` → `/api/export/*` → Dagster asset → dbt vocabulary tests.
