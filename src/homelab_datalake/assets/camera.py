@@ -23,6 +23,7 @@ from dagster import (
     asset,
 )
 
+from homelab_datalake import layout
 from homelab_datalake.parsing.camera import extract_day
 from homelab_datalake.resources import LakeStorage
 
@@ -36,9 +37,11 @@ CAMERA_START = "2026-07-01"
 # then dies before it can also request yesterday, so the whole late-arrival path stops.
 camera_partitions = DailyPartitionsDefinition(start_date=CAMERA_START, end_offset=1)
 
-EVENT_PREFIX = "raw/camera_events"
-CLIP_PREFIX = "raw/camera_clips"
-LOG_PREFIX = "raw/camera_logs"
+# Built from the registry, never spelled out here: layout.py is the one place a
+# path is decided, so moving a dataset is one edit and the migration can see it.
+EVENT_PREFIX = layout.prefix("camera_events")
+CLIP_PREFIX = layout.prefix("camera_clips")
+LOG_PREFIX = layout.prefix("camera_logs")
 
 # An event whose analysis never completed stays `candidate` forever. A few are normal --
 # the day's last events are still in flight when the partition is first read -- but a

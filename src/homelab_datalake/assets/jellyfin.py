@@ -23,6 +23,7 @@ from dagster import (
     asset,
 )
 
+from homelab_datalake import layout
 from homelab_datalake.parsing.jellyfin import snapshot
 from homelab_datalake.resources import LakeStorage
 
@@ -38,8 +39,8 @@ LIBRARY_START = "2026-08-28"
 # never existed on that date.
 library_partitions = DailyPartitionsDefinition(start_date=LIBRARY_START, end_offset=1)
 
-TITLE_PREFIX = "raw/jellyfin_titles"
-GENRE_PREFIX = "raw/jellyfin_title_genres"
+TITLE_PREFIX = layout.prefix("jellyfin_titles")
+GENRE_PREFIX = layout.prefix("jellyfin_title_genres")
 
 # A library does not lose a fifth of itself overnight. A drop that large means a mount
 # went missing or a scan is mid-flight, and writing that snapshot would record a

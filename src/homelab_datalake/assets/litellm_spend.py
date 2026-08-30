@@ -23,6 +23,7 @@ from dagster import (
     asset,
 )
 
+from homelab_datalake import layout
 from homelab_datalake.geo import GeoEnricher
 from homelab_datalake.parsing.litellm_spend import extract_day
 from homelab_datalake.resources import LakeStorage
@@ -34,7 +35,7 @@ SPEND_START = "2026-06-16"
 
 spend_partitions = DailyPartitionsDefinition(start_date=SPEND_START)
 
-SPEND_PREFIX = "raw/litellm_spend"
+SPEND_PREFIX = layout.prefix("litellm_spend")
 
 # A day whose average cost per call is far above trailing normal is the signal worth
 # stopping on: a mispriced model, a retry storm, or an agent that will not terminate.
