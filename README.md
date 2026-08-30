@@ -257,6 +257,88 @@ Verified from the public internet: no token → **401**; a garbage token → **4
 forged token carrying perfect claims but signed with a key the realm never published →
 **401**.
 
+## The workbench API: arbitrary SQL, with the guards in Python
+
+The MCP layer above answers *typed* questions. That is right for a model and wrong for a
+person, who arrives already knowing what they want and would rather not translate it
+into somebody else's registry first. So there is a second surface —
+[`src/homelab_datalake/api/`](src/homelab_datalake/api/) — that serves the whole
+catalogue and runs SQL over all three layers, behind the same Keycloak realm. It is what
+the **Explore › Data** tab in `ai.example.test` is built on.
+
+Everything the wider surface costs is paid for in one place, on this side of the network:
+
+**The catalogue joins two sources of truth.** Parquet footers say which columns exist and
+what type they are; the dbt manifest says what they *mean*. A schema declared in YAML is
+what somebody intended, and an autocomplete built from intent offers columns that are not
+there. Building it reads a footer per object, so it is cached — and invalidated by
+watching the serving copy's inode, because the nightly job renames a new one into place
+as its last step. No refresh call to lose.
+
+**The read-only switch is a parser, not a pattern.** `con.extract_statements()` is the
+same parser that will run the statement, so a `DELETE` behind a block comment is a DELETE
+here too. `EXPLAIN` is resolved recursively rather than waved through, and that is not
+pedantry — measured on DuckDB 1.5:
+
+```
+EXPLAIN DELETE FROM t WHERE a=1              [count withheld] rows -> [count withheld] rows   planned only
+EXPLAIN ANALYZE DELETE FROM t WHERE a=1      [count withheld] rows -> [count withheld] row    executed
+EXPLAIN (ANALYZE) DELETE FROM t WHERE a=1    [count withheld] rows -> [count withheld] row    executed
+```
+
+All three classify as `EXPLAIN`. A rule that permits EXPLAIN permits a delete, so the
+inner statement is handed back to the parser and permitted only if it is itself
+permitted.
+
+**`disabled_filesystems` and `lock_configuration`, in that order.** A SELECT is not
+harmless if it can be `SELECT * FROM read_csv('/etc/shadow')`; the lock is what stops the
+caller turning the first setting back off. One without the other is a suggestion.
+
+**One statement, [count withheld] rows, 30 seconds.** The row cap is applied by fetching rather than
+by rewriting the caller's SQL — DuckDB streams, so five rows of a twenty-million-row scan
+come back in milliseconds. The deadline is a watchdog thread calling `interrupt()`, the
+same mechanism the MCP layer uses, because DuckDB has no statement timeout.
+
+**Every statement is written down**, refusals included, to an append-only log on its own
+volume. A refusal is the interesting half of the record: it is what somebody tried.
+
+Writes are a decision taken twice — the deployment must permit them at all
+(`DATALAKE_API_ALLOW_WRITES`) and the caller must ask per statement. The first exists
+because `raw/` is not rebuildable: the proxy logs rotate off the disk within five weeks
+and the camera serves only a recent window. So the switch stays bolted shut until the
+three recovery layers below are in place.
+
+## Three layers of recovery, because the lake can now be written to
+
+The warehouse is a build artefact — lose it and `warehouse_tables` plus `dbt build`
+reconstructs it. The lake is not, and only part of it is even rebuildable from itself:
+`curated/` and `marts/` come back from `raw/` by re-running `analytics_daily`, and `raw/`
+comes back from nowhere.
+
+```
+bucket versioning    an overwrite or delete of one object, undone in seconds
+lake_backup          the bucket lost, or versioning switched off
+restore-lake.sh      the only one of the three that has ever been exercised
+```
+
+Versioning is set up once with
+[`scripts/enable-lake-versioning.sh`](scripts/enable-lake-versioning.sh) — the datalake
+access key cannot do it, so that script takes the MinIO root credentials through stdin
+and never through an argument or an environment variable. It also adds a lifecycle rule
+expiring non-current versions after 30 days, because versioning with no expiry on a host
+that is [rate withheld] full is a slower way to run out of disk.
+
+[`lake_backup`](src/homelab_datalake/assets/backup.py) mirrors `raw/` into a second
+bucket every night, server-side, skipping keys already there with the same size and ETag.
+An object that *leaves* `raw/` stays in the mirror — following the delete would make it a
+copy rather than a backup — and is reported on every run, then removed only after ninety
+days. A deletion nobody noticed is the failure this exists for, and nobody notices in a
+week.
+
+[`scripts/restore-lake.sh`](scripts/restore-lake.sh) reports and stops; `--apply` carries
+it out, then re-lists both sides and compares counts and sizes. A restore that reports
+success from the return value of the thing that did the copying has verified nothing.
+
 ## The parts worth reading
 
 **Three log formats, dispatched by shape.**
@@ -518,6 +600,12 @@ src/homelab_datalake/
   mcp/deliverables.py   .xlsx with a provenance sheet
   mcp/auth.py           Keycloak bearer tokens, verified per request
   mcp/server.py         the tool surface
+  api/catalogue.py      footers + dbt manifest, joined and cached
+  api/query.py          the read-only switch, the limits, the session
+  api/audit.py          who ran what, refusals included
+  api/app.py            the routes, behind the same bearer token
+  assets/backup.py      the nightly mirror of raw/, and the restore
+dbt/models/_columns.md  column descriptions shared across layers
 dbt/models/             staging → intermediate → marts
 dbt/tests/              the guarantees, as SQL that fails the build
 scripts/                seed generator, real-IP verifiers, Keycloak setup

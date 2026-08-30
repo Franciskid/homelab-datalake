@@ -383,4 +383,78 @@ released with the switch fixed at read-only.
 | The backup is never tested | This is usual | Phase 4, part 3 restores before the switch is released |
 | The sandbox gets a network | pandas needs data | Use the helper; keep `internal=true` |
 
+---
+
+## 13. What is built, and what is not
+
+Written on 30 August 2026, after the plan above was executed.
+
+### Built and tested
+
+| Phase | Where | State |
+|---|---|---|
+| 1 catalogue API | `src/homelab_datalake/api/catalogue.py` | Done. 21 tests. |
+| 2 the descriptions | `dbt/models/` | Done. 430 written, not 384 — see below. |
+| 3 query API and switch | `src/homelab_datalake/api/query.py` | Done. 67 tests. |
+| 4 recovery | `assets/backup.py`, two scripts | Code done, 18 tests. **The drill has not been run.** |
+| 5 Data tab | `ai-platform` | Done. |
+| 6 sandbox | `ai-platform` | Done. Exercised end to end against a stub relay. |
+| 7 script store | `ai-platform` | Done. |
+
+`homelab-datalake` is at 496 tests, all passing. `ai-platform` is at 1,017.
+
+### Four places the plan was wrong, and what was done instead
+
+**384 descriptions was 430.** The plan counted YAML column *entries*; many of
+those carried only `tests:` and no prose. Every column in every model and source
+now has a description, and
+[a dbt test](../dbt/tests/assert_every_column_is_documented.sql) fails the build
+if one appears without. Descriptions shared by more than one layer are written
+once in [`_columns.md`](../dbt/models/_columns.md) and referenced, because a
+column that survives from staging into a mart means the same thing in both.
+
+**"Only SELECT and EXPLAIN continue" would have let a write through.** Measured
+on DuckDB 1.5: `EXPLAIN ANALYZE DELETE FROM t` classifies as EXPLAIN and
+*executes the delete*, and so does `EXPLAIN (ANALYZE) DELETE`. An EXPLAIN is now
+permitted exactly when what it explains is permitted, decided by handing the
+inner statement back to the same parser.
+
+**`disabled_filesystems='LocalFileSystem'` cannot be set when the lake is local.**
+It is the setting that stops `read_csv('/etc/passwd')`, and it also stops reading
+a lake that is a directory on disk. It is applied whenever the lake is on S3 —
+which is every deployment holding data — and the difference is stated in
+`guard_settings` rather than hidden.
+
+**The sandbox runtime could not become `python:3.12-slim`.** That worker is a
+Node server; the runtime needs both interpreters, and adding Node to a Python
+image is the messier half of the pair. It is `node:22-bookworm-slim` instead,
+which is Debian and glibc — the actual reason the plan gave for the change — with
+pandas, openpyxl and python-docx in a venv at `/opt/venv`.
+
+### The catalogue refresh is a stat(), not a callback
+
+The plan said "refresh it after the nightly publish". It is done by watching the
+serving copy's inode: `warehouse_serving` renames a new one into place as the last
+step of the nightly job, so its identity changing *is* the signal. That is one
+`stat()` per request instead of a callback Dagster has to make, hold a token for
+and retry — there is no refresh that can be lost, because none is sent.
+`POST /catalogue/refresh` remains as a manual escape hatch.
+
+### What has to happen before the write switch is released
+
+Phase 4's code is written and unit-tested; none of it has run against the real
+bucket. In order:
+
+1. Deploy (`bash scripts/deploy.sh`) so `datalake-api` and `lake_backup` exist.
+2. `bash scripts/enable-lake-versioning.sh` — plan first, then `--apply`. Needs
+   the MinIO root credentials once; the datalake key cannot do it.
+3. Materialise `lake_backup` once, and confirm the object count in the mirror
+   matches `raw/`.
+4. `bash scripts/restore-lake.sh --dataset npm_access --day <a day>` — plan, then
+   `--apply`, and read the verification line. **This is the step the whole phase
+   exists for: a backup nobody has restored is not a backup.**
+5. Only then set `DATALAKE_API_ALLOW_WRITES=yes` in the datalake's `.env`.
+
+Until step 5 the API refuses every write, whatever the switch in the browser says.
+
 > Public history note: private identifiers, measurements, and operational details were redacted. Code examples use placeholder infrastructure.
