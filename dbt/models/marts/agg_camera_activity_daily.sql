@@ -18,8 +18,10 @@ select
     -- so the count of scored events travels beside the average. An average over three
     -- events reads identically to one over three hundred otherwise.
     count(*) filter (where confidence is not null)          as scored_events,
-    round(avg(confidence)::numeric, 4)                      as avg_confidence,
-    round(median(duration_seconds)::numeric, 1)             as median_duration_seconds
+    -- decimal(18,9), not numeric: DuckDB's bare NUMERIC is DECIMAL(18,3), which
+    -- would round a confidence of 0.8125 to 0.813 and make the 4 above a lie.
+    round(avg(confidence)::decimal(18, 9), 4)               as avg_confidence,
+    round(median(duration_seconds)::decimal(18, 3), 1)      as median_duration_seconds
 
 from {{ ref('fct_camera_event') }}
 group by 1, 2, 3, 4

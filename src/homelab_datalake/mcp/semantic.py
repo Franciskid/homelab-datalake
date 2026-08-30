@@ -121,7 +121,7 @@ LLM_SPEND = Dataset(
     ),
     measures=(
         Measure("calls", "count(*)", "Number of calls.", "calls"),
-        Measure("spend_usd", "round(sum(spend_usd)::numeric, 6)", "Total cost.", "USD"),
+        Measure("spend_usd", "round(sum(spend_usd)::decimal(18, 9), 6)", "Total cost.", "USD"),
         Measure("total_tokens", "sum(total_tokens)", "Prompt plus completion tokens.", "tokens"),
         Measure("prompt_tokens", "sum(prompt_tokens)", "Input tokens.", "tokens"),
         Measure("completion_tokens", "sum(completion_tokens)", "Output tokens.", "tokens"),
@@ -135,7 +135,7 @@ LLM_SPEND = Dataset(
                 "agent run distorts an average badly.", "ms"),
         Measure("median_ttft_ms", "round(median(time_to_first_token_ms)::numeric, 1)",
                 "Median time to first token.", "ms"),
-        Measure("usd_per_call", "round((sum(spend_usd) / nullif(count(*), 0))::numeric, 6)",
+        Measure("usd_per_call", "round((sum(spend_usd) / nullif(count(*), 0))::decimal(18, 9), 6)",
                 "Mean cost per call, computed as total over count -- not an average of "
                 "per-call ratios, which would weight a cheap call the same as an "
                 "expensive one.", "USD"),
@@ -257,7 +257,7 @@ CAMERA_ACTIVITY = Dataset(
         Measure("scored_events", "count(*) FILTER (WHERE confidence IS NOT NULL)",
                 "Events the model gave a confidence for. Always read avg_confidence "
                 "beside this: the average skips unscored events silently.", "events"),
-        Measure("avg_confidence", "round(avg(confidence)::numeric, 4)",
+        Measure("avg_confidence", "round(avg(confidence)::decimal(18, 9), 4)",
                 "Mean confidence over scored events only.", ""),
         Measure("median_duration_seconds", "round(median(duration_seconds)::numeric, 1)",
                 "Median event duration.", "s"),
