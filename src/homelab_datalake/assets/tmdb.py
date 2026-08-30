@@ -26,11 +26,12 @@ import duckdb
 import pyarrow as pa
 from dagster import AssetExecutionContext, MetadataValue, Output, RetryPolicy, asset
 
+from homelab_datalake import layout
 from homelab_datalake.assets.jellyfin import TITLE_PREFIX, jellyfin_library_raw
 from homelab_datalake.parsing.tmdb import client_from_env
 from homelab_datalake.resources import LakeStorage
 
-TMDB_PREFIX = "raw/tmdb_titles"
+TMDB_PREFIX = layout.prefix("tmdb_titles")
 
 # A run asks TMDB about at most this many titles. The first run covers the library in
 # a couple of minutes; after that it is a handful of new films a night. The cap exists

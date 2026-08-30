@@ -26,6 +26,7 @@ from dagster import (
     asset,
 )
 
+from homelab_datalake import layout
 from homelab_datalake.geo import GeoEnricher
 from homelab_datalake.parsing.extract import discover_logs, extract_partition
 from homelab_datalake.resources import LakeStorage, NpmLogSources
@@ -49,8 +50,8 @@ npm_partitions = MultiPartitionsDefinition(
     }
 )
 
-RAW_PREFIX = "raw/npm_access"
-REJECT_PREFIX = "raw/npm_access_rejects"
+RAW_PREFIX = layout.prefix("npm_access")
+REJECT_PREFIX = layout.prefix("npm_access_rejects")
 
 # Above this, the parser has stopped understanding its input and the run should fail
 # rather than quietly deliver a partial day. Measured reject rate on [count withheld] real
