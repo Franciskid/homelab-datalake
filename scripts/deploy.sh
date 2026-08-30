@@ -35,6 +35,16 @@ for tree in src dbt/models dbt/tests tests; do
 done
 rsync -a --no-perms --no-owner --no-group docker-compose.yml Dockerfile pyproject.toml "$FRA:$DIR/"
 echo "  OK    docker-compose.yml, Dockerfile, pyproject.toml"
+# Operator scripts. Some of them have to run ON the server -- the Keycloak ones
+# exec into a container that only exists there -- so a script that never leaves
+# this laptop is a script nobody can run. This was the gap: four scripts existed
+# here and none of them had ever reached the host.
+#
+# No --delete on this one, unlike the source trees. scripts/ is somewhere an
+# operator legitimately drops a one-off, and a deploy should not remove it.
+rsync -a --no-perms --no-owner --no-group --exclude='__pycache__' \
+      scripts/ "$FRA:$DIR/scripts/"
+echo "  OK    scripts"
 
 say "2/4  Build and start"
 ssh "$FRA" "cd $DIR && docker compose up -d --build"
