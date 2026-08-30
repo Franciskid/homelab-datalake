@@ -113,6 +113,44 @@ services:
       - warehouse:/warehouse:ro
       - exports:/exports
 
+  # The workbench API: the catalogue, and SQL over the whole lake.
+  #
+  # Distinct from datalake-mcp on purpose. That one answers *typed* questions over
+  # the marts and physically cannot reach anything else, because the serving copy it
+  # opens contains only marts. This one reads raw, curated and marts through DuckDB
+  # over the Parquet, which is a much wider surface -- so every guard it has is code
+  # in homelab_datalake.api, tested with the rest of the repository, rather than
+  # something the browser is trusted to enforce.
+  #
+  # On primary_reseau as well as the project network, because the caller is the
+  # ai-platform gateway: the browser never reaches this, and neither does the Python
+  # sandbox, which has no route off its own internal network and relays through that
+  # same gateway.
+  datalake-api:
+    build: .
+    container_name: datalake-api
+    restart: unless-stopped
+    env_file: [.env]
+    command: ["python", "-m", "homelab_datalake.api.app"]
+    environment:
+      DATALAKE_API_PORT: "3444"
+    # No published port, like everything else here. Being on this network is not
+    # authorisation: every route but /health verifies a Keycloak-signed bearer token.
+    expose:
+      - "3444"
+    networks: [default, primary_reseau]
+    volumes:
+      # Read-only, and read for one reason: the catalogue cache watches this file's
+      # identity to know when the nightly publish has replaced the lake underneath
+      # it. Writable would let this container take DuckDB's write lock and stall the
+      # nightly job, which is the same reason datalake-mcp mounts it this way.
+      - warehouse:/warehouse:ro
+      - exports:/exports
+      # The audit log, on its own volume. Separate from the warehouse on purpose:
+      # the record of what a statement did must survive the statement, and the
+      # warehouse volume is mounted read-only here anyway.
+      - audit:/audit
+
   dagster-daemon:
     build: .
     container_name: datalake-daemon
@@ -137,6 +175,7 @@ volumes:
   warehouse:
   geoip:
   exports:
+  audit:
 
 # An explicit subnet, because Docker's default address pools are fully allocated on
 # this host: all fifteen private network ranges blocks and all fifteen private networks/20 blocks
