@@ -41,6 +41,7 @@ from homelab_datalake.assets import (
     jellyfin,
     litellm_spend,
     npm_access,
+    publish,
     tmdb,
     warehouse,
 )
@@ -48,7 +49,7 @@ from homelab_datalake.assets.npm_access import HOSTS, npm_partitions
 from homelab_datalake.resources import LakeStorage, NpmLogSources
 
 all_assets = load_assets_from_modules(
-    [npm_access, litellm_spend, jellyfin, camera, tmdb, dbt_marts, warehouse]
+    [npm_access, litellm_spend, jellyfin, camera, tmdb, dbt_marts, warehouse, publish]
 )
 
 npm_daily_job = define_asset_job(
