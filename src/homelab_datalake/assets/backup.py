@@ -42,6 +42,7 @@ reach is exactly the kind of backup nobody has ever run.
 # No `from __future__ import annotations`: Dagster resolves the `context` annotation
 # at decoration time, and a string annotation makes that check fail with a message
 # that says the type is wrong when the type is right.
+import logging
 import os
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -56,6 +57,8 @@ from homelab_datalake.assets.litellm_spend import litellm_spend_raw
 from homelab_datalake.assets.npm_access import npm_access_raw
 from homelab_datalake.assets.tmdb import tmdb_titles_raw
 from homelab_datalake.resources import LakeStorage
+
+logger = logging.getLogger(__name__)
 
 # Only raw/. curated/ and marts/ are rebuilt from it by analytics_daily, so a copy of
 # them costs storage and buys nothing a re-run would not.
@@ -204,16 +207,44 @@ def _delete(storage: LakeStorage, key: str) -> None:
 
 
 def _ensure_bucket(storage: LakeStorage) -> None:
+    """The backup bucket has to exist. This asset cannot make it.
+
+    Measured: the datalake access key gets AccessDenied on CreateBucket, the same
+    way it does on GetBucketVersioning. That is correct -- a key the pipeline uses
+    every night should not be able to create or reconfigure buckets -- so the
+    bucket is made once, with the MinIO root credentials, by
+    scripts/enable-lake-versioning.sh.
+
+    The failure is deliberately loud rather than a skip. A backup asset that
+    quietly does nothing when its destination is missing is the exact shape of the
+    problem this module exists to prevent: it would stay green for months and be
+    discovered empty on the day it was needed.
+    """
     if not storage.uses_s3:
         Path(storage.local_root).mkdir(parents=True, exist_ok=True)
         return
     client = storage._client()
     try:
         client.head_bucket(Bucket=storage.bucket)
-    except Exception:  # noqa: BLE001 - head_bucket raises several unrelated types
-        # for "not there", and creating it is the right answer to all of them. A
-        # create that fails for a real reason raises here and fails the asset.
+        return
+    except Exception as absent:  # noqa: BLE001 - head_bucket raises several unrelated
+        # types for "not there", and trying to create it is the right answer to all
+        # of them. Logged at debug rather than swallowed: on the ordinary path this
+        # fires once, on the first night, and says nothing an operator needs.
+        logger.debug("%s is not reachable (%s); trying to create it", storage.bucket, absent)
+    try:
         client.create_bucket(Bucket=storage.bucket)
+    except Exception as error:  # noqa: BLE001 - reported, with the fix, whatever it is
+        raise RuntimeError(
+            f"the backup bucket {storage.bucket!r} does not exist and this key cannot "
+            f"create one ({type(error).__name__}: {error}).\n\n"
+            "The datalake key is deliberately not an admin key. Create the bucket once "
+            "with the MinIO root credentials:\n\n"
+            "    bash scripts/enable-lake-versioning.sh --apply\n\n"
+            "That script creates it, turns versioning on for both buckets, and adds the "
+            "lifecycle rule that stops old versions accumulating. Until it has run, raw/ "
+            "has no second copy and the write switch must stay shut."
+        ) from None
 
 
 # --------------------------------------------------------------------------------

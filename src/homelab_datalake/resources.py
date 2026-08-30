@@ -123,18 +123,52 @@ class LakeStorage(ConfigurableResource):
             return f"s3://{self.bucket}/{prefix}/**/*.parquet"
         return str((Path(self.local_root) / prefix).resolve() / "**" / "*.parquet")
 
-    def configure_duckdb(self, con) -> None:
-        """Teach a DuckDB connection how to reach the lake, if it is on S3."""
+    def duckdb_settings(self) -> list[tuple[str, str]]:
+        """The DuckDB settings that point at this lake, as (name, value).
+
+        Separated from applying them so the *shape* of the configuration can be
+        tested without a bucket -- the failure this guards against is silent on a
+        local backend, where none of these settings exist at all.
+        """
+        if not self.uses_s3:
+            return []
+        host = self.endpoint.replace("https://", "").replace("http://", "")
+        return [
+            ("s3_endpoint", host),
+            ("s3_region", self.region),
+            ("s3_access_key_id", self.access_key_id),
+            ("s3_secret_access_key", self.secret_access_key),
+            # MinIO is path-style, not virtual-host.
+            ("s3_url_style", "path"),
+            ("s3_use_ssl", "true" if self.endpoint.startswith("https") else "false"),
+        ]
+
+    def configure_duckdb(self, con, scope: str = "") -> None:
+        """Teach a DuckDB connection how to reach the lake, if it is on S3.
+
+        `scope` is either empty or "GLOBAL", and the difference is load-bearing for
+        any caller that runs queries on a *cursor* rather than on the connection
+        itself. Every s3_* setting is LOCAL by default, and a cursor inherits none
+        of its parent's local settings -- measured against the real bucket:
+
+            parent  s3_endpoint  LOCAL   s3.homelab.example.test
+            cursor  s3_endpoint  GLOBAL  None
+
+        so the cursor read the bucket anonymously and got a 403 that reads as
+        "invalid or missing credentials" with the credentials plainly configured.
+        SET GLOBAL puts them on the database instead of the session, where a cursor
+        does see them. It does not loosen anything: lock_configuration still refuses
+        every later change, on the cursor as well as the connection.
+        """
         if not self.uses_s3:
             return
-        host = self.endpoint.replace("https://", "").replace("http://", "")
         con.execute("INSTALL httpfs; LOAD httpfs;")
-        con.execute(f"SET s3_endpoint='{host}';")
-        con.execute(f"SET s3_region='{self.region}';")
-        con.execute(f"SET s3_access_key_id='{self.access_key_id}';")
-        con.execute(f"SET s3_secret_access_key='{self.secret_access_key}';")
-        con.execute("SET s3_url_style='path';")  # MinIO is path-style, not virtual-host
-        con.execute(f"SET s3_use_ssl={'true' if self.endpoint.startswith('https') else 'false'};")
+        prefix = f"SET {scope} " if scope else "SET "
+        for name, value in self.duckdb_settings():
+            # The values come from configuration, never from a caller, and are
+            # escaped anyway: a stray quote in an env var would otherwise end the
+            # string literal and change the statement.
+            con.execute(f"{prefix}{name}='{value.replace(chr(39), chr(39) * 2)}';")
 
     @classmethod
     def from_env(cls) -> LakeStorage:

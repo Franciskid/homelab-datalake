@@ -261,7 +261,11 @@ class LakeSession:
         # for itself. Measured -- a cursor off a UTC-pinned connection reported
         # Europe/Paris, which is how a 23:[count withheld] row lands on the wrong day.
         con = duckdb.connect(":memory:", config={"TimeZone": "UTC", "memory_limit": MEMORY_LIMIT})
-        self.lake.configure_duckdb(con)
+        # GLOBAL, because queries run on cursors and a cursor inherits none of its
+        # parent's *local* settings -- which is what every s3_* setting is by
+        # default. Without this the views bind on the connection and every query
+        # through a cursor reads the bucket anonymously. See LakeStorage.
+        self.lake.configure_duckdb(con, scope="GLOBAL")
         for layer in layout.LAYERS:
             con.execute(f"CREATE SCHEMA IF NOT EXISTS {layer};")
 
