@@ -8,7 +8,15 @@ models:
       operator are derived at that same boundary, before the address is discarded.
     columns:
       - name: request_key
-        description: Surrogate key. Not a natural key -- see the duplicate test below.
+        description: >
+          Surrogate key: md5 over instance, timestamp, client hash, path, status and
+          bytes. Deliberately not unique. Two genuinely distinct requests can agree on
+          all six -- a scanner asking for /login twice in the same second from the same
+          address -- and nothing in an access log tells them apart.
+
+          What is tested is that it keeps discriminating: see
+          assert_request_key_stays_discriminating. Measured at [rate withheld] duplicate rows
+          over [count withheld]; the build fails above [rate withheld].
         tests: [not_null]
       - name: partition_date
         tests: [not_null]
@@ -74,6 +82,15 @@ models:
           - dbt_utils.accepted_range: {min_value: 0, inclusive: true}
 
   - name: fct_llm_call
+    # geo_country_code and geo_as_org exist on this table and are null for every row,
+    # which is correct rather than missing. LiteLLM records requester_ip_address, and on
+    # this deployment all ten distinct values are private: Docker bridges (172.27.x,
+    # private container networks) and one LAN machine. MaxMind has no record for private
+    # space, so the lookup returns nothing. Every caller is a container on this host.
+    #
+    # Neither column is exposed by the MCP semantic layer, so no question can be asked
+    # that these would silently answer with a null. They are kept because a genuinely
+    # external caller would populate them without a schema change.
     description: >
       One row per LLM call through the LiteLLM proxy: model, tokens, latency and cost.
       Prompts and completions are never ingested. Caller address, API key and end user
@@ -232,9 +249,20 @@ models:
           - not_null
           - accepted_values: {values: ['confirmed', 'dismissed', 'candidate']}
       - name: rule_type
+        description: >
+          The kind of rule that raised the event. This list is RULE_TYPES in the
+          camera's own src/services/attention-zone-store.js, not the set of values
+          seen so far -- the same distinction dismissal_reason below already makes.
+
+          It was the sampled version until 29 Aug 2026, when one `presence` event
+          arrived and failed the build. Three of the seven had simply never fired.
+          A test built from a sample does not test the vocabulary; it records which
+          features happened to be switched on the day it was written.
         tests:
           - not_null
-          - accepted_values: {values: ['motion', 'state', 'crossing']}
+          - accepted_values:
+              values: ['motion', 'crossing', 'state', 'presence', 'absence',
+                       'object_removed', 'unusual']
       - name: dismissal_reason
         description: >
           Null when the event was not dismissed. A value outside this list means the
