@@ -196,16 +196,37 @@ def analytics_daily_schedule(context: ScheduleEvaluationContext):
 
 @run_failure_sensor(
     description="Posts pipeline failures to the existing homelab notification channel.",
-    default_status=DefaultSensorStatus.STOPPED,
+    # RUNNING, not STOPPED.
+    #
+    # This was STOPPED by default and nobody ever started it, so it was dead twice
+    # over: no webhook *and* not running. The cost was measured. On 29 Aug 2026 the
+    # LiteLLM ingest failed because its Postgres network had gone, and the camera
+    # late-arrival schedule failed every hour for eighteen hours. Both were found by
+    # reading run records by hand, two days later.
+    #
+    # A sensor that only writes to a log is worth little; a sensor that is switched
+    # off is worth nothing. Starting by default costs one tick per failed run, and the
+    # tick itself is the record -- it is visible in the Dagster UI beside the run,
+    # which is where somebody looking at a red asset already is.
+    default_status=DefaultSensorStatus.RUNNING,
 )
 def notify_on_failure(context):
-    """Deliberately a no-op until the webhook is configured.
+    """Reports a failed run, and delivers it if a webhook is configured.
 
     Logging loudly and doing nothing is better than a sensor that raises on every
     failure -- that turns one broken run into two, and buries the original error.
     """
+    run = context.dagster_run
+    # The job and the partition, not only the exception text. Diagnosing the two
+    # August failures meant going back to the run records to find out *which*
+    # partition of which job had died; the message should carry that already.
+    partition = run.tags.get("dagster/partition") or "-"
+    message = (
+        f"homelab-datalake run failed: job={run.job_name} partition={partition} "
+        f"run_id={run.run_id} -- {context.failure_event.message}"
+    )
+
     webhook = os.environ.get("FAILURE_WEBHOOK_URL")
-    message = f"homelab-datalake run failed: {context.failure_event.message}"
     if not webhook:
         context.log.error("%s (no FAILURE_WEBHOOK_URL configured, not notifying)", message)
         return

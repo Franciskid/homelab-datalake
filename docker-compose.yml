@@ -16,6 +16,13 @@ services:
     # See infra/npm/http.conf.
     expose:
       - "3000"
+    # Two networks. `default` is this project's own; `primary_reseau` is where the
+    # shared Postgres lives, and the LiteLLM ingest reads its spend ledger by
+    # container name. Declared here rather than attached by hand with
+    # `docker network connect`, which is how it was done before: a hand-made
+    # attachment does not survive `compose up`, and the one that vanished took the
+    # LiteLLM source down for two days without a sound. See IMPLEMENTATION_PLAN §8a.
+    networks: [default, primary_reseau]
     volumes:
       - dagster_home:/dagster_home
       - warehouse:/warehouse
@@ -112,6 +119,13 @@ services:
     restart: unless-stopped
     env_file: [.env]
     command: ["dagster-daemon", "run", "-m", "homelab_datalake.definitions"]
+    # Two networks. `default` is this project's own; `primary_reseau` is where the
+    # shared Postgres lives, and the LiteLLM ingest reads its spend ledger by
+    # container name. Declared here rather than attached by hand with
+    # `docker network connect`, which is how it was done before: a hand-made
+    # attachment does not survive `compose up`, and the one that vanished took the
+    # LiteLLM source down for two days without a sound. See IMPLEMENTATION_PLAN §8a.
+    networks: [default, primary_reseau]
     volumes:
       - dagster_home:/dagster_home
       - warehouse:/warehouse
@@ -138,3 +152,11 @@ networks:
     ipam:
       config:
         - subnet: 192.0.2.0/24
+
+  # The shared Postgres network, created by the ai-platform stack. `external: true`
+  # means compose joins it and never creates or removes it -- this project is a guest
+  # there. If the ai-platform stack is down, `compose up` fails loudly with "network
+  # primary_reseau declared as external, but could not be found", which is the correct
+  # outcome: a warehouse that starts without its source would write empty days.
+  primary_reseau:
+    external: true
