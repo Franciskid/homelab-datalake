@@ -194,6 +194,78 @@ def test_a_read_only_session_cannot_be_reconfigured(session):
         cursor.execute("SET memory_limit='16GB'")
 
 
+def test_the_s3_settings_are_global_so_a_cursor_inherits_them(lake, monkeypatch):
+    """The bug this exists for was invisible until the first query against MinIO.
+
+    Every s3_* setting is LOCAL by default, and a cursor inherits none of its
+    parent's local settings. So the views bound on the connection -- which had the
+    credentials -- and every query, which runs on a cursor, read the bucket
+    anonymously and came back with a 403 saying the credentials were missing.
+
+    Nothing on a local backend can catch that: the local lake sets no s3_* settings
+    at all. So what is asserted here is the *shape* of the configuration.
+    """
+    scopes = []
+    original = LakeStorage.configure_duckdb
+
+    def spy(self, con, scope=""):
+        scopes.append(scope)
+        return original(self, con, scope=scope)
+
+    monkeypatch.setattr(LakeStorage, "configure_duckdb", spy)
+    with q.LakeSession(lake=lake):
+        pass
+
+    assert scopes == ["GLOBAL"]
+
+
+def test_every_s3_setting_is_applied_at_the_scope_it_was_asked_for():
+    """A setting left at session scope is one a cursor will not see."""
+    on_s3 = LakeStorage(
+        endpoint="https://s3.example", bucket="datalake",
+        access_key_id="key", secret_access_key="secret",
+    )
+    statements = []
+
+    class Recorder:
+        def execute(self, sql):
+            statements.append(sql)
+
+    on_s3.configure_duckdb(Recorder(), scope="GLOBAL")
+
+    assert statements[0] == "INSTALL httpfs; LOAD httpfs;"
+    assert all(sql.startswith("SET GLOBAL ") for sql in statements[1:])
+    assert {name for name, _ in on_s3.duckdb_settings()} == {
+        "s3_endpoint", "s3_region", "s3_access_key_id",
+        "s3_secret_access_key", "s3_url_style", "s3_use_ssl",
+    }
+
+
+def test_a_local_lake_needs_no_settings_at_all():
+    """Which is exactly why the bug above could not show up in these tests."""
+    assert LakeStorage(local_root=".lake").duckdb_settings() == []
+    statements = []
+
+    class Recorder:
+        def execute(self, sql):
+            statements.append(sql)
+
+    LakeStorage(local_root=".lake").configure_duckdb(Recorder(), scope="GLOBAL")
+    assert statements == []
+
+
+def test_a_quote_in_a_configured_value_cannot_end_the_statement():
+    on_s3 = LakeStorage(endpoint="https://s3.example", secret_access_key="a'b")
+    statements = []
+
+    class Recorder:
+        def execute(self, sql):
+            statements.append(sql)
+
+    on_s3.configure_duckdb(Recorder())
+    assert "SET s3_secret_access_key='a''b';" in statements
+
+
 def test_a_read_only_session_is_pinned_to_utc(session):
     """A cursor does not inherit its parent's session settings, and cannot set them
     once the configuration is locked -- so the pin has to be in the connect config.
