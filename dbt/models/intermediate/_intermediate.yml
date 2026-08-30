@@ -1,0 +1,135 @@
+version: 2
+
+models:
+  - name: int_npm_requests
+    description: >
+      Requests with the two derived dimensions the marts actually group by: what kind of
+      client made them, and the path cut to something with bounded cardinality. This is
+      the curated layer published to the lake, so it is what a notebook or a BI tool
+      should point at rather than the staging model underneath it.
+    columns:
+      - name: partition_date
+        description: '{{ doc("req_partition_date") }}'
+        tests: [not_null]
+      - name: npm_instance
+        description: '{{ doc("req_npm_instance") }}'
+      - name: requested_at
+        description: '{{ doc("req_requested_at") }}'
+      - name: log_format
+        description: '{{ doc("req_log_format") }}'
+      - name: request_host
+        description: '{{ doc("req_request_host") }}'
+      - name: method
+        description: '{{ doc("req_method") }}'
+      - name: scheme
+        description: '{{ doc("req_scheme") }}'
+      - name: path
+        description: '{{ doc("req_path") }}'
+      - name: path_group
+        description: '{{ doc("req_path_group") }}'
+      - name: status
+        description: '{{ doc("req_status") }}'
+      - name: status_class
+        description: '{{ doc("req_status_class") }}'
+      - name: upstream_status
+        description: '{{ doc("req_upstream_status") }}'
+      - name: cache_status
+        description: '{{ doc("req_cache_status") }}'
+      - name: upstream_target
+        description: '{{ doc("req_upstream_target") }}'
+      - name: bytes_sent
+        description: '{{ doc("req_bytes_sent") }}'
+      - name: user_agent
+        description: '{{ doc("req_user_agent") }}'
+      - name: client_kind
+        description: '{{ doc("req_client_kind") }}'
+      - name: is_automated
+        description: '{{ doc("req_is_automated") }}'
+      - name: host_is_address
+        description: '{{ doc("req_host_is_address") }}'
+      - name: client_hash
+        description: '{{ doc("client_hash") }}'
+      - name: client_network
+        description: '{{ doc("client_network") }}'
+      - name: client_trust
+        description: '{{ doc("client_trust") }}'
+      - name: client_ip_version
+        description: '{{ doc("client_ip_version") }}'
+      - name: is_internal
+        description: '{{ doc("client_is_internal") }}'
+      - name: geo_country_code
+        description: '{{ doc("geo_country_code") }}'
+      - name: geo_country_name
+        description: '{{ doc("geo_country_name") }}'
+      - name: geo_city
+        description: '{{ doc("geo_city") }}'
+      - name: geo_asn
+        description: '{{ doc("geo_asn") }}'
+      - name: geo_as_org
+        description: '{{ doc("geo_as_org") }}'
+      - name: source_file
+        description: '{{ doc("req_source_file") }}'
+
+  - name: int_camera_events
+    description: >
+      One row per event: the latest version of it. In normal operation this collapses
+      nothing, because re-materialising a partition replaces its object rather than
+      adding beside it. It stays as a guard: if a partition ever landed as several
+      objects -- a partial write, a migration writing beside the old file -- every count
+      of confirmed events would inflate with no error anywhere.
+    columns:
+      - name: partition_date
+        description: '{{ doc("cam_partition_date") }}'
+        tests: [not_null]
+      - name: event_id
+        description: '{{ doc("cam_event_id") }}'
+        tests: [not_null, unique]
+      - name: extracted_at
+        description: >
+          Which reading of the export this version came from. It is the ordering key
+          that decides which version survives, with an analysed event beating an
+          unanalysed one when two share a second.
+      - name: camera_id
+        description: '{{ doc("cam_camera_id") }}'
+      - name: zone_id
+        description: '{{ doc("cam_zone_id") }}'
+      - name: zone_name
+        description: '{{ doc("cam_zone_name") }}'
+      - name: rule_type
+        description: '{{ doc("cam_rule_type") }}'
+      - name: lifecycle
+        description: '{{ doc("cam_lifecycle") }}'
+      - name: is_confirmed
+        description: '{{ doc("cam_is_confirmed") }}'
+      - name: is_awaiting_analysis
+        description: '{{ doc("cam_is_awaiting_analysis") }}'
+      - name: started_at
+        description: '{{ doc("cam_started_at") }}'
+      - name: completed_at
+        description: '{{ doc("cam_completed_at") }}'
+      - name: duration_seconds
+        description: '{{ doc("cam_duration_seconds") }}'
+      - name: state_observed_at
+        description: >
+          When the zone state was observed, in UTC. Null unless the event carries a
+          state, which only state rules do.
+      - name: clip_id
+        description: '{{ doc("cam_clip_id") }}'
+      - name: direction
+        description: '{{ doc("cam_direction") }}'
+      - name: zone_state
+        description: '{{ doc("cam_zone_state") }}'
+      - name: previous_zone_state
+        description: '{{ doc("cam_previous_zone_state") }}'
+      - name: confidence
+        description: '{{ doc("cam_confidence") }}'
+      - name: is_unusual
+        description: '{{ doc("cam_is_unusual") }}'
+      - name: should_notify
+        description: '{{ doc("cam_should_notify") }}'
+      - name: dismissal_reason
+        description: '{{ doc("cam_dismissal_reason") }}'
+      - name: duplicate_of
+        description: '{{ doc("cam_duplicate_of") }}'
+      - name: summary
+        description: '{{ doc("cam_summary") }}'
