@@ -9,33 +9,517 @@ sources:
     tables:
       - name: npm_access
         description: One row per HTTP request seen by an Nginx Proxy Manager instance.
+        columns:
+          - name: dt
+            description: >
+              Partition date: the UTC day of the request, taken from the timestamp
+              inside the line and never from the file it was found in. logrotate moves
+              a day's lines between files weekly, so the filename is not evidence.
+          - name: host
+            description: >
+              The `host=` segment of the object path, which NPM instance the partition
+              belongs to. Identical to host_source; both are present because a reader
+              that globs the prefix gets one from the path and one from the data.
+          - name: host_source
+            description: >
+              Which Nginx Proxy Manager instance logged the line -- `primary`, which
+              fronts 44 hosts, or `secondary`, which fronts the camera. The two run on
+              different machines and fail independently, which is why it is half of
+              the partition key.
+          - name: timestamp
+            description: >
+              When nginx logged the request, converted to UTC at ingest. nginx writes a
+              local offset; normalising here is what makes a 23:[count withheld] request land on the
+              same day whoever runs the job.
+          - name: log_format
+            description: >
+              Which of NPM's three line formats this row was parsed from: `proxy`,
+              `standard`, or stock nginx `combined`. Only `proxy` carries the upstream
+              and Sent-to fields, so nulls in those are a property of the format rather
+              than missing data.
+          - name: request_host
+            description: >
+              The Host header the client sent. Client-controlled, so scanners put bare
+              addresses in it; kept exactly as sent rather than cleaned, because a
+              scanner probing the IP directly is a fact worth counting.
+          - name: method
+            description: >
+              The HTTP method as written in the request line. Null when the request line
+              did not parse -- almost always TLS bytes sent to port 80.
+          - name: scheme
+            description: >
+              `http` or `https`, as nginx saw the connection. Absent from the `combined`
+              format, which does not log it.
+          - name: path
+            description: >
+              The request path with the query string removed. Query strings carry
+              password-reset tokens, session ids and API keys often enough that storing
+              them is a bet with no upside; the path is what analysis needs.
+          - name: status
+            description: The HTTP status nginx returned to the client.
+          - name: upstream_status
+            description: >
+              The status the upstream returned, as text rather than a number: a retry
+              produces several, comma-separated ("502, 200"). Only the `proxy` format
+              has it.
+          - name: cache_status
+            description: >
+              nginx's $upstream_cache_status -- HIT, MISS, EXPIRED and so on. Only the
+              `proxy` format has it.
+          - name: bytes_sent
+            description: Response body size in bytes, excluding headers.
+          - name: user_agent
+            description: >
+              The User-Agent header verbatim. It is the only evidence the
+              bot-versus-browser classification downstream has.
+          - name: sent_to
+            description: >
+              The upstream nginx forwarded to ($server). Only the `proxy` format has it.
+          - name: client_hash
+            description: >
+              Salted HMAC-SHA256 of the client address, truncated to 16 bytes. The
+              address itself is destroyed in memory at ingest and never written, so this
+              is what makes a distinct-visitor count possible without keeping one. HMAC
+              rather than a plain digest: there are only 2^32 IPv4 addresses, and an
+              unkeyed digest of one is brute-forced in minutes.
+          - name: client_network
+            description: >
+              The client address truncated to its /24 (IPv4) or /48 (IPv6). Wide enough
+              not to single out a household, narrow enough to separate a datacentre
+              range from a home ISP.
+          - name: client_trust
+            description: >
+              Whether the logged address named a visitor (`resolved`) or a Cloudflare
+              machine standing in for one (`cdn_edge`); `unknown` when there was no
+              usable address. Two meaningful values and not three: after the 27 Aug 2026
+              real-IP cutover a restored address and an always-direct one are
+              byte-identical, so claiming to tell them apart would assert something the
+              data does not contain.
+          - name: client_version
+            description: 4 or 6 -- the IP version of the address, recorded before it was discarded.
+          - name: client_is_private
+            description: >
+              Whether the address was in a private range, which means the request came
+              from inside the LAN rather than from the internet.
+          - name: geo_country_code
+            description: >
+              ISO country code from MaxMind, resolved while the address was still in
+              hand and before the privacy boundary discarded it. Null throughout when no
+              GeoLite2 database is configured -- geo enrichment is optional on purpose,
+              so CI never needs a licence key.
+          - name: geo_country_name
+            description: The country's English name from MaxMind. Null when geo enrichment is not configured.
+          - name: geo_city
+            description: >
+              City from MaxMind's city database. Frequently null even when enrichment is
+              on: MaxMind resolves a city for far fewer addresses than a country.
+          - name: geo_asn
+            description: >
+              Autonomous system number of the network the address belonged to. Null when
+              enrichment is not configured.
+          - name: geo_as_org
+            description: >
+              The organisation that owns that autonomous system -- the operator name a
+              person recognises, such as an ISP or a cloud provider.
+          - name: source_file
+            description: >
+              Basename of the log file the line was read from. Diagnostic only: it says
+              which rotation generation a row came out of. Nothing downstream groups by it.
+
       - name: npm_access_rejects
         description: >
           Lines no log format matched, kept with their raw text. Never dropped: the
           reject rate is a data-quality signal, and a silent drop would hide a format change.
+        columns:
+          - name: dt
+            description: >
+              The partition being built when the line was found. A reject has no usable
+              timestamp -- that is why it is a reject -- so it cannot be placed by its
+              own contents and is attributed to the day under construction.
+          - name: host
+            description: Which NPM instance the unparseable line came from.
+          - name: source_file
+            description: Basename of the log file the line was read from.
+          - name: reason
+            description: >
+              Why no format matched -- which check failed. The field to group by when the
+              reject rate rises, because a format change produces one reason many times.
+          - name: raw_line
+            description: >
+              The line itself, truncated to 2000 characters. Kept so a new log format can
+              be recognised from the data rather than guessed at from the server.
+
       - name: litellm_spend
         description: >
           One row per LLM call from LiteLLM's spend ledger. Prompt and completion
           payloads are never selected; caller address, API key and end user are hashed
           at the ingestion boundary.
+        columns:
+          - name: dt
+            description: >
+              Partition date: the UTC day the call started. LiteLLM stores timestamps
+              without a zone, already in UTC, and the ingest attaches UTC explicitly so
+              the partition filter cannot drift with a session setting.
+          - name: request_id
+            description: LiteLLM's own identifier for the call. Unique, and the key the fact table uses.
+          - name: session_id
+            description: >
+              Groups the calls of one conversation or one agent run. Null for a call made
+              outside a session.
+          - name: started_at
+            description: When the proxy accepted the request (LiteLLM's startTime), in UTC.
+          - name: ended_at
+            description: When the response completed (endTime), in UTC.
+          - name: first_token_at
+            description: >
+              When the first token of the completion arrived (completionStartTime). The
+              difference from started_at is what a person actually feels as latency,
+              which is a different question from total duration.
+          - name: call_type
+            description: >
+              What LiteLLM was asked to do -- `acompletion`, `completion`, `responses`, an
+              embedding call, or one of the MCP calls. Grouped into a coarser `workload`
+              downstream.
+          - name: model
+            description: The model as named in the request, including any provider prefix.
+          - name: model_group
+            description: >
+              LiteLLM's routing group -- the alias several concrete models can sit behind.
+              Null when the request named a model directly.
+          - name: provider
+            description: >
+              LiteLLM's custom_llm_provider: who served the call. Null on a large minority
+              of rows, which is why the self-hosted flag downstream coalesces rather than
+              comparing directly.
+          - name: mcp_tool
+            description: >
+              The namespaced MCP tool a tool call invoked. Null for an ordinary completion.
+          - name: status
+            description: >
+              `success` or `failure`, as the proxy recorded it. Empty in the ledger
+              becomes `unknown` downstream rather than being assumed successful.
+          - name: spend_usd
+            description: >
+              What LiteLLM billed for the call, in US dollars. Taken from the ledger and
+              never recomputed: a second copy of every model's price list would drift
+              from the proxy's and then quietly disagree with the bill.
+          - name: total_tokens
+            description: Prompt and completion tokens together, as counted by the provider.
+          - name: prompt_tokens
+            description: Tokens in the input.
+          - name: completion_tokens
+            description: Tokens generated.
+          - name: duration_ms
+            description: End-to-end duration of the call in milliseconds, from the proxy's view.
+          - name: cache_hit
+            description: >
+              LiteLLM's raw three-state value: '' for a miss, 'True'/'true' for a hit.
+              Flattened to a boolean downstream, where unknown counts as a miss --
+              an uncached call is what got billed.
+          - name: team_id
+            description: The LiteLLM team the API key belongs to. Null when the key is not in a team.
+          - name: end_user
+            description: >
+              Salted hash of LiteLLM's end_user field, not the value itself. The field is
+              caller-supplied and can carry an address or an account name, so it goes
+              through the same boundary as everything else identifying.
+          - name: api_key_hash
+            description: >
+              Salted hash of the API key. The column upstream mixes 64-character hashes
+              and 24-character literals with nothing to tell them apart, so it is treated
+              as a credential and hashed either way. "Spend per key" survives; the risk
+              does not.
+          - name: client_hash
+            description: Salted hash of the caller's address, through the same boundary as the proxy logs.
+          - name: client_network
+            description: The caller's address truncated to its /24 or /48.
+          - name: client_trust
+            description: Whether the caller's address named a client or a CDN edge.
+          - name: geo_country_code
+            description: Country of the caller, resolved before the address was discarded. Null without a GeoLite2 database.
+          - name: geo_asn
+            description: Autonomous system number of the caller's network.
+          - name: geo_as_org
+            description: Operator of that autonomous system.
+
       - name: jellyfin_titles
         description: One row per movie per snapshot date. No paths, no playback history.
+        columns:
+          - name: dt
+            description: >
+              Snapshot date: the day this reading of the library was taken. Today's date
+              rather than yesterday's, because a snapshot describes the library now and
+              dating it yesterday would invent a past that never existed.
+          - name: item_id
+            description: Jellyfin's item id. Stable across snapshots, and the key SCD2 history is built on.
+          - name: title
+            description: >
+              The title as Jellyfin displays it, which in this library is usually the
+              localised name rather than the original.
+          - name: original_title
+            description: >
+              The title as released. Comes from Jellyfin, which fetched it from TMDB
+              during the scan -- [rate withheld] coverage, so there is no reason to ask TMDB again.
+          - name: production_year
+            description: Year of production as Jellyfin holds it.
+          - name: premiere_date
+            description: Release date. Null for titles Jellyfin never matched to a provider record.
+          - name: added_at
+            description: When the file was added to the library (Jellyfin's DateCreated), in UTC.
+          - name: community_rating
+            description: >
+              TMDB's vote average, which is what Jellyfin's CommunityRating is. Kept from
+              the snapshot rather than re-fetched -- the enrichment step deliberately does
+              not ask TMDB for a figure the library already holds.
+          - name: critic_rating
+            description: Critic score where Jellyfin has one. Sparse across this library.
+          - name: official_rating
+            description: Age or content certification, in whichever national scheme Jellyfin matched.
+          - name: runtime_minutes
+            description: >
+              Runtime as reported by the container metadata, converted from Jellyfin's
+              100-nanosecond ticks. Some mpeg2video DVD rips report an order of magnitude
+              too long; the value is kept exactly as reported and flagged downstream
+              rather than corrected, because inventing a plausible runtime would put a
+              fabricated number in the warehouse and hide the problem.
+          - name: container
+            description: The file container -- mkv, mp4 and so on.
+          - name: video_codec
+            description: Codec of the primary video stream.
+          - name: video_height
+            description: >
+              Height in pixels of the primary video stream. Real values here are not neat
+              standards -- 1080, 1040, 1036, 816, 804 -- because encodes are letterboxed
+              and cropped.
+          - name: video_width
+            description: Width in pixels of the primary video stream.
+          - name: video_bit_depth
+            description: >
+              Bits per colour channel. This is what says whether a file is HDR, not the
+              codec: hevc is routinely 8-bit and 10-bit h264 exists.
+          - name: resolution_class
+            description: >
+              Height bucketed into 4K / 1080p / 720p / SD / low. Banded rather than
+              matched on equality, with each boundary set below the nominal height, so a
+              cropped 1080p encode still counts as 1080p instead of becoming its own
+              category.
+          - name: audio_codec
+            description: Codec of the primary audio stream.
+          - name: audio_channels
+            description: Channel count of the primary audio stream -- 2 for stereo, 6 for 5.1.
+          - name: tmdb_id
+            description: >
+              TMDB identifier, stored by Jellyfin when it matched the file. Present on
+              [rate withheld] of titles, which is what lets enrichment be a key lookup rather than
+              a title search -- so a film cannot pick up another film's box office.
+          - name: imdb_id
+            description: IMDb identifier, where Jellyfin matched one.
+          - name: studio
+            description: The first studio Jellyfin lists for the title.
+          - name: production_country
+            description: >
+              First entry of Jellyfin's ProductionLocations, which it fetched from TMDB
+              during the scan. [rate withheld] coverage, so TMDB is not asked for it again.
+          - name: decade
+            description: production_year rounded down to its decade, derived at ingest so every reader agrees on it.
+
       - name: jellyfin_title_genres
         description: >
           Title-to-genre pairs. A separate table because a title has many genres and
           flattening them would mean a delimited string or genre_1/genre_2/genre_3.
+        columns:
+          - name: dt
+            description: Snapshot date, matching the titles table for the same day.
+          - name: item_id
+            description: The Jellyfin item this genre belongs to.
+          - name: genre
+            description: >
+              One genre name, as Jellyfin holds it -- a French display string on this
+              deployment, which is why the dimension downstream is keyed by a hash of it
+              rather than by the name.
+
       - name: camera_events
         description: >
           Attention events. Not final when first written: vision analysis lands hours
           later, so rows carry _extracted_at and the intermediate model keeps the
           newest version per event id.
+        columns:
+          - name: dt
+            description: >
+              Partition date: the UTC day the event started. The export is queried on a
+              half-open [from, to) range, so adjacent days can neither double-count a row
+              on the boundary nor drop one.
+          - name: _extracted_at
+            description: >
+              When this pipeline read the export. The whole late-arrival mechanism rests
+              on it: re-reading yesterday tomorrow legitimately returns different rows,
+              and this is what says which reading a row came from.
+          - name: id
+            description: The camera's event id. Stable across re-reads, and the key the deduplication uses.
+          - name: cameraId
+            description: Which camera raised the event.
+          - name: zoneId
+            description: The attention zone the rule belongs to. The zone's shape is never exported -- polygon coordinates are a map of the property.
+          - name: zoneName
+            description: The zone's display name, as a person named it.
+          - name: ruleId
+            description: The zone rule that fired.
+          - name: ruleType
+            description: >
+              What kind of rule fired -- `motion` or `state`. Deliberately not a statement
+              about what happened: most real passages are persisted as `motion` and only
+              become crossings once the clip analysis lands, so this is the trigger and
+              not the conclusion.
+          - name: lifecycle
+            description: >
+              `candidate` when first written, then `confirmed` or `dismissed` once vision
+              analysis has run. A row still `candidate` hours later means the analysis
+              pipeline is stuck.
+          - name: startedAt
+            description: ISO-8601 string of when the event began. Cast to a timestamp once, downstream.
+          - name: completedAt
+            description: ISO-8601 string of when the event was resolved. Null while the event is still a candidate.
+          - name: clipId
+            description: The clip that filmed the event, where one was kept. No path or URL is exported, only the id.
+          - name: direction
+            description: >
+              The provisional direction of a crossing. Kept even when the threshold check
+              rejected the crossing, so a rejection and a measured passage are told apart
+              by other fields rather than by this one being cleared.
+          - name: state
+            description: >
+              The zone's physical state at the event -- for a gate, `open` or `closed`;
+              `partly_open` is a transient reading of the same position rather than a
+              third state. Only set for state rules.
+          - name: previousState
+            description: The zone's state before this event. Equal to `state` means nothing moved, which is dismissed as `unchanged_state`.
+          - name: stateObservedAt
+            description: ISO-8601 string of when that state was observed. Null unless the event carries a state.
+          - name: confidence
+            description: >
+              The vision model's confidence in its conclusion. Null is a real value and is
+              not a low score -- it means the model declined to commit, and coalescing it
+              to 0 would turn a refusal into a confident "no".
+          - name: unusual
+            description: Whether the analysis judged the event out of the ordinary for that zone and hour.
+          - name: shouldNotify
+            description: Whether the camera decided this was worth telling somebody about. Never true for a dismissed, duplicate or unchanged-state event.
+          - name: dismissalReason
+            description: >
+              Why a dismissed event was dismissed -- `unchanged_state` when a state rule
+              fired on no movement, or a reason from the analysis such as
+              `semantic_no_event`.
+          - name: duplicateOf
+            description: The id of the event this one duplicates, when the camera recognised it as a repeat.
+          - name: summary
+            description: >
+              The model's short description of what it saw, up to 800 characters. Free
+              text, so nothing downstream groups by it.
+
       - name: camera_clips
         description: Clip metadata. No paths, playlists or thumbnails.
+        columns:
+          - name: dt
+            description: >
+              Partition date: the UTC day the clip was created.
+          - name: _extracted_at
+            description: When this pipeline read the export.
+          - name: id
+            description: The clip id. This is what an event's clipId points at.
+          - name: cameraId
+            description: Which camera recorded it.
+          - name: kind
+            description: >
+              Why the clip exists -- `event` for one the detector triggered, `manual` for
+              one a person started.
+          - name: createdAt
+            description: ISO-8601 string of when the recording was made.
+          - name: savedAt
+            description: ISO-8601 string of when it was written to permanent storage. Null while a clip is only in the rolling history.
+          - name: durationSeconds
+            description: Length of the clip in seconds, parsed from the display string the camera stores.
+          - name: sizeBytes
+            description: File size in bytes, parsed from the display string the camera stores.
+          - name: segmentCount
+            description: How many stored segments the clip is assembled from.
+          - name: storageQuality
+            description: The quality profile the clip was saved at, as a label.
+          - name: archived
+            description: Whether the clip has been moved out of the rolling history into the archive.
+          - name: deleted
+            description: >
+              Whether the clip has been deleted. The metadata row survives the file, which
+              is what keeps a count of recordings honest after a cleanup.
+          - name: aiSource
+            description: Which analyser produced the clip's AI verdict. Null on a clip that was never analysed.
+          - name: aiType
+            description: What that analyser concluded the clip shows.
+          - name: localConfidence
+            description: The on-device analyser's confidence, where it ran. Separate from an event's confidence, which comes from the vision model.
+          - name: createdByHash
+            description: >
+              Salted hash of the person who started a manual recording -- enough to tell
+              one person's recordings from another's without naming either. Null for a
+              clip the detector triggered.
+          - name: annotationCount
+            description: How many annotations were left on the clip. 0, never null.
+
       - name: camera_logs
         description: Activity log entries. Free-text titles are never exported.
+        columns:
+          - name: dt
+            description: >
+              Partition date: the UTC day the entry was written.
+          - name: _extracted_at
+            description: When this pipeline read the export.
+          - name: id
+            description: The log entry's id.
+          - name: cameraId
+            description: Which camera the entry is about.
+          - name: type
+            description: >
+              What happened -- `motion`, `gate_transition`, `measured_crossing`,
+              `analysis_completed`, `analysis_failed`, `analysis_corrected`,
+              `recording_started`, `recording_saved`, `recording_deleted`. The type is
+              what analysis needs; the prose that accompanies it is not exported, because
+              on this deployment it contains @mentions.
+          - name: important
+            description: Whether the entry was flagged as important when it was written.
+          - name: createdAt
+            description: ISO-8601 string of when the entry was written.
+          - name: sourceId
+            description: The clip or annotation the entry is about, where it refers to one.
+          - name: userHash
+            description: Salted hash of the person who caused the entry. Null for anything the system did on its own.
+
       - name: tmdb_titles
         description: >
           Budget, revenue, original language and vote counts from TMDB, keyed by the
           id Jellyfin already stored. A key lookup, never a title search, so a film
           cannot be enriched with another film's box office. Empty when no API key is
           configured -- enrichment is optional, exactly like geo.
+        columns:
+          - name: tmdb_id
+            description: >
+              TMDB's identifier, and the join key into the library. Not partitioned by
+              date: this is a lookup rewritten in full, so a date in the path would only
+              say when it was last refreshed, which the object's own mtime already says.
+          - name: _enriched_at
+            description: When this pipeline last asked TMDB about this id.
+          - name: original_language
+            description: ISO code of the language the film was made in. One of the few facts Jellyfin has no field for.
+          - name: budget_usd
+            description: >
+              Production budget in US dollars. Null rather than 0 when TMDB has no figure:
+              a film that cost nothing and a film nobody recorded a budget for are
+              different rows, and averaging them together understates every box-office
+              question.
+          - name: revenue_usd
+            description: Worldwide revenue in US dollars, null rather than 0 when unrecorded, for the same reason as budget_usd.
+          - name: popularity
+            description: TMDB's own popularity score. A relative, time-varying figure, so it is meaningful for ranking and not as an absolute.
+          - name: vote_count
+            description: >
+              How many people rated the film on TMDB. Kept while the average is not: the
+              average is already in the library as community_rating, and the count is what
+              says whether to trust it.

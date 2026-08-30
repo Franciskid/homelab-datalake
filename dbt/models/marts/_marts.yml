@@ -19,6 +19,7 @@ models:
           over [count withheld]; the build fails above [rate withheld].
         tests: [not_null]
       - name: partition_date
+        description: '{{ doc("req_partition_date") }}'
         tests: [not_null]
       - name: npm_instance
         description: Which NPM the request hit. primary fronts 44 hosts; secondary fronts the camera.
@@ -26,19 +27,48 @@ models:
           - not_null
           - accepted_values: {values: ['primary', 'secondary']}
       - name: requested_at
+        description: '{{ doc("req_requested_at") }}'
         tests: [not_null]
+      - name: requested_hour
+        description: '{{ doc("req_requested_hour") }}'
+      - name: request_host
+        description: '{{ doc("req_request_host") }}'
+      - name: path
+        description: '{{ doc("req_path") }}'
+      - name: path_group
+        description: '{{ doc("req_path_group") }}'
+      - name: method
+        description: '{{ doc("req_method") }}'
+      - name: scheme
+        description: '{{ doc("req_scheme") }}'
+        tests:
+          - accepted_values: {values: ['http', 'https']}
       - name: status
+        description: '{{ doc("req_status") }}'
         tests:
           - not_null
           - dbt_utils.accepted_range: {min_value: 100, max_value: 599}
       - name: status_class
+        description: '{{ doc("req_status_class") }}'
         tests:
           - not_null
           - accepted_values:
               values: ['informational', 'success', 'redirect', 'client_error', 'server_error']
-      - name: scheme
+      - name: upstream_status
+        description: '{{ doc("req_upstream_status") }}'
+      - name: upstream_target
+        description: '{{ doc("req_upstream_target") }}'
+      - name: bytes_sent
+        description: '{{ doc("req_bytes_sent") }}'
         tests:
-          - accepted_values: {values: ['http', 'https']}
+          - not_null
+          - dbt_utils.accepted_range: {min_value: 0, inclusive: true}
+      - name: user_agent
+        description: '{{ doc("req_user_agent") }}'
+      - name: client_hash
+        description: '{{ doc("client_hash") }}'
+      - name: client_network
+        description: '{{ doc("client_network") }}'
       - name: client_trust
         description: >
           Whether the logged address named a visitor (`resolved`) or a Cloudflare
@@ -49,22 +79,34 @@ models:
         tests:
           - not_null
           - accepted_values: {values: ['resolved', 'cdn_edge', 'unknown']}
+      - name: client_ip_version
+        description: '{{ doc("client_ip_version") }}'
+        tests:
+          - accepted_values: {values: [4, 6], quote: false}
+      - name: is_internal
+        description: '{{ doc("client_is_internal") }}'
       - name: client_kind
+        description: '{{ doc("req_client_kind") }}'
         tests:
           - not_null
           - accepted_values: {values: ['bot', 'browser', 'other', 'unknown']}
-      - name: client_ip_version
-        tests:
-          - accepted_values: {values: [4, 6], quote: false}
+      - name: is_automated
+        description: '{{ doc("req_is_automated") }}'
+      - name: geo_country_code
+        description: '{{ doc("geo_country_code") }}'
+      - name: geo_country_name
+        description: '{{ doc("geo_country_name") }}'
+      - name: geo_city
+        description: '{{ doc("geo_city") }}'
+      - name: geo_asn
+        description: '{{ doc("geo_asn") }}'
+      - name: geo_as_org
+        description: '{{ doc("geo_as_org") }}'
       - name: log_format
         description: Which of NPM's three line formats this row was parsed from.
         tests:
           - not_null
           - accepted_values: {values: ['proxy', 'standard', 'combined']}
-      - name: bytes_sent
-        tests:
-          - not_null
-          - dbt_utils.accepted_range: {min_value: 0, inclusive: true}
 
   - name: agg_traffic_daily
     description: >
@@ -72,14 +114,56 @@ models:
       only `resolved` rows -- see the model for why that exclusion is load-bearing.
     columns:
       - name: partition_date
+        description: '{{ doc("req_partition_date") }}'
         tests: [not_null]
+      - name: npm_instance
+        description: '{{ doc("req_npm_instance") }}'
+      - name: request_host
+        description: '{{ doc("req_request_host") }}'
+      - name: client_kind
+        description: '{{ doc("req_client_kind") }}'
       - name: requests
+        description: Requests in the group, counting bots and people alike.
         tests:
           - not_null
           - dbt_utils.accepted_range: {min_value: 1, inclusive: true}
       - name: visitors
+        description: >
+          Distinct client hashes, counting only rows whose address named a real client.
+          The `cdn_edge` exclusion is load-bearing: before the 27 Aug 2026 real-IP
+          cutover a Cloudflare-proxied request logged the edge, so counting every hash
+          would average real people with a handful of CDN machines and report a
+          confidently wrong number for half the history.
         tests:
           - dbt_utils.accepted_range: {min_value: 0, inclusive: true}
+      - name: visitor_networks
+        description: >
+          Distinct /24 or /48 networks among those visitors. A household behind one
+          address counts once here whether or not its address changed, so it moves more
+          slowly than `visitors` and is the better shape for a trend.
+      - name: requests_behind_cdn
+        description: >
+          Requests whose logged address was a Cloudflare machine. Not an error: it is
+          how much of the day's traffic cannot contribute to a visitor count, which is
+          what says whether that count is worth reading.
+      - name: bytes_sent
+        description: Response bytes in the group, excluding headers.
+      - name: requests_success
+        description: Requests whose status was 2xx.
+      - name: requests_client_error
+        description: Requests whose status was 4xx. Mostly scanners on this deployment.
+      - name: requests_server_error
+        description: Requests whose status was 5xx -- the count worth alerting on.
+      - name: server_error_pct
+        description: >
+          Server errors as a percentage of the group, to three decimals. Null rather
+          than zero when the group is empty, so a division by nothing does not read as
+          a healthy day.
+      - name: countries
+        description: >
+          Distinct countries in the group. Null geo -- no GeoLite2 database configured
+          -- does not count, so this is 0 on a deployment without enrichment rather
+          than being wrong.
 
   - name: fct_llm_call
     # geo_country_code and geo_as_org exist on this table and are null for every row,
@@ -101,18 +185,35 @@ models:
         description: LiteLLM's request_id. A genuine natural key, unlike the proxy logs'.
         tests: [not_null, unique]
       - name: partition_date
+        description: '{{ doc("llm_partition_date") }}'
         tests: [not_null]
       - name: started_at
+        description: '{{ doc("llm_started_at") }}'
         tests: [not_null]
+      - name: started_hour
+        description: '{{ doc("llm_started_hour") }}'
+      - name: model
+        description: '{{ doc("llm_model") }}'
+      - name: model_group
+        description: '{{ doc("llm_model_group") }}'
+      - name: provider
+        description: '{{ doc("llm_provider") }}'
+      - name: call_type
+        description: '{{ doc("llm_call_type") }}'
+      - name: mcp_tool
+        description: '{{ doc("llm_mcp_tool") }}'
       - name: status
+        description: '{{ doc("llm_status") }}'
         tests:
           - not_null
           - accepted_values: {values: ['success', 'failure', 'unknown']}
       - name: workload
+        description: '{{ doc("llm_workload") }}'
         tests:
           - not_null
           - accepted_values: {values: ['completion', 'embedding', 'mcp', 'other']}
       - name: client_trust
+        description: '{{ doc("client_trust") }}'
         tests:
           - not_null
           - accepted_values: {values: ['resolved', 'cdn_edge', 'unknown']}
@@ -122,9 +223,24 @@ models:
           - not_null
           - dbt_utils.accepted_range: {min_value: 0, inclusive: true}
       - name: total_tokens
+        description: '{{ doc("llm_total_tokens") }}'
         tests:
           - not_null
           - dbt_utils.accepted_range: {min_value: 0, inclusive: true}
+      - name: prompt_tokens
+        description: '{{ doc("llm_prompt_tokens") }}'
+      - name: completion_tokens
+        description: '{{ doc("llm_completion_tokens") }}'
+      - name: usd_per_token
+        description: >
+          Cost divided by tokens. Null when the call used no tokens, which is a real
+          state -- a failure, or a cache hit -- and guarding the divisor rather than the
+          numerator is what keeps those rows in the table instead of turning them null
+          throughout.
+      - name: duration_ms
+        description: '{{ doc("llm_duration_ms") }}'
+      - name: time_to_first_token_ms
+        description: '{{ doc("llm_ttft_ms") }}'
       - name: is_self_hosted
         description: >
           Whether the call went to a locally hosted model. Two values, never null --
@@ -132,7 +248,28 @@ models:
           kind of thing a not_null test on a boolean exists to catch.
         tests: [not_null]
       - name: was_cache_hit
+        description: '{{ doc("llm_was_cache_hit") }}'
         tests: [not_null]
+      - name: team_id
+        description: '{{ doc("llm_team_id") }}'
+      - name: end_user_hash
+        description: '{{ doc("llm_end_user_hash") }}'
+      - name: api_key_hash
+        description: '{{ doc("llm_api_key_hash") }}'
+      - name: client_hash
+        description: '{{ doc("client_hash") }}'
+      - name: session_id
+        description: '{{ doc("llm_session_id") }}'
+      - name: geo_country_code
+        description: >
+          Country of the caller. Null for every row on this deployment and correctly so:
+          every caller is a container on this host, and MaxMind has no record for
+          private address space. Kept because a genuinely external caller would populate
+          it without a schema change.
+      - name: geo_as_org
+        description: >
+          Network operator of the caller. Null throughout for the same reason as
+          geo_country_code.
 
   - name: agg_llm_spend_daily
     description: >
@@ -140,14 +277,58 @@ models:
       long agent run drags a mean far enough to hide what a normal call costs in time.
     columns:
       - name: partition_date
+        description: '{{ doc("llm_partition_date") }}'
         tests: [not_null]
+      - name: model
+        description: '{{ doc("llm_model") }}'
+      - name: provider
+        description: '{{ doc("llm_provider") }}'
+      - name: workload
+        description: '{{ doc("llm_workload") }}'
       - name: calls
+        description: Calls in the group, successful or not.
         tests:
           - not_null
           - dbt_utils.accepted_range: {min_value: 1, inclusive: true}
+      - name: failures
+        description: >
+          Calls the proxy recorded as failed. Beside `calls` rather than as a rate, so a
+          reader can see whether a [rate withheld] failure rate is one call in two or five hundred
+          in a thousand.
+      - name: cache_hits
+        description: Calls served from the proxy's cache, and therefore not billed by a provider.
+      - name: sessions
+        description: >
+          Distinct sessions in the group. Calls outside a session share a null
+          session_id, which `count(distinct)` skips -- so this counts conversations, not
+          callers.
       - name: spend_usd
+        description: >
+          Summed cost, to six decimals. The precision is not decoration: DuckDB's bare
+          NUMERIC is DECIMAL(18,3), and rounding to three decimals reported [spend withheld] for
+          26 of [count withheld] rows against real spend, because a mistral-small call costs about
+          [spend withheld].
         tests:
           - dbt_utils.accepted_range: {min_value: 0, inclusive: true}
+      - name: total_tokens
+        description: Prompt and completion tokens summed over the group.
+      - name: prompt_tokens
+        description: Input tokens summed over the group.
+      - name: completion_tokens
+        description: Generated tokens summed over the group.
+      - name: median_duration_ms
+        description: >
+          Median end-to-end duration. Median rather than mean: a single 90-second agent
+          run drags an average far enough to hide what a normal call costs in time.
+      - name: median_ttft_ms
+        description: >
+          Median time to first token -- the latency a person feels, as opposed to the
+          duration the bill reflects.
+      - name: usd_per_call
+        description: >
+          Spend divided by calls, to six decimals. The figure the ingest's own cost
+          check watches: a day far above trailing normal is a mispriced model, a retry
+          storm, or an agent that will not terminate.
 
   - name: fct_library_title
     description: >
@@ -155,29 +336,37 @@ models:
       the source site each file came from -- and no playback history.
     columns:
       - name: title_key
+        description: '{{ doc("lib_title_key") }}'
         tests: [not_null, unique]
       - name: item_id
+        description: '{{ doc("lib_item_id") }}'
         tests: [not_null]
       - name: snapshot_date
+        description: '{{ doc("lib_snapshot_date") }}'
         tests: [not_null]
       - name: title
+        description: '{{ doc("lib_title") }}'
         tests: [not_null]
-      - name: resolution_class
-        description: >
-          Bucketed from height by range, not equality. Real heights here include 1040,
-          1036, 816, 804 -- cropped and letterboxed encodes -- so equality bucketing
-          would scatter one logical resolution across a dozen values.
-        tests:
-          - accepted_values: {values: ['4K', '1080p', '720p', 'SD', 'low']}
+      - name: original_title
+        description: '{{ doc("lib_original_title") }}'
+      - name: production_year
+        description: '{{ doc("lib_production_year") }}'
+      - name: decade
+        description: '{{ doc("lib_decade") }}'
+      - name: premiere_date
+        description: '{{ doc("lib_premiere_date") }}'
+      - name: added_at
+        description: '{{ doc("lib_added_at") }}'
       - name: community_rating
+        description: '{{ doc("lib_community_rating") }}'
         tests:
           - dbt_utils.accepted_range: {min_value: 0, max_value: 10, inclusive: true}
+      - name: critic_rating
+        description: '{{ doc("lib_critic_rating") }}'
+      - name: official_rating
+        description: '{{ doc("lib_official_rating") }}'
       - name: runtime_minutes
-        description: >
-          As reported by Jellyfin, never corrected. Some mpeg2video DVD rips carry
-          container metadata an order of magnitude too long; those are flagged by
-          is_runtime_plausible rather than adjusted, so no fabricated number enters
-          the warehouse.
+        description: '{{ doc("lib_runtime_minutes") }}'
         tests:
           - dbt_utils.accepted_range:
               min_value: 1
@@ -186,16 +375,73 @@ models:
               config:
                 where: "is_runtime_plausible"
       - name: is_runtime_plausible
+        description: '{{ doc("lib_is_runtime_plausible") }}'
         tests: [not_null]
+      - name: is_long_feature
+        description: '{{ doc("lib_is_long_feature") }}'
+      - name: container
+        description: '{{ doc("lib_container") }}'
+      - name: video_codec
+        description: '{{ doc("lib_video_codec") }}'
+      - name: video_height
+        description: '{{ doc("lib_video_height") }}'
+      - name: video_width
+        description: '{{ doc("lib_video_width") }}'
+      - name: resolution_class
+        description: '{{ doc("lib_resolution_class") }}'
+        tests:
+          - accepted_values: {values: ['4K', '1080p', '720p', 'SD', 'low']}
+      - name: is_high_bit_depth
+        description: '{{ doc("lib_is_high_bit_depth") }}'
+      - name: audio_codec
+        description: '{{ doc("lib_audio_codec") }}'
+      - name: audio_channels
+        description: '{{ doc("lib_audio_channels") }}'
+      - name: studio
+        description: '{{ doc("lib_studio") }}'
+      - name: production_country
+        description: '{{ doc("lib_production_country") }}'
+      - name: tmdb_id
+        description: '{{ doc("lib_tmdb_id") }}'
+      - name: imdb_id
+        description: '{{ doc("lib_imdb_id") }}'
       - name: is_enrichable
+        description: >
+          Whether the title carries a TMDB id at all. Naming the gap as a column means a
+          query can exclude it rather than silently averaging over titles that were
+          never enrichable.
         tests: [not_null]
+      - name: is_enriched
+        description: >
+          Whether TMDB actually returned figures for it. Different from is_enrichable:
+          false with is_enrichable true means the lookup has not run or has no key
+          configured, which is a supported state rather than a fault.
+      - name: original_language
+        description: '{{ doc("lib_original_language") }}'
+      - name: budget_usd
+        description: '{{ doc("lib_budget_usd") }}'
+      - name: revenue_usd
+        description: '{{ doc("lib_revenue_usd") }}'
+      - name: revenue_to_budget
+        description: '{{ doc("lib_revenue_to_budget") }}'
+      - name: tmdb_popularity
+        description: >
+          TMDB's popularity score. Relative and time-varying, so it ranks titles against
+          each other on the day it was fetched and means nothing as an absolute figure.
+      - name: tmdb_vote_count
+        description: >
+          How many people rated the film on TMDB. The figure that says whether
+          community_rating is worth trusting -- a 9.0 from eleven voters is not a 9.0
+          from eleven thousand.
 
   - name: dim_genre
     description: Genres, keyed by a hash so a metadata refresh renaming one cannot break joins.
     columns:
       - name: genre_key
+        description: '{{ doc("lib_genre_key") }}'
         tests: [not_null, unique]
       - name: genre_name
+        description: '{{ doc("lib_genre") }}'
         tests: [not_null, unique]
 
   - name: bridge_title_genre
@@ -205,13 +451,26 @@ models:
       six genres.
     columns:
       - name: title_key
+        description: '{{ doc("lib_title_key") }}'
         tests:
           - not_null
           - relationships: {to: ref('fct_library_title'), field: title_key}
       - name: genre_key
+        description: '{{ doc("lib_genre_key") }}'
         tests:
           - not_null
           - relationships: {to: ref('dim_genre'), field: genre_key}
+      - name: snapshot_date
+        description: >
+          The day this pairing was true. Snapshot-grained on purpose: a title's genres
+          change when its metadata is refreshed, and the bridge should say what was true
+          on the day rather than only what is true now.
+      - name: item_id
+        description: '{{ doc("lib_item_id") }}'
+      - name: genre
+        description: >
+          The genre name, carried beside its key so a reader can see the pairing without
+          joining the dimension.
 
   - name: dim_title_scd2
     description: >
@@ -221,13 +480,38 @@ models:
       warehouse and rebuilding produces identical history.
     columns:
       - name: title_version_key
+        description: >
+          Surrogate key over item id and version number. One row per run of unchanged
+          attributes, which is the grain of this table.
         tests: [not_null, unique]
       - name: item_id
+        description: '{{ doc("lib_item_id") }}'
         tests: [not_null]
+      - name: version
+        description: >
+          How many times this title's tracked attributes had changed when this row
+          began. 0 is the title as first seen.
       - name: valid_from
+        description: The first snapshot date this version was observed on.
         tests: [not_null]
+      - name: valid_to
+        description: >
+          The last snapshot date this version was observed on, or null for the current
+          one. Null rather than a sentinel date: a sentinel sorts and filters like a
+          real date, which is how "as of" queries quietly return the wrong version.
       - name: is_current
+        description: Whether this is the version seen in the most recent snapshot.
         tests: [not_null]
+      - name: title
+        description: '{{ doc("lib_title") }}'
+      - name: community_rating
+        description: '{{ doc("lib_community_rating") }}'
+      - name: video_codec
+        description: '{{ doc("lib_video_codec") }}'
+      - name: resolution_class
+        description: '{{ doc("lib_resolution_class") }}'
+      - name: runtime_minutes
+        description: '{{ doc("lib_runtime_minutes") }}'
 
   - name: fct_camera_event
     description: >
@@ -239,15 +523,43 @@ models:
         description: Unique here precisely because the intermediate model dedupes versions.
         tests: [not_null, unique]
       - name: partition_date
+        description: '{{ doc("cam_partition_date") }}'
         tests: [not_null]
       - name: started_at
+        description: '{{ doc("cam_started_at") }}'
         tests: [not_null]
+      - name: completed_at
+        description: '{{ doc("cam_completed_at") }}'
+      - name: duration_seconds
+        description: '{{ doc("cam_duration_seconds") }}'
+      - name: started_hour
+        description: >
+          `started_at` truncated to the hour, in UTC. Pinned by the session timezone, so
+          two readers on different machines bucket the same event the same way.
+      - name: started_hour_of_day
+        description: >
+          Hour of the day, 0 to 23, in UTC. This and the weekday are the analysis camera
+          data is actually for: when does the garden get busy, does the weekend differ.
+      - name: started_weekday
+        description: Weekday name of the event, in UTC.
+      - name: is_weekend
+        description: Whether the event fell on a Saturday or a Sunday, in UTC.
       - name: camera_id
+        description: '{{ doc("cam_camera_id") }}'
         tests: [not_null]
+      - name: zone_id
+        description: '{{ doc("cam_zone_id") }}'
+      - name: zone_name
+        description: '{{ doc("cam_zone_name") }}'
       - name: lifecycle
+        description: '{{ doc("cam_lifecycle") }}'
         tests:
           - not_null
           - accepted_values: {values: ['confirmed', 'dismissed', 'candidate']}
+      - name: is_confirmed
+        description: '{{ doc("cam_is_confirmed") }}'
+      - name: is_awaiting_analysis
+        description: '{{ doc("cam_is_awaiting_analysis") }}'
       - name: rule_type
         description: >
           The kind of rule that raised the event. This list is RULE_TYPES in the
@@ -279,24 +591,92 @@ models:
                        'human_correction', 'recording_unavailable', 'recording_failed',
                        'unchanged_state', 'analysis_failed', 'duplicate']
       - name: direction
+        description: '{{ doc("cam_direction") }}'
         tests:
           - accepted_values: {values: ['entrée', 'sortie']}
       - name: zone_state
+        description: '{{ doc("cam_zone_state") }}'
         tests:
           - accepted_values: {values: ['open', 'closed', 'partly_open']}
+      - name: previous_zone_state
+        description: '{{ doc("cam_previous_zone_state") }}'
+      - name: state_changed
+        description: >
+          Whether the zone's state differs from its previous one. Compared with `is
+          distinct from`, so an event where one side is null still counts as a change
+          rather than evaluating to null and disappearing from both sides of a filter.
       - name: confidence
         description: >
           Null means the model declined to commit, which is a different fact from a low
           score and must stay distinguishable.
         tests:
           - dbt_utils.accepted_range: {min_value: 0, max_value: 1, inclusive: true}
+      - name: is_unusual
+        description: '{{ doc("cam_is_unusual") }}'
+      - name: should_notify
+        description: '{{ doc("cam_should_notify") }}'
+      - name: duplicate_of
+        description: '{{ doc("cam_duplicate_of") }}'
+      - name: is_duplicate
+        description: >
+          Whether the camera recognised this event as a repeat of another. The flag to
+          filter on before counting events, since a duplicate is one real happening
+          recorded twice.
+      - name: summary
+        description: '{{ doc("cam_summary") }}'
+      - name: clip_id
+        description: '{{ doc("cam_clip_id") }}'
+      - name: extracted_at
+        description: >
+          When this pipeline read the version of the event that survived. Beside the
+          event rather than dropped, because "why did this row change since yesterday"
+          is answered by it and by nothing else.
 
   - name: agg_camera_activity_daily
     description: Daily activity by camera, zone and rule.
     columns:
       - name: partition_date
+        description: '{{ doc("cam_partition_date") }}'
         tests: [not_null]
+      - name: camera_id
+        description: '{{ doc("cam_camera_id") }}'
+      - name: zone_name
+        description: '{{ doc("cam_zone_name") }}'
+      - name: rule_type
+        description: '{{ doc("cam_rule_type") }}'
       - name: events
+        description: Events in the group, before any filtering for duplicates or dismissals.
         tests:
           - not_null
           - dbt_utils.accepted_range: {min_value: 1, inclusive: true}
+      - name: confirmed
+        description: Events analysis confirmed as real.
+      - name: dismissed
+        description: >
+          Events analysis rejected. High beside a low `confirmed` is a zone whose rule is
+          firing on something that is not worth an event.
+      - name: awaiting_analysis
+        description: >
+          Events still candidates when the partition was read. A few on the current day
+          are normal; a run of them across older days means the analysis pipeline has
+          stopped.
+      - name: notified
+        description: Events the camera judged worth telling somebody about.
+      - name: unusual
+        description: Events analysis judged out of the ordinary for that zone and hour.
+      - name: duplicates
+        description: Events recognised as repeats of another. Subtract before counting real happenings.
+      - name: scored_events
+        description: >
+          Events that carry a confidence. It travels beside the average because avg()
+          skips nulls, and an average over three events reads identically to one over
+          three hundred otherwise.
+      - name: avg_confidence
+        description: >
+          Mean confidence over the scored events only, to four decimals. Cast through
+          DECIMAL(18,9) rather than bare NUMERIC, which is DECIMAL(18,3) in DuckDB and
+          would round 0.8125 to 0.813 and make the four decimals a lie.
+      - name: median_duration_seconds
+        description: >
+          Median event duration, to one decimal. Unresolved events carry no duration and
+          do not contribute.
