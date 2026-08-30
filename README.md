@@ -12,6 +12,10 @@ question in words and get back a figure or a formatted Excel workbook.
 This repo publishes the code, a synthetic seed and the reasoning. It does not publish the
 data — see [What is and isn't here](#what-is-and-isnt-here).
 
+**[docs/HOW_IT_WORKS.md](docs/HOW_IT_WORKS.md)** is the short version: the lake layout, the
+assets, the SQL console and what to do when something fails, in Simplified Technical
+English. Read that first.
+
 ```
 NPM access logs            ┐
 LiteLLM spend ledger       ├→ redact at the boundary → Parquet on MinIO
@@ -502,9 +506,12 @@ src/homelab_datalake/
   parsing/extract.py    partition by timestamp, rotation-safe
   privacy.py            the PII boundary: enrich, hash, discard
   geo.py                MaxMind lookups, optional by design
+  layout.py             every path in the lake, declared once
+  migrate_layout.py     copy, verify, delete -- moving the bucket safely
   resources.py          MinIO or local disk behind one interface
   serving.py            the read-only marts copy, and why it exists
   assets/               partitioned assets, dbt models, the serving publish
+  sql/                  the SQL console: engine, guards, one page
   mcp/semantic.py       what may be asked, in business vocabulary
   mcp/query.py          validation, SQL construction, the limits
   mcp/deliverables.py   .xlsx with a provenance sheet
@@ -513,7 +520,20 @@ src/homelab_datalake/
 dbt/models/             staging → intermediate → marts
 dbt/tests/              the guarantees, as SQL that fails the build
 scripts/                seed generator, real-IP verifiers, Keycloak setup
+docs/HOW_IT_WORKS.md    the short version, in Simplified Technical English
 infra/npm/              the deployed reverse-proxy config
 ```
+
+The bucket has three layers, and the layer is the first path segment:
+
+```
+raw/       as landed          raw/infrastructure/npm/access/host=primary/dt=2026-08-27/
+curated/   cleaned, enriched  curated/infrastructure/npm/requests/partition_date=2026-08-27/
+marts/     facts and totals   marts/ai/agg_llm_spend_daily/partition_date=2026-08-27/
+```
+
+Under the layer the path is `<domain>/<source>/<dataset>`, with four domains —
+`infrastructure`, `media`, `monitoring`, `ai`. A mart has no source segment, because it
+joins more than one. Every path is built from `layout.py`; nothing else spells one out.
 
 > Public history note: private identifiers, measurements, and operational details were redacted. Code examples use placeholder infrastructure.
