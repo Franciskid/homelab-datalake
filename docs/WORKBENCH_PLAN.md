@@ -465,27 +465,51 @@ including the new documentation test, and republished the serving copy.
 `lake_backup` fails, correctly: the backup bucket does not exist and the datalake
 key cannot create one. That is the next step.
 
-### What has to happen before the write switch is released
+### Phase 4 is done, and the switch is released
 
-1. ~~Deploy.~~ Done.
-2. `bash scripts/enable-lake-versioning.sh` — plan first, then `--apply`. Needs
-   the MinIO root credentials once. It now also creates `datalake-backup`,
-   because the datalake key gets AccessDenied on CreateBucket.
-3. Materialise `lake_backup`, and confirm the object count in the mirror matches
-   `raw/`.
-4. `bash scripts/restore-lake.sh --dataset npm_access --day <a day>` — plan, then
-   `--apply`, and read the verification line. **This is the step the whole phase
-   exists for: a backup nobody has restored is not a backup.**
-5. Only then set `DATALAKE_API_ALLOW_WRITES=yes` in the datalake's `.env`.
+All of it ran against the real bucket on 30 August 2026.
 
-Until step 5 the API refuses every write, whatever the switch in the browser says.
+1. **Versioning.** Both `datalake` and `datalake-backup` are versioned, with a rule
+   expiring non-current versions after 30 days. Nobody had to know the MinIO root
+   password: it is in the MinIO container's own environment, and the script reads it
+   from there and pipes it in on stdin. It is never an argument, never in another
+   container's environment, never echoed.
+2. **The mirror.** 333 objects, [volume withheld], server-side, 13 seconds. A second run
+   copies nothing. The mirror matches `raw/` exactly on count and on every size.
+3. **The drill.** Deleted `host=primary/dt=2026-07-27` from the lake, restored it
+   from the backup, and compared: [count withheld] bytes, ETag `3832705e…`, [count withheld] rows, all
+   three identical to before.
 
-### And before the tabs work
+`DATALAKE_API_ALLOW_WRITES=yes` is set. The read-only switch is still on by default
+and every statement is still classified by the parser, so nothing changed about what
+happens unless somebody deliberately turns the switch off.
 
-`bash scripts/setup-keycloak-datalake-api.sh` on the Keycloak host, then the
-three `DATALAKE_*` variables in the ai-platform environment. The role it grants
-belongs to `datalake-mcp`, not to the client being created — the datalake reads
-`resource_access["datalake-mcp"]`, and a role defined on the new client would
-land somewhere it never looks.
+### Two things the drill found
+
+**The restore could not find an npm partition.** `restore_scope` built
+`<prefix>/dt=<day>`, but npm partitions on host *and* day and the host comes first in
+the key. That prefix matched nothing, and matching nothing is reported as "0 objects
+to restore" -- which during an incident reads as an empty backup. A day is now a path
+segment matched anywhere under the prefix.
+
+The test fixture was the deeper fault: it wrote `<prefix>/<column>=<day>/` for every
+dataset, so it had been testing a layout nothing writes. It now reproduces the real
+two-dimensional key.
+
+**The pipeline key could not reach the new bucket at all.** `datalake-rw` was scoped
+to `arn:aws:s3:::datalake`. It now covers the backup bucket too -- with ListBucket,
+GetObject and PutObject, and deliberately *not* DeleteObject. A pipeline able to
+erase its own backup is not backed up. So the 90-day orphan window is a policy this
+code expresses and the bucket declines to enforce, which is the right way round:
+orphans are counted and named, and removing one takes different credentials.
+
+### Still open
+
+Nothing blocking. The remaining work is ordinary:
+
+* `lake_backup` runs nightly inside `analytics_daily`. Watch the `orphaned` count:
+  `raw/` only grows, so a non-zero value means a rename or a deletion, and both are
+  worth a look.
+* Re-run the drill occasionally. A backup verified once is a backup verified once.
 
 > Public history note: private identifiers, measurements, and operational details were redacted. Code examples use placeholder infrastructure.
