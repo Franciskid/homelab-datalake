@@ -45,12 +45,25 @@ services:
     image: quay.io/oauth2-proxy/oauth2-proxy:v7.7.1
     container_name: datalake-oauth2-proxy
     restart: unless-stopped
-    depends_on: [dagster-webserver]
+    depends_on: [dagster-webserver, datalake-sql]
     env_file: [.env]
     environment:
       OAUTH2_PROXY_PROVIDER: keycloak-oidc
       OAUTH2_PROXY_HTTP_ADDRESS: 0.0.0.0:4180
-      OAUTH2_PROXY_UPSTREAMS: http://dagster-webserver:3000
+      # Upstreams matched by path prefix: the console gets `/sql`, Dagster gets
+      # everything else, so one login covers both and neither is published on a port
+      # of its own.
+      #
+      # `/sql/` and `/sql` are both listed. oauth2-proxy matches a mapping on its
+      # exact prefix, so with only the first of them a person typing
+      # data.example.test/sql falls through to the catch-all and lands on a Dagster
+      # 404 -- with nothing in any log to say why.
+      OAUTH2_PROXY_UPSTREAMS: http://datalake-sql:8080/sql/,http://datalake-sql:8080/sql,http://dagster-webserver:3000
+      # The console refuses a request that arrives without an identity, so this is
+      # what lets it in. It also means a misconfiguration that bypassed the proxy
+      # fails closed rather than serving the warehouse to whoever asked.
+      OAUTH2_PROXY_SET_XAUTHREQUEST: "true"
+      OAUTH2_PROXY_PASS_USER_HEADERS: "true"
       # Trust the X-Forwarded-* headers nginx sets; without this oauth2-proxy builds
       # redirect URLs from the internal address and the login loop never terminates.
       OAUTH2_PROXY_REVERSE_PROXY: "true"
@@ -112,6 +125,32 @@ services:
       # stall the nightly job.
       - warehouse:/warehouse:ro
       - exports:/exports
+
+  # The SQL console: a text box that runs SELECT against the lake.
+  #
+  # Deliberately not a second Metabase-shaped thing. It shares this project's image,
+  # its Keycloak login and its hostname, so there is no new container to keep
+  # patched, no second identity integration and no second certificate. It is reached
+  # at https://data.example.test/sql, routed there by the same oauth2-proxy that
+  # protects the Dagster UI, so the same `datalake-user` role decides who gets in.
+  #
+  # It reads the published serving copy for the marts and the lake over httpfs for
+  # the raw and curated layers, so it never touches the warehouse the nightly build
+  # is writing.
+  datalake-sql:
+    build: .
+    container_name: datalake-sql
+    restart: unless-stopped
+    env_file: [.env]
+    command: ["python", "-m", "homelab_datalake.sql.app"]
+    environment:
+      SQL_CONSOLE_PORT: "8080"
+    expose:
+      - "8080"
+    volumes:
+      # Read-only, like the MCP server and for the same reason: a container that
+      # could take DuckDB's write lock could stall the nightly job.
+      - warehouse:/warehouse:ro
 
   dagster-daemon:
     build: .
