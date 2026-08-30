@@ -607,9 +607,21 @@ four now come from the library snapshot. TMDB keeps only what Jellyfin has no fi
 for -- budget, revenue, popularity, vote count, original language -- and stays optional
 in the way geo is, so CI never needs a credential.
 
-**Stage 2c — camera.** Three systems, so in order, each verifiable alone: Keycloak client →
-bearer middleware in `homelab_camera` → `/api/export/*` → Dagster asset → dbt vocabulary tests.
-Needs the container healthy again first.
+**Stage 2c — camera. Built and deployed 29 Aug 2026.** Keycloak client → bearer middleware
+in `homelab_camera` → `/api/export/*` → Dagster asset → dbt vocabulary tests. [count withheld] events,
+[count withheld] clips and [count withheld] logs over 23 days.
+
+It broke once, on 30 Aug 2026, and the way it broke is the lesson. A deploy of the camera
+app overwrote `src/create-app.js` and `package.json`; the export route modules survived,
+but the four lines that mounted them and the `jose` dependency did not. The endpoints
+answered 404, and the nightly ingest failed with them. Nothing could be restored: that
+repository had no commits, and no image older than the deploy still carried the code. It
+had to be written again from the modules' own interface.
+
+Two things follow. The camera repository must be committed -- an uncommitted feature is
+one deploy away from gone. And the two losses came from one event but surfaced one at a
+time: while the routes were unmounted, `export-auth.js` was never loaded, so its missing
+dependency could not raise. Repairing the first fault is what revealed the second.
 
 **Stage 3 — MCP server. Built and deployed 29 Aug 2026.** Live at
 `https://data.example.test/mcp`, behind a Keycloak bearer token.
@@ -642,16 +654,36 @@ Verified in production: 107/107 dbt tests, 10 marts and [count withheld] rows pu
 the public internet no token / garbage token / forged-but-well-formed token all rejected
 with 401.
 
-**Outstanding on this stage:** the Keycloak client `datalake-mcp` and its `datalake:query`
-client role have to be created by hand -- creating a client needs realm admin
-credentials. Until then the endpoint is live and correctly refuses everything.
+**Done 30 Aug 2026.** The Keycloak client `datalake-mcp` exists, its service account holds
+the `datalake:query` client role, and the endpoint has been exercised end to end from the
+public internet with a real token: seven tools listed, real figures returned, and a
+formatted workbook written.
+
+It is also registered as an upstream on the LiteLLM MCP gateway, which mints its own
+short-lived token by `client_credentials` -- no static bearer, and no refresher sidecar.
+Three separate things had to be true, and each fails silently on its own: the entry in
+`litellm/config.yaml` needs `oauth2_flow: client_credentials` (without it LiteLLM treats
+the server as interactive per-user OAuth and never mints anything) and an explicit
+`token_url` (it does not read the server's own discovery document, even though the
+datalake publishes one); the seven tools need adding to the runtime's deny-by-default
+profile, or an agent cannot even discover them; and `datalake` needs listing in
+`MCP_SERVER_ALIASES`, or the API does not look for them.
 
 ---
 
 ## 14. Still open
 
-1. **MaxMind GeoLite2 licence key** — free, needs an account, and the database file wants a
-   monthly refresh. A small Dagster asset, or a cron and a note.
+1. ~~**MaxMind GeoLite2 licence key.**~~ **Done 30 Aug 2026.** `scripts/refresh-geoip.sh`
+   downloads both databases into the `geoip` volume through a short-lived container that
+   has it read-write, writing under a temporary name and moving into place, so a reader
+   never sees a half-written database. Geography is [rate withheld] populated across [count withheld]
+   requests. The script prints the monthly cron line; MaxMind rebuilds twice a week.
+
+   The ordering constraint is the part worth remembering: geography is derived while the
+   address is still in hand and the address is discarded in the same step. So a partition
+   built before the databases existed cannot gain geography from a mart rebuild -- its log
+   lines have to be parsed again. That is why enabling geo meant rebuilding all 34 days
+   rather than only the missing ones.
 2. **MinIO disk headroom** on `homelab-camera-analysis_minio-data`. Parquet from ~[volume withheld]/week
    of logs is small, but check rather than assume.
 3. **Prometheus retention is the 15-day default** — no `--storage.tsdb.retention` flag is set.

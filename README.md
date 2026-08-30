@@ -5,7 +5,8 @@ logs into Parquet on MinIO; dbt models them in DuckDB; tests fail the build rath
 log a warning.
 
 **Four sources live** — reverse-proxy logs, the LiteLLM spend ledger, the media library
-and camera events — **and an MCP server on top**, so a model can ask the warehouse a
+and camera events — **and an MCP server on top**, reachable both directly and as a
+registered upstream on the homelab's LiteLLM MCP gateway, so a model can ask the warehouse a
 question in words and get back a figure or a formatted Excel workbook.
 
 This repo publishes the code, a synthetic seed and the reasoning. It does not publish the
