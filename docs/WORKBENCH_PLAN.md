@@ -440,21 +440,52 @@ step of the nightly job, so its identity changing *is* the signal. That is one
 and retry — there is no refresh that can be lost, because none is sent.
 `POST /catalogue/refresh` remains as a manual escape hatch.
 
+### One bug the deployment found
+
+Every DuckDB `s3_*` setting is LOCAL scope, and a cursor inherits none of its
+parent's local settings. The views bound on the connection, which had the
+credentials; every query ran on a cursor, read the bucket anonymously, and got a
+403 saying the credentials were missing while they sat plainly configured. It is
+the same trap as the timezone one two paragraphs' worth of comments already warn
+about in `mcp/warehouse.py`.
+
+Nothing in the local tests could have caught it — a local lake sets no `s3_*`
+settings at all — so the fix comes with a test on the *shape* of the
+configuration rather than on its effect.
+
+### Deployed on 30 August 2026
+
+`datalake-api` is running on primary. Verified against the real bucket: 25
+datasets mounted, 445/445 columns described, a three-layer query in 29 ms, and
+every one of DELETE, `EXPLAIN ANALYZE DELETE`, `COPY TO s3://`,
+`read_csv('/etc/passwd')`, `SET s3_access_key_id` and a two-statement payload
+refused. `analytics_daily` rebuilt the marts with all 132 dbt checks passing,
+including the new documentation test, and republished the serving copy.
+
+`lake_backup` fails, correctly: the backup bucket does not exist and the datalake
+key cannot create one. That is the next step.
+
 ### What has to happen before the write switch is released
 
-Phase 4's code is written and unit-tested; none of it has run against the real
-bucket. In order:
-
-1. Deploy (`bash scripts/deploy.sh`) so `datalake-api` and `lake_backup` exist.
+1. ~~Deploy.~~ Done.
 2. `bash scripts/enable-lake-versioning.sh` — plan first, then `--apply`. Needs
-   the MinIO root credentials once; the datalake key cannot do it.
-3. Materialise `lake_backup` once, and confirm the object count in the mirror
-   matches `raw/`.
+   the MinIO root credentials once. It now also creates `datalake-backup`,
+   because the datalake key gets AccessDenied on CreateBucket.
+3. Materialise `lake_backup`, and confirm the object count in the mirror matches
+   `raw/`.
 4. `bash scripts/restore-lake.sh --dataset npm_access --day <a day>` — plan, then
    `--apply`, and read the verification line. **This is the step the whole phase
    exists for: a backup nobody has restored is not a backup.**
 5. Only then set `DATALAKE_API_ALLOW_WRITES=yes` in the datalake's `.env`.
 
 Until step 5 the API refuses every write, whatever the switch in the browser says.
+
+### And before the tabs work
+
+`bash scripts/setup-keycloak-datalake-api.sh` on the Keycloak host, then the
+three `DATALAKE_*` variables in the ai-platform environment. The role it grants
+belongs to `datalake-mcp`, not to the client being created — the datalake reads
+`resource_access["datalake-mcp"]`, and a role defined on the new client would
+land somewhere it never looks.
 
 > Public history note: private identifiers, measurements, and operational details were redacted. Code examples use placeholder infrastructure.
