@@ -34,9 +34,25 @@ def vault(lake) -> LakeStorage:
     return backup.backup_storage(lake)
 
 
-def _land(lake: LakeStorage, table: str, day: str, rows: int = 1) -> str:
+def _land(lake: LakeStorage, table: str, day: str, rows: int = 1, host: str = "primary") -> str:
+    """Write one object at the key production actually uses.
+
+    The npm datasets partition on two dimensions, and the host comes *first*:
+
+        raw/infrastructure/npm/access/host=primary/dt=2026-07-27/data.parquet
+
+    An earlier version of this helper wrote `<prefix>/<partition_column>=<day>/` for
+    everything, and that single simplification hid a restore that could not find an
+    npm partition at all -- it reported "0 objects to restore" while the object sat
+    in the backup. A fixture that does not reproduce the real key shape is a fixture
+    that tests a layout nothing writes.
+    """
     dataset = layout.dataset(table)
-    key = f"{dataset.prefix}/{dataset.partition_column}={day}/data.parquet"
+    parts = [dataset.prefix]
+    if table.startswith("npm_"):
+        parts.append(f"host={host}")
+    parts.append(f"{dataset.partition_column}={day}")
+    key = "/".join([*parts, "data.parquet"])
     lake.write_table(key, pa.table({"n": pa.array(list(range(rows)))}))
     return key
 
@@ -128,6 +144,32 @@ def test_an_orphan_is_removed_only_after_the_retention_window(lake, vault):
     assert key not in backup.inventory(vault, "raw")
 
 
+def test_an_orphan_the_key_cannot_delete_is_reported_not_raised(lake, vault, monkeypatch):
+    """The deployed policy grants no DeleteObject on the backup, on purpose.
+
+    A pipeline able to erase its own backup is not backed up. So retention is a
+    policy this code expresses and the bucket declines to enforce -- and the asset
+    must say so rather than turn a deliberate permission boundary into a red nightly
+    job every night for ever.
+    """
+    key = _land(lake, "npm_access", "2026-08-01")
+    backup.mirror(lake, vault)
+    pathlib.Path(lake.local_root, key).unlink()
+
+    def refuse(_storage, _key):
+        raise PermissionError("AccessDenied")
+
+    monkeypatch.setattr(backup, "_delete", refuse)
+    result = backup.mirror(lake, vault, orphan_days=90,
+                           now=datetime.now(UTC) + timedelta(days=91))
+
+    assert result.orphans == [key]
+    assert result.expired == 0
+    assert result.unexpired == 1
+    # And the object is still there, which is the whole point.
+    assert key in backup.inventory(vault, "raw")
+
+
 def test_retention_can_be_switched_off(lake, vault):
     """A deletion nobody noticed for a year is still a deletion worth undoing."""
     key = _land(lake, "npm_access", "2026-08-01")
@@ -148,9 +190,38 @@ def test_retention_can_be_switched_off(lake, vault):
 def test_the_scope_of_a_restore_comes_from_the_registry():
     assert backup.restore_scope() == "raw"
     assert backup.restore_scope("npm_access") == "raw/infrastructure/npm/access"
-    assert backup.restore_scope("npm_access", "2026-08-01") == (
-        "raw/infrastructure/npm/access/dt=2026-08-01"
-    )
+
+
+def test_a_day_is_a_segment_to_match_not_a_prefix_to_append():
+    """npm partitions on host *and* day, and the host comes first in the key.
+
+    `<prefix>/dt=<day>` matches nothing there, and matching nothing is reported as
+    "0 objects to restore" -- which during an incident reads as the backup being
+    empty. Found by running the drill against the real bucket.
+    """
+    assert backup.day_segment("npm_access", "2026-07-27") == "dt=2026-07-27"
+    assert backup.day_segment("camera_events", "2026-08-01") == "dt=2026-08-01"
+
+
+def test_one_day_of_a_doubly_partitioned_dataset_can_be_restored(lake, vault):
+    """The bug the drill found, as a test: two hosts, one day, one host lost."""
+    kept = _land(lake, "npm_access", "2026-07-27", host="secondary")
+    lost = _land(lake, "npm_access", "2026-07-27", host="primary", rows=99)
+    other_day = _land(lake, "npm_access", "2026-07-28", host="primary")
+    backup.mirror(lake, vault)
+    pathlib.Path(lake.local_root, lost).unlink()
+
+    scope = backup.restore_scope("npm_access")
+    segment = backup.day_segment("npm_access", "2026-07-27")
+    plan = backup.plan_restore(lake, vault, scope, segment)
+
+    assert [o.key for o in plan.restore] == [lost]
+    assert plan.identical == [kept]
+    backup.apply_restore(lake, plan, vault)
+    assert backup.verify_restore(lake, plan, vault, scope, segment) == []
+    assert pathlib.Path(lake.local_root, lost).exists()
+    # The other day was never in scope and is untouched.
+    assert pathlib.Path(lake.local_root, other_day).exists()
 
 
 def test_a_derived_dataset_cannot_be_restored_because_it_is_not_backed_up():
@@ -161,7 +232,7 @@ def test_a_derived_dataset_cannot_be_restored_because_it_is_not_backed_up():
 
 def test_an_unpartitioned_dataset_refuses_a_day():
     with pytest.raises(ValueError, match="not partitioned"):
-        backup.restore_scope("tmdb_titles", "2026-08-01")
+        backup.day_segment("tmdb_titles", "2026-08-01")
 
 
 def test_an_unknown_dataset_names_itself():
@@ -209,8 +280,8 @@ def test_a_restore_of_one_day_leaves_the_others_alone(lake, vault):
     backup.mirror(lake, vault)
     pathlib.Path(lake.local_root, second).unlink()
 
-    scope = backup.restore_scope("npm_access", "2026-08-01")
-    plan = backup.plan_restore(lake, vault, scope)
+    plan = backup.plan_restore(lake, vault, backup.restore_scope("npm_access"),
+                               backup.day_segment("npm_access", "2026-08-01"))
     assert plan.restore == []
     backup.apply_restore(lake, plan, vault)
     assert not pathlib.Path(lake.local_root, second).exists()

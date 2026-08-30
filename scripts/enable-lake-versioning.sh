@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
-# Set up both lake buckets with the MinIO root credentials. Run once.
+# Set up both lake buckets with the MinIO root credentials. Run once, on primary.
 #
-# Three things, all of which need admin rights the datalake key deliberately does not
-# have:
+#   bash scripts/enable-lake-versioning.sh            # show what it would do
+#   bash scripts/enable-lake-versioning.sh --apply    # do it
+#
+# Three things, all needing admin rights the datalake key deliberately does not have:
 #
 #   1. Create the backup bucket the nightly mirror writes to. Measured: the datalake
 #      key gets AccessDenied on CreateBucket, which is correct -- a key used every
@@ -13,30 +15,43 @@
 #      others are the nightly mirror (lake_backup) and scripts/restore-lake.sh.
 #   3. Add the lifecycle rule that stops those old versions accumulating for ever.
 #
-#   bash scripts/enable-lake-versioning.sh            # show what it would do
-#   bash scripts/enable-lake-versioning.sh --apply    # do it
+# NOBODY NEEDS TO KNOW THE ROOT PASSWORD
+#
+# It is already on this host, in the MinIO container's own environment, which is how
+# MinIO was configured in the first place. This reads it from there and pipes it
+# straight into the job on stdin. It is never an argument (so never in `ps`), never
+# put in another container's environment, never echoed, and never written down.
+#
+# That is not only convenience. A credential a human has to read and retype is a
+# credential that ends up in a scrollback, a clipboard and a shell history -- and
+# rotating the MinIO root password to work around having forgotten it would have
+# meant re-issuing every key derived from it.
+#
+# Override with MINIO_ROOT_USER / MINIO_ROOT_PASSWORD in the environment, or let it
+# prompt, if MinIO runs somewhere this cannot see it.
 #
 # Nothing here is destructive: it creates a bucket, turns versioning on, and adds a
-# rule that expires *non-current* versions only. The script refuses outright if any
-# lifecycle rule would expire a current one.
-#
-# The datalake S3 key cannot do this. It is an ordinary access key -- measured:
-# get_bucket_versioning returns AccessDenied -- so this runs once with the MinIO root
-# credentials. They are read from your environment or prompted for, never written to
-# disk, never put on a command line where `ps` would show them, and never stored in
-# .env. Export them for this one run:
-#
-#   export MINIO_ROOT_USER=... MINIO_ROOT_PASSWORD=...
-#
-# The lifecycle rule is the other half and is not optional. Versioning without an
-# expiry means every overwritten partition is kept for ever, and the host this runs on
-# is [rate withheld] full. Thirty days is long enough to notice a mistake and short enough that
-# the bucket stops growing.
+# rule that expires *non-current* versions only. It refuses outright if any lifecycle
+# rule on either bucket would expire a current one.
 set -euo pipefail
 
-HOST="${DATALAKE_SSH_HOST:-ssh.example.test}"
 MODE="plan"
 [[ "${1:-}" == "--apply" ]] && MODE="apply"
+
+MINIO_CONTAINER="${MINIO_CONTAINER:-homelab-minio}"
+DAEMON="${DATALAKE_DAEMON_CONTAINER:-datalake-daemon}"
+
+# --- the root credentials -------------------------------------------------------
+if [[ -z "${MINIO_ROOT_USER:-}" || -z "${MINIO_ROOT_PASSWORD:-}" ]]; then
+  if docker inspect "$MINIO_CONTAINER" >/dev/null 2>&1; then
+    echo "Reading the root credentials from the $MINIO_CONTAINER container."
+    creds=$(docker inspect "$MINIO_CONTAINER" \
+      --format '{{range .Config.Env}}{{println .}}{{end}}')
+    MINIO_ROOT_USER="${MINIO_ROOT_USER:-$(grep -m1 '^MINIO_ROOT_USER=' <<<"$creds" | cut -d= -f2-)}"
+    MINIO_ROOT_PASSWORD="${MINIO_ROOT_PASSWORD:-$(grep -m1 '^MINIO_ROOT_PASSWORD=' <<<"$creds" | cut -d= -f2-)}"
+    unset creds
+  fi
+fi
 
 if [[ -z "${MINIO_ROOT_USER:-}" ]]; then
   read -rp "MinIO root user: " MINIO_ROOT_USER
@@ -46,21 +61,34 @@ if [[ -z "${MINIO_ROOT_PASSWORD:-}" ]]; then
   echo
 fi
 
-# Base64 through the program text on stdin, rather than an environment variable or an
-# argument. `docker exec -e` would put the secret in the container's environment,
-# where anything running in it can read it for the life of the exec; an argument would
-# put it in `ps` on both machines. stdin is seen by this process, ssh, and python.
-CREDS=$(printf '%s\n%s' "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD" | base64 | tr -d '\n')
+if [[ -z "$MINIO_ROOT_USER" || -z "$MINIO_ROOT_PASSWORD" ]]; then
+  echo "FAIL  no root credentials. Nothing was changed." >&2
+  exit 1
+fi
+echo "Using root user: $MINIO_ROOT_USER"
 
-ssh "$HOST" "docker exec -i -e VERSIONING_MODE=$MODE datalake-daemon python -" <<PYEOF
-import base64, json, os
+# --- the job ---------------------------------------------------------------------
+#
+# Written into the container as a file rather than piped as a program, so the
+# credentials can have stdin to themselves -- and so a traceback names real line
+# numbers instead of "<stdin>".
+docker exec -i "$DAEMON" sh -c 'cat > /tmp/lake_versioning.py' <<'PYEOF'
+"""Create the backup bucket, version both, and bound what versioning keeps."""
+import json
+import os
+import sys
 
 import boto3
 
 from homelab_datalake.assets import backup
 from homelab_datalake.resources import LakeStorage
 
-user, password = base64.b64decode("$CREDS").decode().split("\n")
+# The credentials arrive on stdin and nowhere else: not argv, not the environment.
+user = sys.stdin.readline().rstrip("\n")
+password = sys.stdin.readline().rstrip("\n")
+if not user or not password:
+    raise SystemExit("no credentials arrived on stdin")
+
 lake = LakeStorage.from_env()
 if not lake.uses_s3:
     raise SystemExit("this lake is a local directory; versioning is a MinIO feature")
@@ -91,7 +119,7 @@ for name in BUCKETS:
         print(f"  {name}: does not exist yet")
 
 # 30 days of non-current versions, and no expiry of current ones. The absence of an
-# Expiration key is the whole safety property of this rule: with one, this would be a
+# Expiration key is the whole safety property of this rule: with one, it would be a
 # scheduled deletion of the lake rather than a bound on its history.
 RULE = {
     "ID": "expire-noncurrent-versions",
@@ -127,7 +155,7 @@ for name in BUCKETS:
     print(f"    versioning      {name}: Enabled")
     print(f"    lifecycle       {name}: {json.dumps(RULE)}")
 
-if os.environ["VERSIONING_MODE"] != "apply":
+if os.environ.get("VERSIONING_MODE") != "apply":
     print("\nplan only. Re-run with --apply.")
     raise SystemExit(0)
 
@@ -162,3 +190,8 @@ for name in BUCKETS:
 print()
 print("Now materialise lake_backup, then run scripts/restore-lake.sh as a drill.")
 PYEOF
+
+printf '%s\n%s\n' "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD" \
+  | docker exec -i -e VERSIONING_MODE="$MODE" "$DAEMON" python /tmp/lake_versioning.py
+
+docker exec "$DAEMON" rm -f /tmp/lake_versioning.py

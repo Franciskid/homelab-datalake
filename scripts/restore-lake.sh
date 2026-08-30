@@ -48,13 +48,18 @@ vault = backup.backup_storage(lake)
 dataset = os.environ.get("RESTORE_DATASET") or None
 day = os.environ.get("RESTORE_DAY") or None
 
-scope = backup.restore_scope(dataset, day)
+scope = backup.restore_scope(dataset)
+# The day is matched as a path segment rather than appended to the prefix. npm
+# partitions on host *and* day, and the host comes first in the key, so
+# `<prefix>/dt=<day>` matches nothing there -- and matching nothing is reported as
+# "0 objects to restore", which during an incident reads as an empty backup.
+segment = backup.day_segment(dataset, day) if (dataset and day) else None
 print(f"lake:   {lake.describe()}")
 print(f"backup: {vault.describe()}")
-print(f"scope:  {scope}")
+print(f"scope:  {scope}" + (f"  (day {segment})" if segment else ""))
 print()
 
-plan = backup.plan_restore(lake, vault, scope)
+plan = backup.plan_restore(lake, vault, scope, segment)
 
 print(f"{len(plan.restore):5d} to restore ({plan.bytes_to_restore/1e6:.2f} MB)")
 print(f"{len(plan.identical):5d} already identical in the lake")
@@ -79,15 +84,15 @@ print()
 restored = backup.apply_restore(lake, plan, vault)
 print(f"restored {restored} objects")
 
-problems = backup.verify_restore(lake, plan, vault, scope)
+problems = backup.verify_restore(lake, plan, vault, scope, segment)
 if problems:
     print(f"\nFAIL {len(problems)} object(s) still disagree:")
     for line in problems[:20]:
         print(f"    {line}")
     raise SystemExit(1)
 
-live = backup.inventory(lake, scope)
-held = backup.inventory(vault, scope)
+live = backup._within(backup.inventory(lake, scope), segment)
+held = backup._within(backup.inventory(vault, scope), segment)
 print(f"OK    {len(live)} objects in the lake, {len(held)} in the backup, sizes match")
 print()
 print("The warehouse still holds what it held before this restore. Run analytics_daily")

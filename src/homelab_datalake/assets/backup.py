@@ -34,6 +34,16 @@ is not a backup. It is reported on every run, and removed only after a long rete
 window -- long enough that a deletion nobody noticed for a month is still recoverable,
 bounded so a mirror of a bucket that is being churned cannot grow without limit.
 
+**The deployed key cannot delete from the backup at all.** `datalake-rw` grants
+ListBucket, GetObject and PutObject on `datalake-backup` and deliberately not
+DeleteObject: a pipeline able to erase its own backup is not backed up, and that is
+the single failure this module exists to prevent. So the retention window above is a
+policy this code expresses and the bucket declines to enforce, which is the right way
+round. Orphans past the window are counted and named instead, and removing one is a
+deliberate act by somebody holding different credentials. It costs little in
+practice: `raw/` only grows, so an orphan means a rename or a deletion, and both are
+things a person should look at rather than have swept up on a timer.
+
 The restore lives here too rather than in the script that calls it. It is the inverse
 of the same key mapping, and a restore that is written somewhere the tests do not
 reach is exactly the kind of backup nobody has ever run.
@@ -91,6 +101,10 @@ class MirrorResult:
     # and telling them apart is a person's job.
     orphans: list[str] = field(default_factory=list)
     expired: int = 0
+    # Orphans past the retention window that could not be removed, because the
+    # pipeline key has no DeleteObject on the backup bucket. Not an error: see
+    # mirror(). Counted so the number is visible rather than inferred from silence.
+    unexpired: int = 0
 
     @property
     def total(self) -> int:
@@ -285,8 +299,22 @@ def mirror(
         # window. The window is the point: a partition deleted by accident has to
         # still be here when somebody finally looks.
         if orphan_days > 0 and obj.modified < now - timedelta(days=orphan_days):
-            _delete(target, key)
-            result.expired += 1
+            try:
+                _delete(target, key)
+                result.expired += 1
+            except Exception as error:  # noqa: BLE001 - any refusal means the same
+                # The deployed policy grants this key no DeleteObject on the backup
+                # bucket, on purpose, so this is the expected path in production
+                # rather than a fault. Retention then bounds nothing, and the honest
+                # response is to say so and leave the object alone -- failing the
+                # asset would turn a deliberate permission boundary into a red
+                # nightly job every night for ever.
+                result.unexpired += 1
+                logger.info(
+                    "cannot expire %s from the backup (%s). This key has no delete "
+                    "on that bucket by design; remove it by hand if it is really "
+                    "unwanted.", key, error,
+                )
 
     return result
 
@@ -296,12 +324,14 @@ def mirror(
 # --------------------------------------------------------------------------------
 
 
-def restore_scope(dataset: str | None = None, day: str | None = None) -> str:
-    """The prefix a restore covers: everything, one dataset, or one of its days.
+def restore_scope(dataset: str | None = None) -> str:
+    """The prefix a restore covers: everything, or one dataset.
 
     The dataset's prefix comes from the registry rather than being assembled here,
     so a restore cannot be pointed at a path the publisher never writes to -- which
     would report "0 objects" and look like a successful restore of nothing.
+
+    A day is deliberately *not* part of the prefix: see day_segment().
     """
     if dataset is None:
         return BACKUP_PREFIX
@@ -311,19 +341,39 @@ def restore_scope(dataset: str | None = None, day: str | None = None) -> str:
             f"{dataset!r} is in the {entry.layer!r} layer, which is not backed up: it "
             "is rebuilt from raw/ by analytics_daily. Re-run that job instead."
         )
-    if day is None:
-        return entry.prefix
+    return entry.prefix
+
+
+def day_segment(dataset: str, day: str) -> str:
+    """The path segment that identifies one day, e.g. `dt=2026-07-27`.
+
+    A segment matched anywhere under the prefix, not a prefix of its own, because
+    the day is not always the first thing below the dataset. npm partitions on two
+    dimensions and the object key is
+
+        raw/infrastructure/npm/access/host=primary/dt=2026-07-27/data.parquet
+
+    so a scope built as `<prefix>/dt=<day>` matches nothing at all. It does not
+    error: it reports "0 objects to restore", which during an incident reads as
+    "the backup has nothing" while the data sits in the backup untouched. Found by
+    running the drill against the real bucket, which is what drills are for.
+    """
+    entry = layout.dataset(dataset)
     if entry.partition_column is None:
         raise ValueError(f"{dataset!r} is not partitioned by day, so --day does not apply.")
-    return f"{entry.prefix}/{entry.partition_column}={day}"
+    return f"{entry.partition_column}={day}"
 
 
 def plan_restore(lake: LakeStorage, target: LakeStorage | None = None,
-                 prefix: str = BACKUP_PREFIX) -> RestorePlan:
-    """What a restore of this prefix would do. Reads both sides; changes neither."""
+                 prefix: str = BACKUP_PREFIX, segment: str | None = None) -> RestorePlan:
+    """What a restore of this prefix would do. Reads both sides; changes neither.
+
+    `segment` narrows to one partition by matching a path segment anywhere below the
+    prefix -- see day_segment() for why that is a match rather than a longer prefix.
+    """
     target = target or backup_storage(lake)
-    held = inventory(target, prefix)
-    live = inventory(lake, prefix)
+    held = _within(inventory(target, prefix), segment)
+    live = _within(inventory(lake, prefix), segment)
     plan = RestorePlan()
 
     for key, obj in sorted(held.items()):
@@ -340,6 +390,13 @@ def plan_restore(lake: LakeStorage, target: LakeStorage | None = None,
     return plan
 
 
+def _within(objects: dict[str, Object], segment: str | None) -> dict[str, Object]:
+    if segment is None:
+        return objects
+    needle = f"/{segment}/"
+    return {key: obj for key, obj in objects.items() if needle in key}
+
+
 def apply_restore(lake: LakeStorage, plan: RestorePlan,
                   target: LakeStorage | None = None) -> int:
     """Copy the planned objects back into the lake. Returns how many."""
@@ -351,7 +408,7 @@ def apply_restore(lake: LakeStorage, plan: RestorePlan,
 
 def verify_restore(lake: LakeStorage, plan: RestorePlan,
                    target: LakeStorage | None = None,
-                   prefix: str = BACKUP_PREFIX) -> list[str]:
+                   prefix: str = BACKUP_PREFIX, segment: str | None = None) -> list[str]:
     """Re-list both sides and report anything that still disagrees.
 
     A restore that reports success from its own return value has verified nothing.
@@ -359,8 +416,8 @@ def verify_restore(lake: LakeStorage, plan: RestorePlan,
     only statement worth making: every object that was in the backup is now in the
     lake, at the same size.
     """
-    held = inventory(target or backup_storage(lake), prefix)
-    live = inventory(lake, prefix)
+    held = _within(inventory(target or backup_storage(lake), prefix), segment)
+    live = _within(inventory(lake, prefix), segment)
     problems = []
     for key, obj in sorted(held.items()):
         current = live.get(key)
@@ -395,9 +452,10 @@ def lake_backup(context: AssetExecutionContext, lake: LakeStorage) -> Output[dic
     result = mirror(lake, target)
 
     context.log.info(
-        "backup: %d copied (%.2f MB), %d already current, %d orphaned, %d expired -> %s",
+        "backup: %d copied (%.2f MB), %d already current, %d orphaned, %d expired, "
+        "%d could not be expired -> %s",
         result.copied, result.bytes_copied / 1e6, result.skipped,
-        len(result.orphans), result.expired, target.describe(),
+        len(result.orphans), result.expired, result.unexpired, target.describe(),
     )
     if result.orphans:
         # Loud, and not an error. It is the ordinary result of a rename and the first
@@ -417,6 +475,7 @@ def lake_backup(context: AssetExecutionContext, lake: LakeStorage) -> Output[dic
             "bytes_copied": result.bytes_copied,
             "orphaned": len(result.orphans),
             "expired": result.expired,
+            "could_not_expire": result.unexpired,
             "target": MetadataValue.path(f"{target.describe()}/{BACKUP_PREFIX}"),
         },
     )
