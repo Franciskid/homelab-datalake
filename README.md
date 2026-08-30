@@ -12,6 +12,9 @@ question in words and get back a figure or a formatted Excel workbook.
 This repo publishes the code, a synthetic seed and the reasoning. It does not publish the
 data — see [What is and isn't here](#what-is-and-isnt-here).
 
+**[docs/WORKBENCH_PLAN.md](docs/WORKBENCH_PLAN.md)** is the work not yet started: a query and
+script workbench in ai.example.test, and recovery for the lake before writes are allowed.
+
 **[docs/HOW_IT_WORKS.md](docs/HOW_IT_WORKS.md)** is the short version: the lake layout, the
 assets, and what to do when something fails, in Simplified Technical English. Read that first.
 
