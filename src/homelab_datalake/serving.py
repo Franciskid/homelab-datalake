@@ -62,7 +62,7 @@ class Published:
     path: str
 
 
-def mart_tables(con: duckdb.DuckDBPyConnection) -> list[tuple[str, str]]:
+def mart_tables(con: duckdb.DuckDBPyConnection, database: str | None = None) -> list[tuple[str, str]]:
     """Every table in a marts schema, as (schema, table).
 
     The schema match is done here rather than in a LIKE pattern: `main_marts`
@@ -70,10 +70,17 @@ def mart_tables(con: duckdb.DuckDBPyConnection) -> list[tuple[str, str]]:
     treats a backslash as a literal unless an ESCAPE clause is given. The first
     version of this silently matched nothing -- caught only because publishing an
     empty serving database is an error rather than a quiet success.
+
+    `database` restricts the search to one attached catalogue. publish() needs that:
+    it has the warehouse and the copy it is building attached at the same time, and
+    without it the marts it has just written would be found again as sources.
     """
-    rows = con.execute(
-        "SELECT schema_name, table_name FROM duckdb_tables() ORDER BY table_name"
-    ).fetchall()
+    query = "SELECT schema_name, table_name FROM duckdb_tables()"
+    parameters: list = []
+    if database is not None:
+        query += " WHERE database_name = ?"
+        parameters.append(database)
+    rows = con.execute(query + " ORDER BY table_name", parameters).fetchall()
     return [
         (schema, table)
         for schema, table in rows
@@ -94,10 +101,23 @@ def publish(source_path: str, serving_path: str = SERVING_PATH) -> Published:
     for leftover in (staged, Path(str(staged) + ".wal")):
         leftover.unlink(missing_ok=True)
 
-    con = duckdb.connect(source_path)
+    # The warehouse is attached READ_ONLY onto an in-memory root rather than opened
+    # directly, and that is not a stylistic choice. Opening it read-write takes
+    # DuckDB's single write lock, which made this step and the two that publish the
+    # lake layers race for the same file -- whichever started second failed with
+    # "Conflicting lock is held". Nothing here writes to the warehouse, so nothing
+    # here should hold that lock; several read-only handles coexist happily.
+    con = duckdb.connect(":memory:")
     try:
         con.execute("SET TimeZone='UTC';")
-        tables = mart_tables(con)
+        # Attached under the file's own name, not a readable alias. DuckDB stores a
+        # view's SQL with its catalogue qualified, so anything in the warehouse that
+        # is a view only binds under the name it was created with.
+        alias = Path(source_path).stem
+        con.execute(
+            f"ATTACH '{source_path.replace(chr(39), chr(39) * 2)}' AS \"{alias}\" (READ_ONLY);"
+        )
+        tables = mart_tables(con, database=alias)
         if not tables:
             raise RuntimeError(
                 f"no tables found in a *_{MART_SCHEMA_SUFFIX} schema of {source_path!r}. "
@@ -105,8 +125,11 @@ def publish(source_path: str, serving_path: str = SERVING_PATH) -> Published:
                 "one that answers every question with zero rows, so this fails instead."
             )
 
-        con.execute(f"ATTACH '{str(staged).replace(chr(39), chr(39) * 2)}' AS serving;")
-        con.execute(f"CREATE SCHEMA IF NOT EXISTS serving.{MART_SCHEMA_SUFFIX};")
+        # `publishing`, not `serving`: the source is now attached under its own file
+        # name, and a warehouse that happened to be called serving.duckdb would
+        # collide with the copy being built from it.
+        con.execute(f"ATTACH '{str(staged).replace(chr(39), chr(39) * 2)}' AS publishing;")
+        con.execute(f"CREATE SCHEMA IF NOT EXISTS publishing.{MART_SCHEMA_SUFFIX};")
 
         rows = 0
         names = []
@@ -114,14 +137,14 @@ def publish(source_path: str, serving_path: str = SERVING_PATH) -> Published:
             # Both identifiers come from DuckDB's own catalogue, not from input, and
             # are quoted anyway so an unusual model name cannot change the statement.
             con.execute(
-                f'CREATE TABLE serving."{MART_SCHEMA_SUFFIX}"."{table}" AS '  # noqa: S608
-                f'SELECT * FROM "{schema}"."{table}"'
+                f'CREATE TABLE publishing."{MART_SCHEMA_SUFFIX}"."{table}" AS '  # noqa: S608
+                f'SELECT * FROM "{alias}"."{schema}"."{table}"'
             )
             rows += con.execute(
-                f'SELECT count(*) FROM serving."{MART_SCHEMA_SUFFIX}"."{table}"'  # noqa: S608
+                f'SELECT count(*) FROM publishing."{MART_SCHEMA_SUFFIX}"."{table}"'  # noqa: S608
             ).fetchone()[0]
             names.append(table)
-        con.execute("DETACH serving;")
+        con.execute("DETACH publishing;")
     finally:
         con.close()
 
