@@ -28,7 +28,13 @@ from homelab_datalake.resources import LakeStorage
 
 CAMERA_START = "2026-07-01"
 
-camera_partitions = DailyPartitionsDefinition(start_date=CAMERA_START)
+# end_offset=1 makes *today* a valid partition. The log assets deliberately do not do
+# this, because a log day must be over before it is complete. A camera day is different:
+# `camera_late_arrival_schedule` re-reads today every hour, because vision analysis
+# lands hours after the event. Without the offset that schedule asks for a partition
+# that does not exist yet, and Dagster raises DagsterUnknownPartitionError. The tick
+# then dies before it can also request yesterday, so the whole late-arrival path stops.
+camera_partitions = DailyPartitionsDefinition(start_date=CAMERA_START, end_offset=1)
 
 EVENT_PREFIX = "raw/camera_events"
 CLIP_PREFIX = "raw/camera_clips"
