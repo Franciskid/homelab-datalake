@@ -18,6 +18,11 @@ dependencies = [
     # is half the point of exposing the warehouse to a model at all.
     "mcp>=2.1",
     "openpyxl>=3.1",
+    # The workbench API. Both arrive with mcp already; naming them here is what stops
+    # a future change to that dependency from removing the web server underneath a
+    # service that is running in production.
+    "starlette>=0.37",
+    "uvicorn>=0.30",
 ]
 
 [project.optional-dependencies]
