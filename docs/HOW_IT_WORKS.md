@@ -132,7 +132,7 @@ in any other file. If you move a dataset, change `layout.py` and run
 ```
 source  ->  raw/ (Parquet)  ->  DuckDB raw.*  ->  dbt  ->  curated/ and marts/ (Parquet)
                                                      |
-                                                     +->  serving.duckdb  ->  MCP, SQL console
+                                                     +->  serving.duckdb  ->  the MCP server
 ```
 
 1. An ingest asset reads a source. It writes one Parquet object for each partition.
@@ -170,48 +170,7 @@ during a rebuild gets the old data or the new data. The reader never gets nothin
 
 ---
 
-## 6. The SQL console
-
-Open `https://data.example.test/sql`. Log in with your homelab account. You must hold
-the Keycloak role `datalake-user`.
-
-The console shows three schemas:
-
-* `raw.*` reads the Parquet in `raw/`.
-* `curated.*` reads the Parquet in `curated/`.
-* `marts.*` reads `serving.duckdb`.
-
-Click a table name to put it in the editor. Press Ctrl+Enter or Cmd+Enter to run the
-query. Press the CSV button to save the rows.
-
-Example:
-
-```sql
-SELECT geo_country_code, count(*) AS requests
-FROM curated.int_npm_requests
-WHERE partition_date >= DATE '2026-08-01'
-GROUP BY 1
-ORDER BY requests DESC
-LIMIT 10;
-```
-
-### The limits
-
-| Limit | Value | Why |
-|---|---|---|
-| Statement types | SELECT and EXPLAIN | The console must not change data. |
-| Statements in one run | One | The cap and the timeout must apply to the query you see. |
-| Rows | [withheld] | The browser must stay usable. |
-| Time | 30 seconds | A bad join must not hold a worker. |
-
-DuckDB parses each statement. The console does not use a text pattern. The console
-also disables the local file system. Thus a query cannot read a file on the server.
-
-The console is in `src/homelab_datalake/sql/`. The container is `datalake-sql`.
-
----
-
-## 7. Privacy
+## 6. Privacy
 
 The system never writes a client IP address. The file
 `src/homelab_datalake/privacy.py` is the only place an address exists. The address
@@ -227,7 +186,7 @@ A dbt test checks this rule. The test is
 
 ---
 
-## 8. Commands
+## 7. Commands
 
 Run these from a clone of this repository on your own computer.
 
@@ -263,15 +222,11 @@ Run the tests:
 
 ---
 
-## 9. If something fails
+## 8. If something fails
 
 | Symptom | Cause | What to do |
 |---|---|---|
 | A dbt model is not found | The image has old code. | Run `scripts/deploy.sh`. It compares checksums. |
 | `Conflicting lock is held` | A step opened DuckDB to write. | Only the build writes. Use `read_only_warehouse()`. |
 | `Catalog "datalake" does not exist` | DuckDB attached the file with the wrong name. | A view keeps the catalogue name. Attach with the file name. |
-| The console shows fewer tables | Those partitions did not land. | Look at the ingest asset in Dagster. |
-| `/sql` shows a Dagster 404 | oauth2-proxy has no mapping for that path. | Both `/sql` and `/sql/` must be in `OAUTH2_PROXY_UPSTREAMS`. |
 | A run failed and nobody knew | `FAILURE_WEBHOOK_URL` is empty. | Set it in `.env`. |
-
-> Public history note: private identifiers, measurements, and operational details were redacted. Code examples use placeholder infrastructure.

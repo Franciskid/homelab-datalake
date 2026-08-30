@@ -13,8 +13,7 @@ This repo publishes the code, a synthetic seed and the reasoning. It does not pu
 data — see [What is and isn't here](#what-is-and-isnt-here).
 
 **[docs/HOW_IT_WORKS.md](docs/HOW_IT_WORKS.md)** is the short version: the lake layout, the
-assets, the SQL console and what to do when something fails, in Simplified Technical
-English. Read that first.
+assets, and what to do when something fails, in Simplified Technical English. Read that first.
 
 ```
 NPM access logs            ┐
@@ -511,7 +510,6 @@ src/homelab_datalake/
   resources.py          MinIO or local disk behind one interface
   serving.py            the read-only marts copy, and why it exists
   assets/               partitioned assets, dbt models, the serving publish
-  sql/                  the SQL console: engine, guards, one page
   mcp/semantic.py       what may be asked, in business vocabulary
   mcp/query.py          validation, SQL construction, the limits
   mcp/deliverables.py   .xlsx with a provenance sheet
