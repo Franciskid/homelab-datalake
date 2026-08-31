@@ -48,7 +48,11 @@ renamed as (
         geo_city,
         geo_asn,
         geo_as_org,
-        source_file
+        source_file,
+        referer,
+        gzip_ratio,
+        has_query,
+        query_param_names
 
     from source
 

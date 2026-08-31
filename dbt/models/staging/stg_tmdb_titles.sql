@@ -31,7 +31,25 @@ renamed as (
         popularity,
         -- The count, not the average. The average is already in the library as
         -- community_rating; the count is what says whether to trust it.
-        vote_count
+        vote_count,
+        vote_average,
+        runtime_minutes                         as tmdb_runtime_minutes,
+        nullif(status, '')                      as release_status,
+        nullif(tagline, '')                     as tmdb_tagline,
+        nullif(overview, '')                    as tmdb_overview,
+        nullif(homepage, '')                    as homepage,
+        nullif(release_date, '')                as tmdb_release_date,
+        nullif(imdb_id, '')                     as tmdb_imdb_id,
+        nullif(original_title, '')              as tmdb_original_title,
+        nullif(title, '')                       as tmdb_title,
+        is_adult,
+        collection_id,
+        nullif(collection_name, '')             as collection_name,
+        genres                                  as tmdb_genres,
+        production_companies,
+        production_countries                    as tmdb_production_countries,
+        spoken_languages,
+        origin_countries
     from source
 )
 
