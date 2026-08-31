@@ -472,17 +472,45 @@ def test_the_route_needs_sql(lake):
     assert _client(lake).post("/query", content=b"not json").status_code == 400
 
 
-def test_the_route_will_not_be_talked_above_the_row_cap(lake):
+def test_there_is_no_row_cap_by_default(lake):
+    """The whole answer, because a partial one that looks whole is worse than none.
+
+    There used to be a cap of 1000 here. It returned a quarter of a month of camera
+    events as though it were the month, because the `truncated` flag it set was
+    dropped before it reached the caller. The deadline and DuckDB's memory limit are
+    the bounds now, and both fail loudly.
+    """
+    body = _client(lake).post(
+        "/query", json={"sql": "SELECT i FROM range(5000) t(i)"}
+    ).json()
+    assert body["row_count"] == 5000
+    assert body["truncated"] is False
+
+
+def test_zero_means_no_cap_and_a_negative_cap_is_refused(lake):
+    assert _client(lake).post("/query", json={"sql": "SELECT 1", "max_rows": 0}).status_code == 200
+    assert _client(lake).post("/query", json={"sql": "SELECT 1", "max_rows": -1}).status_code == 400
+    assert _client(lake).post("/query", json={"sql": "SELECT 1", "max_rows": "10"}).status_code == 400
+
+
+def test_a_caller_may_still_ask_for_a_cap_and_is_told_when_it_bites(lake):
+    """Opting into a sample is fine. Being handed one unknowingly is not."""
+    body = _client(lake).post(
+        "/query", json={"sql": "SELECT i FROM range(5000) t(i)", "max_rows": 10}
+    ).json()
+    assert body["row_count"] == 10
+    assert body["truncated"] is True
+    assert any("not the whole answer" in note for note in body["notes"])
+
+
+def test_a_deployment_cap_is_still_a_ceiling(lake, monkeypatch):
+    """DATALAKE_API_MAX_ROWS puts the bound back, and a caller cannot talk above it."""
+    monkeypatch.setattr(q, "MAX_ROWS", 25)
     body = _client(lake).post(
         "/query", json={"sql": "SELECT i FROM range(5000) t(i)", "max_rows": 10_000_000}
     ).json()
-    assert body["row_count"] == q.MAX_ROWS
+    assert body["row_count"] == 25
     assert body["truncated"] is True
-
-
-def test_the_route_rejects_a_nonsense_row_cap(lake):
-    assert _client(lake).post("/query", json={"sql": "SELECT 1", "max_rows": 0}).status_code == 400
-    assert _client(lake).post("/query", json={"sql": "SELECT 1", "max_rows": "10"}).status_code == 400
 
 
 def test_the_route_audits_what_it_ran_and_what_it_refused(lake, tmp_path):

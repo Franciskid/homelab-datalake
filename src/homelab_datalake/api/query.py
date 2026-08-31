@@ -28,11 +28,12 @@ built, because the lock also prevents this module from finishing its own setup.
 record of what ran rather than of what was submitted, and what stops the second half
 of a payload from being something the first half made look harmless.
 
-**A deadline and a row cap.** DuckDB has no statement timeout, so the deadline is a
-watchdog thread that interrupts the connection -- the same mechanism the MCP layer
-uses, for the same reason. The row cap is applied by fetching, not by rewriting the
-caller's SQL: DuckDB streams results, so asking for [count withheld] rows of a 20-million-row
-scan returns in milliseconds without materialising the rest.
+**A deadline.** DuckDB has no statement timeout, so the deadline is a watchdog thread
+that interrupts the connection -- the same mechanism the MCP layer uses, for the same
+reason. Together with DuckDB's memory limit it is the only bound on a result set, and
+that is deliberate: the row cap that used to sit here silently returned a quarter of an
+answer as though it were the whole one. A caller may still ask for a cap per call, and
+one can be set for the deployment with DATALAKE_API_MAX_ROWS; neither is on by default.
 
 Writes are a separate decision, taken twice: the deployment must permit them at all
 (`DATALAKE_API_ALLOW_WRITES`), and the caller must ask for them per statement. The
@@ -58,8 +59,19 @@ from homelab_datalake.resources import LakeStorage
 
 logger = logging.getLogger(__name__)
 
-MAX_ROWS = 1000
-TIMEOUT_SECONDS = 30.0
+# No row cap by default. There was one -- 1000 -- and it was the wrong control: it
+# truncated an answer to a quarter of itself and the caller could not tell, because the
+# `truncated` flag was returned and then dropped by the sandbox helper. A cap that is
+# invisible does not bound a query, it corrupts one. The deadline below and DuckDB's
+# memory limit are the real bounds, and both fail loudly.
+#
+# Set DATALAKE_API_MAX_ROWS to a positive integer to put a cap back; 0 means unlimited.
+MAX_ROWS = max(0, int(os.environ.get("DATALAKE_API_MAX_ROWS", "0") or 0))
+
+# Now that the row cap is gone, this is the only bound on how much a statement can
+# return, so it is worth being able to raise it for a genuinely large export without
+# a rebuild.
+TIMEOUT_SECONDS = float(os.environ.get("DATALAKE_API_TIMEOUT_SECONDS", "30") or 30)
 MAX_STATEMENTS = 1
 
 # How much memory one session may use before DuckDB starts refusing rather than
@@ -405,9 +417,16 @@ def _execute_bounded(cursor, sql: str, max_rows: int, timeout: float):
             return [], [], [], False
         columns = [d[0] for d in cursor.description]
         types = [str(d[1]) for d in cursor.description]
-        fetched = cursor.fetchmany(max_rows + 1)
-        truncated = len(fetched) > max_rows
-        rows = [[_jsonable(value) for value in row] for row in fetched[:max_rows]]
+        if max_rows <= 0:
+            # Unlimited. The deadline is still running, so a statement that streams
+            # forever is interrupted rather than allowed to fill memory.
+            fetched = cursor.fetchall()
+            truncated = False
+        else:
+            fetched = cursor.fetchmany(max_rows + 1)
+            truncated = len(fetched) > max_rows
+            fetched = fetched[:max_rows]
+        rows = [[_jsonable(value) for value in row] for row in fetched]
         return columns, types, rows, truncated
     except duckdb.InterruptException:
         raise QueryRefused(
