@@ -178,11 +178,14 @@ def list_datasets() -> dict:
 
 @server.tool(
     description=(
-        "How the warehouse tables connect: every table's primary key, its declared "
-        "foreign keys with the exact ON clause, and which models it is built from. "
-        "Call this once before writing SQL that joins, rather than guessing a join "
-        "and retrying on the binder error. Every edge here is a declared and enforced "
-        "relationship, not a guess from matching column names."
+        "Every table in the warehouse: what it holds, its documented columns, its "
+        "primary key, its declared foreign keys with the exact ON clause, and which "
+        "models it is built from. Name a table by its `query_as` value -- `schema` is "
+        "dbt's internal build schema and does not exist in the database you query. "
+        "Call this before writing SQL, rather than guessing a name and retrying on "
+        "the binder error, and call it before telling anyone the warehouse does not "
+        "hold something. Every edge is a declared and enforced relationship, not a "
+        "guess from matching column names."
     )
 )
 def describe_schema() -> dict:

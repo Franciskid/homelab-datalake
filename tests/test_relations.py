@@ -18,6 +18,11 @@ MANIFEST = {
             "resource_type": "model", "name": "fct_camera_event", "schema": "main_marts",
             "description": "One row per camera event.",
             "primary_key": ["event_id"],
+            "columns": {
+                "event_id": {"description": "The event's stable id."},
+                "clip_id": {"description": "The recording attached to it."},
+                "happened_at": {"description": "When it happened, to the microsecond."},
+            },
             "depends_on": {"nodes": ["model.p.int_camera_events"]},
         },
         "model.p.fct_camera_clip": {
@@ -54,7 +59,35 @@ def test_a_declared_foreign_key_becomes_an_edge(tmp_path):
     assert graph["edges"] == [{
         "from_table": "fct_camera_event", "from_column": "clip_id",
         "to_table": "fct_camera_clip", "to_column": "clip_id",
+        "join_sql": "fct_camera_event.clip_id = fct_camera_clip.clip_id",
     }]
+
+
+def test_the_on_clause_is_actually_in_the_payload(tmp_path):
+    """The tool description promises it. `asdict` does not serialise properties, so
+    for a while it promised it and shipped four bare names instead."""
+    graph = _build(tmp_path)
+    assert graph["edges"][0]["join_sql"]
+    tables = {t["name"]: t for t in graph["tables"]}
+    assert tables["fct_camera_event"]["references"][0]["join_sql"]
+    assert tables["fct_camera_clip"]["referenced_by"][0]["join_sql"]
+
+
+def test_the_table_name_given_is_the_one_that_binds(tmp_path):
+    """dbt's build schema is `main_marts`; the database a caller queries has `marts`.
+
+    Reporting the build name hands out a reference that raises a Catalog Error --
+    which is what happened, cost a step, and ended with the query being abandoned.
+    """
+    tables = {t["name"]: t for t in _build(tmp_path)["tables"]}
+    assert tables["fct_camera_event"]["query_as"] == "marts.fct_camera_event"
+    assert tables["fct_camera_event"]["schema"] == "main_marts"
+
+
+def test_documented_columns_travel_with_the_table(tmp_path):
+    tables = {t["name"]: t for t in _build(tmp_path)["tables"]}
+    names = [c["name"] for c in tables["fct_camera_event"]["columns"]]
+    assert "clip_id" in names
 
 
 def test_only_relationships_tests_become_edges(tmp_path):

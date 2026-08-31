@@ -50,12 +50,36 @@ class Edge:
             f"{self.from_table}.{self.from_column} = {self.to_table}.{self.to_column}"
         )
 
+    def as_dict(self) -> dict:
+        # `join_sql` is a property, and `asdict` does not serialise properties -- so
+        # the graph advertised "the exact ON clause" and shipped four bare names.
+        out = asdict(self)
+        out["join_sql"] = self.join_sql
+        return out
+
+
+#: What dbt calls the mart schema and what a caller has to type are not the same
+#: word. dbt-duckdb prefixes the configured schema with the target's, so `marts`
+#: becomes `main_marts` in the build database -- and the serving copy every reader
+#: actually queries renames it back to `marts`. A graph reporting the build name
+#: hands out a table reference that fails to bind, which is not a small error: it is
+#: the one an agent already hit, spent a step on, and worked around by giving up on
+#: the query. So both names travel, and the queryable one is called `query_as`.
+_BUILD_PREFIX = "main_"
+
+
+def queryable_schema(schema: str) -> str:
+    return schema[len(_BUILD_PREFIX):] if schema.startswith(_BUILD_PREFIX) else schema
+
 
 @dataclass
 class Table:
     name: str
     schema: str
+    #: How to name this table in SQL sent to /query or to `datalake.query`.
+    query_as: str = ""
     description: str = ""
+    columns: list[dict] = field(default_factory=list)
     primary_key: list[str] = field(default_factory=list)
     #: Edges where this table is the child -- what it points at.
     references: list[Edge] = field(default_factory=list)
@@ -102,10 +126,21 @@ def build(manifest_path: str) -> dict:
 
     tables: dict[str, Table] = {}
     for name, node in models.items():
+        schema = node.get("schema", "")
+        # Columns, because a caller that cannot see them writes SQL against the
+        # names it can guess. The manifest holds only the documented ones, which is
+        # a floor rather than the whole truth -- said plainly in `columns_note`
+        # below, so an absent column reads as "not documented" and not as "not there".
+        columns = [
+            {"name": column_name, "description": (spec.get("description") or "").strip()}
+            for column_name, spec in (node.get("columns") or {}).items()
+        ]
         tables[name] = Table(
             name=name,
-            schema=node.get("schema", ""),
+            schema=schema,
+            query_as=f"{queryable_schema(schema)}.{name}" if schema else name,
             description=(node.get("description") or "").strip(),
+            columns=columns,
             primary_key=list(node.get("primary_key") or []),
             built_from=sorted(
                 parent.split(".")[-1]
@@ -132,8 +167,23 @@ def build(manifest_path: str) -> dict:
         if parent in tables:
             tables[parent].referenced_by.append(edge)
 
+    def table_dict(table: Table) -> dict:
+        out = asdict(table)
+        out["references"] = [e.as_dict() for e in table.references]
+        out["referenced_by"] = [e.as_dict() for e in table.referenced_by]
+        return out
+
     return {
         "manifest": manifest.get("metadata", {}).get("generated_at"),
-        "tables": [asdict(t) for t in sorted(tables.values(), key=lambda t: t.name)],
-        "edges": [asdict(e) for e in edges],
+        "tables": [table_dict(t) for t in sorted(tables.values(), key=lambda t: t.name)],
+        "edges": [e.as_dict() for e in edges],
+        "how_to_name_a_table": (
+            "Use `query_as`. `schema` is dbt's build schema and does not exist in the "
+            "database you are querying."
+        ),
+        "columns_note": (
+            "`columns` lists the documented columns, which may be fewer than the table "
+            "has. An absent name means undocumented, not missing -- run "
+            "`DESCRIBE <query_as>` to see the rest."
+        ),
     }
