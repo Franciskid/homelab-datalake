@@ -58,12 +58,17 @@ MAX_ATTEMPTS = 4
 
 @dataclass(frozen=True)
 class TmdbFacts:
-    """What is kept. Deliberately a short list, and shorter than it first was.
+    """What TMDB says about one film.
 
-    No overview, no tagline, no poster path, no cast: prose and images are not what a
-    warehouse is for, and they are the bulk of the payload. No vote average, original
-    title, release date or production country either -- Jellyfin already has all four,
-    so keeping them here would mean two columns for one fact and a needless API key.
+    This used to be five columns, on the argument that Jellyfin already held the rest
+    and two columns for one fact is worse than one. That argument was half right: the
+    duplication is real, and so is the disagreement it hides. `community_rating` in
+    Jellyfin is TMDB's vote average *as of the scan*, which can be years old, and the
+    lake had no way to see that it had drifted -- there was nothing to compare it to.
+
+    So both are kept now, named for where they came from, and a reader can ask which
+    one they want. The genuinely new columns are the ones Jellyfin has no field for at
+    all: the collection a film belongs to, its spoken languages, its release status.
     """
 
     tmdb_id: int
@@ -72,6 +77,26 @@ class TmdbFacts:
     revenue_usd: int | None
     popularity: float | None
     vote_count: int | None
+    vote_average: float | None
+    runtime_minutes: int | None
+    status: str | None
+    tagline: str | None
+    overview: str | None
+    homepage: str | None
+    release_date: str | None
+    imdb_id: str | None
+    original_title: str | None
+    title: str | None
+    is_adult: bool | None
+    #: The franchise. Two films sharing this are episodes of one series, which no
+    #: other column in this warehouse says.
+    collection_id: int | None
+    collection_name: str | None
+    genres: list[str]
+    production_companies: list[str]
+    production_countries: list[str]
+    spoken_languages: list[str]
+    origin_countries: list[str]
 
 
 def _positive_or_none(value) -> int | None:
@@ -88,17 +113,40 @@ def _positive_or_none(value) -> int | None:
     return number if number > 0 else None
 
 
+def _names(entries, key: str = "name") -> list[str]:
+    return [n for n in ((e or {}).get(key) for e in entries or []) if n]
+
+
 def parse_movie(payload: dict) -> TmdbFacts:
     """Project one TMDB movie response onto the columns kept."""
+    collection = payload.get("belongs_to_collection") or {}
     return TmdbFacts(
         tmdb_id=int(payload["id"]),
         original_language=payload.get("original_language") or None,
         budget_usd=_positive_or_none(payload.get("budget")),
         revenue_usd=_positive_or_none(payload.get("revenue")),
         popularity=payload.get("popularity"),
-        # The count, not the average: the average is already in the library as
-        # `community_rating`, and the count is what says whether to trust it.
+        # The count says whether to trust the average, and the average is kept beside
+        # it so Jellyfin's copy of the same number can be checked against it.
         vote_count=payload.get("vote_count"),
+        vote_average=payload.get("vote_average"),
+        runtime_minutes=_positive_or_none(payload.get("runtime")),
+        status=payload.get("status") or None,
+        tagline=payload.get("tagline") or None,
+        overview=payload.get("overview") or None,
+        homepage=payload.get("homepage") or None,
+        release_date=payload.get("release_date") or None,
+        imdb_id=payload.get("imdb_id") or None,
+        original_title=payload.get("original_title") or None,
+        title=payload.get("title") or None,
+        is_adult=payload.get("adult"),
+        collection_id=payload.get("belongs_to_collection") and collection.get("id"),
+        collection_name=collection.get("name") or None,
+        genres=_names(payload.get("genres")),
+        production_companies=_names(payload.get("production_companies")),
+        production_countries=_names(payload.get("production_countries")),
+        spoken_languages=_names(payload.get("spoken_languages"), "english_name"),
+        origin_countries=[c for c in (payload.get("origin_country") or []) if c],
     )
 
 

@@ -37,6 +37,17 @@ from homelab_datalake.useragent import USER_AGENT
 
 ENDPOINTS = ("events", "clips", "logs")
 
+# The reference and coverage exports, added because the analytical core alone cannot
+# answer the questions asked of it. `zones` says which zone is a gate and how it was
+# configured on the day; `observability` says when a zone could not be read at all,
+# which is the difference between "the gate stayed shut" and "we could not see it";
+# `annotations` is what people wrote against a clip or an event.
+#
+# Separate from ENDPOINTS because they are separate assets: they have their own
+# partitions and their own failure modes, and a zone export being down should not
+# stop a day of events from landing.
+REFERENCE_ENDPOINTS = ("zones", "observability", "annotations")
+
 
 # A token is good for minutes; refresh a little early rather than discovering expiry
 # halfway through a backfill.
@@ -140,6 +151,36 @@ def fetch_ndjson(base_url: str, endpoint: str, token: str, start: datetime, end:
         raise
 
     return [json.loads(line) for line in body.splitlines() if line.strip()]
+
+
+def extract_rows(day: date, endpoint: str, base_url: str | None = None,
+                 token: str | None = None, rows: list[dict] | None = None) -> tuple[list[dict], datetime]:
+    """One day of one endpoint, stamped. `rows` is injectable so tests need no server.
+
+    Shared by every camera asset so that `dt` and `_extracted_at` are stamped in
+    exactly one place. A second copy of this that stamped `_extracted_at` from the
+    payload instead of from the clock would break the merge in `assets.camera`
+    silently, because the merge picks a winner by that column.
+    """
+    start = datetime.combine(day, dtime.min, tzinfo=UTC)
+    end = start + timedelta(days=1)
+    extracted_at = datetime.now(UTC)
+
+    if rows is None:
+        config = settings()
+        base_url = base_url or config["base_url"]
+        if not base_url:
+            raise ValueError("CAMERA_EXPORT_URL is required")
+        token = token or _TOKENS.get(config["token_url"], config["client_id"], config["client_secret"])
+        rows = fetch_ndjson(base_url, endpoint, token, start, end)
+
+    stamped = []
+    for row in rows:
+        enriched = dict(row)
+        enriched["dt"] = day
+        enriched["_extracted_at"] = extracted_at
+        stamped.append(enriched)
+    return stamped, extracted_at
 
 
 def extract_day(day: date, base_url: str | None = None, token: str | None = None,

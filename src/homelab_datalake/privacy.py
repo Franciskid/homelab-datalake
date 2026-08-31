@@ -127,3 +127,28 @@ def strip_query(uri: str | None) -> str | None:
     if uri is None:
         return None
     return uri.split("?", 1)[0]
+
+
+def query_param_names(uri: str | None) -> list[str]:
+    """The parameter *names* a request carried, never their values.
+
+    The values are the dangerous half -- a reset token, a session id, an API key --
+    and dropping them is right. The names are not: "which endpoints take a `token`
+    parameter" and "is anything still calling this with `?debug=`" are ordinary
+    questions about one's own estate, and the whole query string being discarded left
+    them unanswerable. Sorted and de-duplicated, so the column is a set rather than a
+    record of the order somebody happened to write them in.
+    """
+    if not uri or "?" not in uri:
+        return []
+    query = uri.split("?", 1)[1]
+    names = set()
+    for pair in query.split("&"):
+        if not pair:
+            continue
+        name = pair.split("=", 1)[0].strip()
+        if name:
+            # Bounded: a scanner can put a kilobyte of junk in a parameter name, and
+            # this column exists to be grouped by, not to store an attack verbatim.
+            names.add(name[:64])
+    return sorted(names)

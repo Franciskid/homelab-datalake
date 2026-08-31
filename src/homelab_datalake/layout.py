@@ -124,12 +124,31 @@ RAW_DATASETS: tuple[Dataset, ...] = (
          "One row per film per snapshot date. No paths, no playback history."),
     _raw("jellyfin_title_genres", DOMAIN_MEDIA, "jellyfin", "title_genres",
          "Title-to-genre pairs, kept separate because a title has many genres."),
+    # Same reason as genres, twice over: keeping the first audio stream described a
+    # bilingual film as monolingual, and keeping no subtitle stream at all described a
+    # library with thirty-four tracks on one title as having none.
+    _raw("jellyfin_title_streams", DOMAIN_MEDIA, "jellyfin", "title_streams",
+         "One row per media stream: every audio, video and subtitle track."),
+    _raw("jellyfin_title_people", DOMAIN_MEDIA, "jellyfin", "title_people",
+         "Cast and crew credits. Public film metadata, not library users."),
     _raw("camera_events", DOMAIN_MONITORING, "camera", "events",
          "Attention events. Not final when first written: analysis lands later."),
     _raw("camera_clips", DOMAIN_MONITORING, "camera", "clips",
          "Clip metadata. No paths, playlists or thumbnails."),
     _raw("camera_logs", DOMAIN_MONITORING, "camera", "logs",
          "Activity log entries. Free-text titles are never exported."),
+    # A daily snapshot rather than an event stream: a zone is configuration, and the
+    # question asked of it is "how was it set up on the day this event fired", which
+    # only a per-day copy can answer. Geometry is never exported -- see the camera's
+    # export-routes.js for why a polygon of the property is not analytics.
+    _raw("camera_zones", DOMAIN_MONITORING, "camera", "zones",
+         "Attention-zone configuration per day: rules, thresholds, state. No geometry."),
+    # The other half of every gate reading. Without these spans a stretch where the
+    # camera could not see the zone is indistinguishable from a gate that stayed shut.
+    _raw("camera_observability", DOMAIN_MONITORING, "camera", "observability",
+         "Spans where a zone could not be read, with the reason it could not."),
+    _raw("camera_annotations", DOMAIN_MONITORING, "camera", "annotations",
+         "Notes and marks left against a clip or an event, with their metadata."),
     # One object, not a partition per day: TMDB is a lookup keyed by tmdb_id that is
     # rewritten in full, so a date in the path would only ever say when it was last
     # refreshed, which the object's own mtime already says.
@@ -156,6 +175,20 @@ CURATED_DATASETS: tuple[Dataset, ...] = (
              ("Events with late-arriving analysis resolved, duplicates marked, and "
               "duration computed."),
              "partition_date"),
+    _curated("stg_camera_clips", DOMAIN_MONITORING, "camera", "clips",
+             "Clips, typed, with save latency and bitrate derived.", "partition_date"),
+    _curated("stg_camera_logs", DOMAIN_MONITORING, "camera", "logs",
+             "Activity log entries, typed.", "partition_date"),
+    _curated("stg_camera_zones", DOMAIN_MONITORING, "camera", "zones",
+             "Zone and rule configuration, typed, one row per rule.", "snapshot_date"),
+    _curated("stg_camera_observability", DOMAIN_MONITORING, "camera", "observability",
+             "Unreadable-zone spans, typed, with durations.", "partition_date"),
+    _curated("stg_camera_annotations", DOMAIN_MONITORING, "camera", "annotations",
+             "Annotations, typed, with their target resolved.", "partition_date"),
+    _curated("stg_jellyfin_title_streams", DOMAIN_MEDIA, "jellyfin", "title_streams",
+             "Media streams, typed.", "snapshot_date"),
+    _curated("stg_jellyfin_title_people", DOMAIN_MEDIA, "jellyfin", "title_people",
+             "Cast and crew credits, typed.", "snapshot_date"),
     _curated("stg_litellm_spend", DOMAIN_AI, "litellm", "spend",
              "Calls with the workload, provider and self-hosted flags resolved.",
              "partition_date"),
@@ -193,6 +226,12 @@ MART_DATASETS: tuple[Dataset, ...] = (
           "One row per camera event, with time-of-day dimensions.", "partition_date"),
     _mart("agg_camera_activity_daily", DOMAIN_MONITORING, "agg_camera_activity_daily",
           "Events and outcomes by day, camera, zone and rule.", "partition_date"),
+    _mart("fct_camera_clip", DOMAIN_MONITORING, "fct_camera_clip",
+          "One row per clip, with the event that caused it.", "partition_date"),
+    _mart("fct_camera_coverage", DOMAIN_MONITORING, "fct_camera_coverage",
+          "One row per span where a zone could not be read.", "partition_date"),
+    _mart("dim_camera_zone", DOMAIN_MONITORING, "dim_camera_zone",
+          "The zone and rule lookup an event points at.", None),
     _mart("fct_library_title", DOMAIN_MEDIA, "fct_library_title",
           "One row per film per snapshot, Jellyfin joined to TMDB.", "snapshot_date"),
     _mart("dim_title_scd2", DOMAIN_MEDIA, "dim_title_scd2",

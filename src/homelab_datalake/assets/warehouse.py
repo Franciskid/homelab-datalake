@@ -30,19 +30,32 @@ from dagster import (
 
 from homelab_datalake import serving
 from homelab_datalake.assets.camera import (
+    _ANNOTATION_SCHEMA,
     _CLIP_SCHEMA,
     _EVENT_SCHEMA,
     _LOG_SCHEMA,
+    _OBSERVABILITY_SCHEMA,
+    _ZONE_SCHEMA,
+    ANNOTATION_PREFIX,
     CLIP_PREFIX,
     EVENT_PREFIX,
     LOG_PREFIX,
+    OBSERVABILITY_PREFIX,
+    ZONE_PREFIX,
+    camera_annotations_raw,
     camera_events_raw,
+    camera_observability_raw,
+    camera_zones_raw,
 )
 from homelab_datalake.assets.dbt_marts import dbt_marts
 from homelab_datalake.assets.jellyfin import (
     _GENRE_SCHEMA,
+    _PEOPLE_SCHEMA,
+    _STREAM_SCHEMA,
     _TITLE_SCHEMA,
     GENRE_PREFIX,
+    PEOPLE_PREFIX,
+    STREAM_PREFIX,
     TITLE_PREFIX,
     jellyfin_library_raw,
 )
@@ -85,12 +98,23 @@ _SOURCES = (
      "One row per film per snapshot date. No paths, no playback history."),
     ("jellyfin_title_genres", GENRE_PREFIX, _GENRE_SCHEMA, jellyfin_library_raw,
      "Title-to-genre pairs, kept separate because a title has many genres."),
+    ("jellyfin_title_streams", STREAM_PREFIX, _STREAM_SCHEMA, jellyfin_library_raw,
+     "One row per media stream: every audio, video and subtitle track."),
+    ("jellyfin_title_people", PEOPLE_PREFIX, _PEOPLE_SCHEMA, jellyfin_library_raw,
+     "Cast and crew credits. Public film metadata, not library users."),
     ("camera_events", EVENT_PREFIX, _EVENT_SCHEMA, camera_events_raw,
      "Attention events. Not final when first written: vision analysis lands later."),
     ("camera_clips", CLIP_PREFIX, _CLIP_SCHEMA, camera_events_raw,
      "Clip metadata. No paths, playlists or thumbnails."),
     ("camera_logs", LOG_PREFIX, _LOG_SCHEMA, camera_events_raw,
-     "Activity log entries. Free-text titles are never exported."),
+     "Activity log entries, with the free text people wrote in them."),
+    ("camera_zones", ZONE_PREFIX, _ZONE_SCHEMA, camera_zones_raw,
+     "Zone and rule configuration per day, geometry included."),
+    ("camera_observability", OBSERVABILITY_PREFIX, _OBSERVABILITY_SCHEMA,
+     camera_observability_raw,
+     "Spans where a zone could not be read, with the reason it could not."),
+    ("camera_annotations", ANNOTATION_PREFIX, _ANNOTATION_SCHEMA, camera_annotations_raw,
+     "Notes and marks left against a clip or an event."),
     ("tmdb_titles", TMDB_PREFIX, _TMDB_SCHEMA, tmdb_titles_raw,
      ("Budget, revenue, language and vote counts by TMDB id. Empty when no API key "
       "is configured, which leaves the library marts' enrichment columns null.")),
@@ -120,8 +144,25 @@ def empty_table_ddl(table: str, schema: pa.Schema) -> str:
     has landed. This happens on a fresh deployment and in CI, where the LiteLLM source
     has no database to read.
     """
-    columns = ", ".join(f'"{f.name}" {_DUCKDB_TYPES[f.type]}' for f in schema)
+    columns = ", ".join(f'"{f.name}" {_duckdb_type(f.type)}' for f in schema)
     return f"CREATE OR REPLACE TABLE {table} ({columns})"
+
+
+def _duckdb_type(dtype: pa.DataType) -> str:
+    """One Arrow type as DuckDB spells it, structs and lists included.
+
+    The scalar map stays explicit so an unmapped type fails loudly rather than landing
+    as something surprising. Structs and lists are built recursively from it, because
+    writing `STRUCT(person BIGINT, ...)` out by hand in a second place is how the
+    declared shape and the real one drift apart -- which is the failure this whole
+    module exists to prevent.
+    """
+    if pa.types.is_struct(dtype):
+        fields = ", ".join(f'"{f.name}" {_duckdb_type(f.type)}' for f in dtype)
+        return f"STRUCT({fields})"
+    if pa.types.is_list(dtype):
+        return f"{_duckdb_type(dtype.value_type)}[]"
+    return _DUCKDB_TYPES[dtype]
 
 
 def connect() -> duckdb.DuckDBPyConnection:
