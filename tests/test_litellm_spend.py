@@ -4,10 +4,15 @@ Rows are injected rather than read from a database, so these run anywhere. The
 interesting assertions are about what does *not* come out.
 """
 
+import json
 from datetime import UTC, date, datetime
 
 from homelab_datalake.geo import GeoEnricher
-from homelab_datalake.parsing.litellm_spend import SELECT_COLUMNS, extract_day
+from homelab_datalake.parsing.litellm_spend import (
+    METADATA_NOT_STORED,
+    SELECT_COLUMNS,
+    extract_day,
+)
 
 SALT = "test-salt"
 NO_GEO = GeoEnricher(None, None)
@@ -41,23 +46,44 @@ def row(**overrides):
     return base
 
 
-def test_payload_columns_are_never_selected():
-    """The guarantee, asserted against the query itself rather than its output.
+def test_payload_columns_are_selected_and_landed():
+    """The whole ledger, by decision of the lake's owner.
 
-    messages / response / proxy_server_request hold whole conversations. They are
-    empty today only because payload logging happens to be off.
+    These hold whole conversations, and they are empty today only because payload
+    logging happens to be off -- so selecting them is a decision about the future
+    rather than about the current contents. Asserted against the query itself, because
+    the output cannot tell "not selected" from "selected and empty".
     """
     selected = " ".join(SELECT_COLUMNS).lower()
-    for forbidden in ("messages", "response", "proxy_server_request"):
-        assert forbidden not in selected
+    for column in ("messages", "response", "proxy_server_request"):
+        assert column in selected
+
+    out = extract_day(date(2026, 8, 27), SALT, NO_GEO, rows=[row(
+        messages=[{"role": "user", "content": "what is the gate doing"}],
+        response={"choices": [{"message": {"content": "It is closed."}}]},
+    )])
+    assert "what is the gate doing" in out.rows[0]["messages_json"]
+    assert "It is closed." in out.rows[0]["response_json"]
 
 
-def test_caller_address_does_not_survive():
+def test_an_empty_payload_lands_as_null_rather_than_an_empty_object():
+    """Which is the state of every row today, and should read as "nothing" not "{}"."""
+    out = extract_day(date(2026, 8, 27), SALT, NO_GEO, rows=[row(messages={}, response=None)])
+    assert out.rows[0]["messages_json"] is None
+    assert out.rows[0]["response_json"] is None
+
+
+def test_the_caller_address_is_landed_raw_and_hashed():
+    """Both, because they answer different questions.
+
+    On this deployment the address is the internal container that called the gateway
+    -- a fact about one's own infrastructure. The proxy logs next door are the
+    opposite case, and keep their hashing boundary.
+    """
     address = "198.51.100.77"
     out = extract_day(date(2026, 8, 27), SALT, NO_GEO, rows=[row(requester_ip_address=address)])
-    assert out.rows
-    for r in out.rows:
-        assert all(address not in str(v) for v in r.values())
+    assert out.rows[0]["requester_ip"] == address
+    assert out.rows[0]["client_hash"] and out.rows[0]["client_hash"] != address
     assert out.rows[0]["client_network"] == "198.51.100.0/24"
 
 
@@ -126,3 +152,102 @@ def test_extraction_is_idempotent():
     a = extract_day(date(2026, 8, 27), SALT, NO_GEO, rows=rows)
     b = extract_day(date(2026, 8, 27), SALT, NO_GEO, rows=rows)
     assert a.rows == b.rows
+
+
+# --------------------------------------------------------------------------------
+# the metadata blob
+# --------------------------------------------------------------------------------
+#
+# `metadata` is populated on every row in this ledger and carries figures nothing
+# else does. It also carries the requester's address in the clear and the name of the
+# key that made the call, so it is the one place where "keep everything" and the
+# privacy boundary actually collide.
+
+
+def _metadata(**overrides):
+    base = {
+        "usage_object": {
+            "total_tokens": 753,
+            "prompt_tokens": 682,
+            "completion_tokens": 71,
+            "prompt_tokens_details": {"audio_tokens": 0, "cached_tokens": 512},
+            "completion_tokens_details": {"reasoning_tokens": 25, "audio_tokens": 0},
+        },
+        "cost_breakdown": {"input_cost": 0.0001364, "output_cost": 0.0000852,
+                           "total_cost": 0.0002216},
+        "attempted_retries": 1,
+        "max_retries": 3,
+        "applied_guardrails": ["pii-filter"],
+        "user_api_key_alias": "workbench",
+        "model_map_information": {"model_map_key": "demo-model"},
+        # The three that must not survive.
+        "requester_ip_address": "203.0.113.44",
+        "user_api_key": "litellm_proxy_master_key",
+        "proxy_server_request": {"body": {"messages": [{"role": "user", "content": "secret"}]}},
+    }
+    base.update(overrides)
+    return base
+
+
+def test_the_token_detail_the_lake_had_no_column_for_is_extracted():
+    out = extract_day(date(2026, 8, 27), SALT, NO_GEO, rows=[row(metadata=_metadata())])
+    call = out.rows[0]
+    assert call["cached_tokens"] == 512
+    assert call["reasoning_tokens"] == 25
+    assert call["input_cost_usd"] == 0.0001364
+    assert call["output_cost_usd"] == 0.0000852
+    assert call["attempted_retries"] == 1
+    assert call["applied_guardrails"] == ["pii-filter"]
+    assert call["api_key_alias"] == "workbench"
+    assert call["model_map_key"] == "demo-model"
+
+
+def test_zero_and_not_reported_stay_different_facts():
+    """A provider that does not report reasoning tokens is not a model that used none."""
+    out = extract_day(date(2026, 8, 27), SALT, NO_GEO, rows=[
+        row(metadata={"usage_object": {"completion_tokens_details": {"reasoning_tokens": 0}}}),
+        row(request_id="r2", metadata={"usage_object": {}}),
+    ])
+    assert out.rows[0]["reasoning_tokens"] == 0
+    assert out.rows[1]["reasoning_tokens"] is None
+
+
+def test_the_metadata_blob_is_landed_whole():
+    """Nothing is filtered out of it -- that is the current decision.
+
+    `METADATA_NOT_STORED` is empty rather than gone, so re-introducing a filter is one
+    name in a set; this asserts the mechanism still works, and that nothing is being
+    dropped today.
+    """
+    out = extract_day(date(2026, 8, 27), SALT, NO_GEO, rows=[row(metadata=_metadata())])
+    kept = json.loads(out.rows[0]["metadata_json"])
+
+    assert set(kept) == set(_metadata()), "the blob lost a key on the way through"
+    assert set(kept).isdisjoint(METADATA_NOT_STORED)
+    assert kept["requester_ip_address"] == "203.0.113.44"
+    assert "usage_object" in kept
+    # The pseudonymised form is still there beside it, so nothing downstream that was
+    # written against the hash has to change.
+    assert out.rows[0]["client_hash"]
+
+
+def test_the_api_key_is_still_the_one_thing_held_back():
+    """A working credential in a readable table is not the same as data being available.
+
+    The alias travels in the clear, which is what a person recognises; the key itself
+    is hashed, because nothing in the column says whether a given value is a hash
+    already or a live key.
+    """
+    out = extract_day(date(2026, 8, 27), SALT, NO_GEO, rows=[row(
+        api_key="litellm-key-abc123", metadata=_metadata(),
+    )])
+    assert out.rows[0]["api_key_hash"] != "litellm-key-abc123"
+    assert out.rows[0]["api_key_alias"] == "workbench"
+
+
+def test_a_row_with_no_metadata_is_not_an_error():
+    out = extract_day(date(2026, 8, 27), SALT, NO_GEO, rows=[row(metadata=None)])
+    call = out.rows[0]
+    assert call["reasoning_tokens"] is None
+    assert call["metadata_json"] is None
+    assert call["applied_guardrails"] == []

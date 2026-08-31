@@ -22,7 +22,7 @@ from datetime import UTC, date, datetime, time, timedelta
 
 from homelab_datalake.geo import GeoEnricher
 from homelab_datalake.parsing.npm_log import ParsedLine, ParseStats, parse_line
-from homelab_datalake.privacy import redact_client, strip_query
+from homelab_datalake.privacy import query_param_names, redact_client, strip_query
 
 logger = logging.getLogger(__name__)
 
@@ -154,11 +154,22 @@ def extract_partition(
                 "method": parsed.method,
                 "scheme": parsed.scheme,
                 "path": strip_query(parsed.uri),
+                # The names only; `strip_query` above still drops every value. Without
+                # these the query string vanished entirely, and with it any way to ask
+                # which endpoints take parameters at all.
+                "has_query": bool(parsed.uri and "?" in parsed.uri),
+                "query_param_names": query_param_names(parsed.uri),
                 "status": parsed.status,
                 "upstream_status": parsed.upstream_status,
                 "cache_status": parsed.cache_status,
                 "bytes_sent": parsed.bytes_sent,
                 "user_agent": parsed.user_agent,
+                # Parsed from every line since this pipeline was written, carried on
+                # ParsedLine, and then left out of the schema -- so it was read and
+                # discarded on all [count withheld] lines a day. It is how one tells a link
+                # somebody followed from a URL somebody typed.
+                "referer": parsed.referer,
+                "gzip_ratio": parsed.gzip_ratio,
                 "sent_to": parsed.sent_to,
                 "client_hash": redacted.client_hash,
                 "client_network": redacted.client_network,

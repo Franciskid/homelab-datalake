@@ -70,6 +70,46 @@ _SCHEMA = pa.schema(
         ("geo_country_code", pa.string()),
         ("geo_asn", pa.int64()),
         ("geo_as_org", pa.string()),
+        ("model_id", pa.string()),
+        ("api_base", pa.string()),
+        ("cache_key", pa.string()),
+        ("organization_id", pa.string()),
+        ("agent_id", pa.string()),
+        ("user_hash", pa.string()),
+        ("request_tags", pa.list_(pa.string())),
+        # The token detail `total_tokens` cannot express. Nullable on purpose: zero
+        # reasoning tokens and "the provider did not say" are different facts.
+        ("cached_tokens", pa.int64()),
+        ("prompt_audio_tokens", pa.int64()),
+        ("reasoning_tokens", pa.int64()),
+        ("completion_audio_tokens", pa.int64()),
+        ("accepted_prediction_tokens", pa.int64()),
+        ("rejected_prediction_tokens", pa.int64()),
+        # The bill, split. One `spend_usd` could not answer "what did the prompt cost".
+        ("input_cost_usd", pa.float64()),
+        ("output_cost_usd", pa.float64()),
+        ("tool_usage_cost_usd", pa.float64()),
+        ("original_cost_usd", pa.float64()),
+        ("discount_amount_usd", pa.float64()),
+        ("attempted_retries", pa.int64()),
+        ("max_retries", pa.int64()),
+        ("litellm_overhead_ms", pa.float64()),
+        ("applied_guardrails", pa.list_(pa.string())),
+        ("api_key_alias", pa.string()),
+        ("team_alias", pa.string()),
+        ("model_map_key", pa.string()),
+        ("error_information", pa.string()),
+        # LiteLLM's metadata blob, whole. Kept so a figure nobody has asked for yet is
+        # still on disk when they do.
+        ("metadata_json", pa.string()),
+        # The caller's address as the ledger recorded it, beside the hashed and geo
+        # columns above. Internal container addresses on this deployment.
+        ("requester_ip", pa.string()),
+        # The prompt and completion payloads. Empty until LiteLLM's payload logging is
+        # switched on; whole conversations afterwards.
+        ("messages_json", pa.string()),
+        ("response_json", pa.string()),
+        ("proxy_server_request_json", pa.string()),
     ]
 )
 

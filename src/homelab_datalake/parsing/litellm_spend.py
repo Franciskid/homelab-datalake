@@ -3,24 +3,40 @@
 Simpler than the log sources -- it is already a table, already typed, already keyed by
 time. The work here is entirely about what *not* to take.
 
-`LiteLLM_SpendLogs` carries three columns that must never reach the warehouse:
 `messages`, `response` and `proxy_server_request` hold the full prompt and completion
-payloads. They are empty on this deployment today because payload logging is off, and
-that is exactly why they are excluded by name rather than by "select the ones that
-happen to be empty": switching payload logging on must not silently start ingesting
-everybody's conversations.
+payloads, and they are ingested: the lake's owner asked for the whole ledger rather
+than a summary of it. Two consequences follow, and belong where somebody will read
+them rather than in a commit message:
 
-Two more are pseudonymised rather than dropped, because their grouping value is real:
+  * They are **empty today** -- 0 of [count withheld] rows -- because LiteLLM's payload logging
+    is off. Selecting them changes nothing until it is switched on, at which point
+    every conversation through the gateway lands in the lake on the next run. That is
+    the intended behaviour here, not an accident of configuration.
+  * Anything that can read the lake can then read those conversations: the SQL
+    console, the workbench, and any agent granted the datalake tools.
 
-  * `requester_ip_address` -- personal data, through the same boundary as the proxy
-    logs (homelab_datalake.privacy).
+`requester_ip_address` is landed raw *and* pseudonymised. On this deployment it is the
+internal container address of whatever called the gateway, so the raw value is a fact
+about one's own infrastructure rather than about a stranger -- unlike the proxy logs
+next door, where the addresses belong to visitors and the hashing boundary stands.
+
+One column is still pseudonymised, and the reason is narrow:
+
   * `api_key` -- a mix of 64-character hashes and 24-character literals in this
     deployment. Nothing in the column says which is which, so it is treated as a
-    credential and hashed. "Spend per key" survives; the risk does not.
+    credential and hashed. A *working key* sitting in a table anybody with lake access
+    can read is a different kind of problem from data being available, and hashing it
+    costs nothing analytically: "spend per key" survives, and the key's human-readable
+    alias travels in the clear beside it, which is what a person actually recognises.
+
+`metadata` is landed whole. The extracted scalars below -- reasoning tokens, cached
+tokens, the input-versus-output cost split, retries, guardrails -- are a convenience
+over it rather than a filter on it.
 """
 
 from __future__ import annotations
 
+import json
 import os
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, time, timedelta
@@ -35,11 +51,67 @@ SELECT_COLUMNS = (
     "request_id", "call_type", "api_key", "spend",
     "total_tokens", "prompt_tokens", "completion_tokens",
     '"startTime"', '"endTime"', '"completionStartTime"',
-    "model", "model_group", "custom_llm_provider",
-    "cache_hit", "team_id", "end_user", "status",
+    "model", "model_id", "model_group", "custom_llm_provider", "api_base",
+    "cache_hit", "cache_key", "team_id", "end_user", "status",
     "request_duration_ms", "session_id", "mcp_namespaced_tool_name",
     "requester_ip_address",
+    # Added because the lake had no answer for questions the ledger could answer:
+    # `metadata` carries the reasoning and cached token counts and the input/output
+    # cost split, and it is populated on every row. `request_tags` is populated on
+    # [count withheld] of 36,637. `organization_id` and `agent_id` are empty on this deployment
+    # today and are taken anyway -- a column that fills in later should not need a
+    # code change to start being recorded.
+    "metadata", "request_tags", "organization_id", "agent_id", '"user"',
+    # The payloads. See the module docstring: empty today, ingested by decision, and
+    # readable by anything that can read the lake once payload logging is switched on.
+    "messages", "response", "proxy_server_request",
 )
+
+# Nothing inside `metadata` is held back. Kept as a named, empty constant rather than
+# deleted outright, because "filter a key out of the blob" is a decision that could
+# reasonably be taken again -- adding a name here is how, and a test asserts that
+# whatever is listed really does not reach the row.
+METADATA_NOT_STORED: frozenset[str] = frozenset()
+
+def _as_int(value) -> int | None:
+    """A JSON number that may be absent, null, or a string. Never a silent zero.
+
+    Zero and "not reported" are different facts here: a model that does no reasoning
+    reports zero reasoning tokens, and one whose provider does not report them at all
+    is unknown. Averaging the second as the first understates every other model.
+    """
+    if value is None or value == "":
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _as_float(value) -> float | None:
+    if value is None or value == "":
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _string_list(value) -> list[str]:
+    """A JSON array as a list of strings, and anything else as empty."""
+    if not isinstance(value, list):
+        return []
+    return [str(item) for item in value if item is not None]
+
+
+def _as_json(value) -> str | None:
+    """A nested object as JSON text, or None when there is nothing in it."""
+    if value in (None, {}, [], ""):
+        return None
+    if isinstance(value, str):
+        return value
+    return json.dumps(value, default=str, sort_keys=True)
+
 
 def _build_query() -> str:
     """The SELECT, assembled from the constant column list.
@@ -123,6 +195,16 @@ def extract_day(day: date, salt: str, geo: GeoEnricher | None = None, rows=None)
         spend = float(row.get("spend") or 0.0)
         status = row.get("status") or None
 
+        metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+        usage = metadata.get("usage_object") or {}
+        prompt_details = usage.get("prompt_tokens_details") or {}
+        completion_details = usage.get("completion_tokens_details") or {}
+        costs = metadata.get("cost_breakdown") or {}
+        model_map = metadata.get("model_map_information") or {}
+        kept_metadata = {
+            k: v for k, v in metadata.items() if k not in METADATA_NOT_STORED
+        }
+
         out.rows.append(
             {
                 "dt": day,
@@ -152,6 +234,58 @@ def extract_day(day: date, salt: str, geo: GeoEnricher | None = None, rows=None)
                 "geo_country_code": info.country_code,
                 "geo_asn": info.asn,
                 "geo_as_org": info.as_org,
+                "model_id": row.get("model_id") or None,
+                "api_base": row.get("api_base") or None,
+                "cache_key": row.get("cache_key") or None,
+                "organization_id": row.get("organization_id") or None,
+                "agent_id": row.get("agent_id") or None,
+                # `user` is LiteLLM's own end-user label, distinct from `end_user`.
+                # Hashed on the same boundary as every other caller identity.
+                "user_hash": hash_client(row["user"], salt) if row.get("user") else None,
+                "request_tags": _string_list(row.get("request_tags")),
+                # The figures the lake had no column for. `total_tokens` alone cannot
+                # tell a cached prompt from a fresh one, nor a reasoning model's hidden
+                # work from its visible answer -- so a cost-per-token number computed
+                # from it was wrong in both directions.
+                "cached_tokens": _as_int(prompt_details.get("cached_tokens")),
+                "prompt_audio_tokens": _as_int(prompt_details.get("audio_tokens")),
+                "reasoning_tokens": _as_int(completion_details.get("reasoning_tokens")),
+                "completion_audio_tokens": _as_int(completion_details.get("audio_tokens")),
+                "accepted_prediction_tokens": _as_int(
+                    completion_details.get("accepted_prediction_tokens")
+                ),
+                "rejected_prediction_tokens": _as_int(
+                    completion_details.get("rejected_prediction_tokens")
+                ),
+                # One `spend_usd` could not be split into what the prompt cost and what
+                # the answer cost, which is the first question asked of an LLM bill.
+                "input_cost_usd": _as_float(costs.get("input_cost")),
+                "output_cost_usd": _as_float(costs.get("output_cost")),
+                "tool_usage_cost_usd": _as_float(costs.get("tool_usage_cost")),
+                "original_cost_usd": _as_float(costs.get("original_cost")),
+                "discount_amount_usd": _as_float(costs.get("discount_amount")),
+                "attempted_retries": _as_int(metadata.get("attempted_retries")),
+                "max_retries": _as_int(metadata.get("max_retries")),
+                "litellm_overhead_ms": _as_float(metadata.get("litellm_overhead_time_ms")),
+                "applied_guardrails": _string_list(metadata.get("applied_guardrails")),
+                "api_key_alias": metadata.get("user_api_key_alias") or None,
+                "team_alias": metadata.get("user_api_key_team_alias") or None,
+                "model_map_key": model_map.get("model_map_key") or None,
+                # Why a call failed, when one did. Kept as JSON: it is null on almost
+                # every row and its shape is the provider's, not ours.
+                "error_information": _as_json(metadata.get("error_information")),
+                # Everything else the blob held, minus what METADATA_NOT_STORED keeps
+                # out. Here so a figure nobody has asked for yet is still recorded.
+                "metadata_json": _as_json(kept_metadata),
+                # Raw beside the hash. These are internal container addresses on this
+                # deployment -- a fact about one's own infrastructure. The hashed and
+                # geo columns above stay, so nothing downstream has to change.
+                "requester_ip": address or None,
+                # The payloads, as JSON text. Null today; whole conversations once
+                # LiteLLM's payload logging is switched on.
+                "messages_json": _as_json(row.get("messages")),
+                "response_json": _as_json(row.get("response")),
+                "proxy_server_request_json": _as_json(row.get("proxy_server_request")),
             }
         )
         out.calls += 1

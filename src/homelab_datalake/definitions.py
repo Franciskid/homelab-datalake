@@ -114,11 +114,23 @@ def jellyfin_daily_schedule(context: ScheduleEvaluationContext):
     yield RunRequest(run_key=f"jellyfin-{day.isoformat()}", partition_key=day.isoformat())
 
 
+# Zones are excluded and get their own job below. Everything in a partitioned job has
+# to share one partitions definition, and a zone snapshot cannot honestly carry the
+# event partitions' start date -- see `camera.ZONE_START`.
 camera_daily_job = define_asset_job(
     name="camera_daily",
-    selection=AssetSelection.groups("camera"),
+    selection=AssetSelection.groups("camera") - AssetSelection.keys("camera_zones_raw"),
     partitions_def=camera.camera_partitions,
-    description="Land one day of camera events, clips and logs.",
+    description=(
+        "Land one day of camera events, clips, logs, coverage spans and annotations."
+    ),
+)
+
+camera_zones_job = define_asset_job(
+    name="camera_zones",
+    selection=AssetSelection.keys("camera_zones_raw"),
+    partitions_def=camera.zone_partitions,
+    description="Snapshot today's attention-zone configuration.",
 )
 
 
@@ -152,6 +164,22 @@ def camera_late_arrival_schedule(context: ScheduleEvaluationContext):
             run_key=f"camera-late-{day.isoformat()}-{context.scheduled_execution_time:%Y%m%d%H}",
             partition_key=day.isoformat(),
         )
+
+
+@schedule(
+    job=camera_zones_job,
+    cron_schedule="40 3 * * *",
+    default_status=DefaultScheduleStatus.STOPPED,
+    description=(
+        "Today's zone configuration at 03:40 UTC, five minutes before the events that "
+        "will be read against it. Today's, not yesterday's: the camera has no history "
+        "for a zone, so the only date this snapshot can honestly carry is the one it "
+        "was taken on."
+    ),
+)
+def camera_zones_schedule(context: ScheduleEvaluationContext):
+    day = context.scheduled_execution_time.date()
+    yield RunRequest(run_key=f"camera-zones-{day.isoformat()}", partition_key=day.isoformat())
 
 
 @schedule(
@@ -258,10 +286,10 @@ def notify_on_failure(context):
 defs = Definitions(
     assets=all_assets,
     jobs=[npm_daily_job, npm_backfill_job, litellm_daily_job, jellyfin_daily_job,
-          camera_daily_job, analytics_job],
+          camera_daily_job, camera_zones_job, analytics_job],
     schedules=[npm_daily_schedule, litellm_daily_schedule, jellyfin_daily_schedule,
                camera_daily_schedule, camera_late_arrival_schedule,
-               analytics_daily_schedule],
+               camera_zones_schedule, analytics_daily_schedule],
     sensors=[notify_on_failure],
     resources={
         "lake": LakeStorage.from_env(),

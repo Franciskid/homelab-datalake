@@ -41,13 +41,35 @@ def item(**overrides):
     return base
 
 
-def test_path_and_overview_never_reach_the_row():
-    """Path carries filesystem topology and, in this library, the source site name."""
+def test_the_file_path_never_reaches_the_row():
+    """Path carries filesystem topology and, in this library, the source site name.
+
+    Overview used to be held back beside it, on the grounds that no question asked
+    about it. That was only true until somebody asked one, and prose about a film is
+    not the same kind of secret as the name of the site the file came from -- so the
+    synopsis now travels and the path still does not.
+    """
     out = snapshot(DAY, items=[item()])
     row = out.titles[0]
-    assert "path" not in row and "overview" not in row
+    assert "path" not in row
     blob = " ".join(str(v) for v in row.values())
-    assert "ExampleMovie" not in blob and "Frank Miller" not in blob
+    assert "ExampleMovie" not in blob
+    assert "/Media/Movies" not in blob
+    assert row["overview"].startswith("Adapte du roman graphique")
+
+
+def test_a_field_jellyfin_adds_is_reported_rather_than_vanishing():
+    """The signal whose absence lost the camera's `counts` for a month."""
+    out = snapshot(DAY, items=[item(SomethingNew={"a": 1})])
+    assert "SomethingNew" in out.unmapped
+    assert '"SomethingNew"' in out.titles[0]["_unmapped"]
+
+
+def test_a_field_deliberately_not_stored_is_not_reported_as_unmapped():
+    """`_unmapped` is a prompt to add a column, so it must stay quiet about Path."""
+    out = snapshot(DAY, items=[item()])
+    assert "Path" not in out.unmapped
+    assert out.titles[0]["_unmapped"] is None
 
 
 @pytest.mark.parametrize(

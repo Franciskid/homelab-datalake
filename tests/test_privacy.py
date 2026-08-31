@@ -20,6 +20,7 @@ from homelab_datalake.privacy import (
     classify_trust,
     hash_client,
     network_of,
+    query_param_names,
     redact_client,
     strip_query,
 )
@@ -128,3 +129,32 @@ def test_query_strings_are_dropped_and_paths_kept():
     assert strip_query("/api/v3/queue") == "/api/v3/queue"
     assert strip_query("/a?b=1?c=2") == "/a"
     assert strip_query(None) is None
+
+
+def test_query_parameter_names_are_kept_and_their_values_are_not():
+    """The values are the dangerous half. The names are an ordinary question.
+
+    Dropping the whole query string left "which endpoints take a token parameter"
+    unanswerable, which is a real cost for no extra safety.
+    """
+    uri = "/reset?token=super-secret-value&user=operator@example.test&debug=1"
+    names = query_param_names(uri)
+
+    assert names == ["debug", "token", "user"]
+    assert "super-secret-value" not in " ".join(names)
+    assert "operator@example.test" not in " ".join(names)
+    # And the path itself still loses the query entirely.
+    assert strip_query(uri) == "/reset"
+
+
+def test_a_request_with_no_query_has_no_parameter_names():
+    assert query_param_names("/sql") == []
+    assert query_param_names(None) == []
+    assert query_param_names("/sql?") == []
+
+
+def test_a_scanner_cannot_store_a_kilobyte_of_junk_in_a_parameter_name():
+    """This column is grouped by, not a place to keep an attack verbatim."""
+    names = query_param_names("/?" + "A" * 4000 + "=1")
+    assert len(names) == 1
+    assert len(names[0]) == 64

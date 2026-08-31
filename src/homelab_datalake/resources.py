@@ -95,6 +95,31 @@ class LakeStorage(ConfigurableResource):
                         removed += 1
         return removed
 
+    def read_table(self, key: str) -> pa.Table | None:
+        """One Parquet object back as an Arrow table, or None if it is not there.
+
+        The counterpart to `write_table`, and it exists for one reason: a partition
+        that is *merged* rather than replaced has to be read before it is written.
+        The camera source needs that -- its upstream evicts events once its own store
+        is full, so a re-read of an old day legitimately returns fewer rows than the
+        lake already holds, and replacing the partition with that answer deletes
+        history that no longer exists anywhere else.
+        """
+        try:
+            if self.uses_s3:
+                body = self._client().get_object(Bucket=self.bucket, Key=key)["Body"].read()
+                return pq.read_table(io.BytesIO(body))
+            path = Path(self.local_root) / key
+            if not path.exists():
+                return None
+            return pq.read_table(path)
+        except Exception:  # noqa: BLE001 - a missing object is the ordinary case on a
+            # first write, and an unreadable one must not stop the run from landing
+            # today's rows. Both mean "nothing to merge with"; the shrink check that
+            # follows the merge is what catches a read that failed when it should not
+            # have, because the partition would appear to lose every prior row.
+            return None
+
     def count_rows(self, key: str) -> int | None:
         """Rows in one Parquet object, or None if it is not there.
 

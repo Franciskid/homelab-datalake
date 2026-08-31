@@ -125,3 +125,30 @@ def test_stats_count_every_line_and_split_by_format():
     assert stats.by_format == {"proxy": 1, "standard": 1, "combined": 1}
     assert len(parsed) == 3 and len(rejected) == 2
     assert stats.reject_rate == pytest.approx(0.4)
+
+
+def test_the_referer_survives_into_the_parsed_line():
+    """Parsed on every line since this was written, and dropped before the write.
+
+    It is how a link somebody followed is told apart from a URL somebody typed, and
+    the schema simply had no column for it.
+    """
+    line = (
+        '[27/Aug/2026:20:42:55 +0000] MISS 200 200 - GET https data.example.test '
+        '"/sql?tab=catalogue" [Client 10.0.0.5] [Length 5120] [Gzip 2.10] '
+        '[Sent-to datalake-api] "Mozilla/5.0" "https://ai.example.test/workbench"'
+    )
+    parsed = parse_line(line)
+    assert parsed.referer == "https://ai.example.test/workbench"
+    assert parsed.gzip_ratio == "2.10"
+
+
+def test_an_uncompressed_response_reports_no_ratio_rather_than_a_dash():
+    line = (
+        '[27/Aug/2026:20:42:55 +0000] MISS 200 200 - GET https data.example.test '
+        '"/health" [Client 10.0.0.5] [Length 12] [Gzip -] '
+        '[Sent-to datalake-api] "curl/8.0" "-"'
+    )
+    parsed = parse_line(line)
+    assert parsed.gzip_ratio is None
+    assert parsed.referer is None

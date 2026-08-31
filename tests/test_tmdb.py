@@ -28,10 +28,27 @@ MOVIE = {
         {"iso_3166_1": "GB", "name": "United Kingdom"},
         {"iso_3166_1": "US", "name": "United States of America"},
     ],
-    # Present in the payload, deliberately not kept.
+    "runtime": 148,
+    "homepage": "https://www.warnerbros.com/movies/inception",
+    "imdb_id": "tt1375666",
+    "title": "Inception",
+    "origin_country": ["GB", "US"],
+    "genres": [{"id": 28, "name": "Action"}, {"id": 878, "name": "Science Fiction"}],
+    "production_companies": [
+        {"id": 923, "name": "Legendary Pictures", "logo_path": "/8M99Dkt23MjQMTTWukq4m5XsEuo.png"},
+        {"id": 9996, "name": "Syncopy"},
+    ],
+    "spoken_languages": [
+        {"english_name": "English", "iso_639_1": "en", "name": "English"},
+        {"english_name": "Japanese", "iso_639_1": "ja", "name": "\u65e5\u672c\u8a9e"},
+    ],
+    "belongs_to_collection": None,
+    # Prose travels now -- a synopsis is a fact about the film. The artwork paths
+    # beside it still do not: they are CDN cache keys and answer nothing.
     "overview": "A thief who steals corporate secrets...",
-    "poster_path": "/edv5CZvWj09upOsy2Y6IwDhK8bt.jpg",
     "tagline": "Your mind is the scene of the crime.",
+    "poster_path": "/edv5CZvWj09upOsy2Y6IwDhK8bt.jpg",
+    "backdrop_path": "/s3TBrRGB1iav7gFOCNx3H31MoES.jpg",
 }
 
 
@@ -44,31 +61,59 @@ def test_the_kept_fields_are_parsed():
     assert facts.vote_count == 34000
 
 
-def test_nothing_jellyfin_already_has_is_fetched_again():
-    """The reason this module is five columns and not thirteen.
+def test_what_jellyfin_also_has_is_kept_under_its_own_name():
+    """Two columns for one fact, deliberately, because they disagree.
 
-    Jellyfin queries TMDB itself during a scan, so the vote average (it stores it as
-    CommunityRating), the original title, the release date and the production country
-    are already in the daily snapshot at 99.8-[rate withheld] coverage. Keeping them here would
-    mean two columns for one fact, and would leave them null until somebody created a
-    TMDB account -- for data that was on disk the whole time.
+    This module used to hold five columns on the argument that Jellyfin already had
+    the rest. The duplication that argument avoided is real -- but so is the drift it
+    hid. `community_rating` in the library snapshot is TMDB's vote average *as of the
+    scan*, which can be years stale, and with nothing to compare it to the lake could
+    not tell. Both are kept, each named for where it came from.
     """
-    kept = set(vars(tmdb.parse_movie(MOVIE)))
-    assert kept == {
-        "tmdb_id", "original_language", "budget_usd", "revenue_usd",
-        "popularity", "vote_count",
-    }
-    for redundant in ("vote_average", "original_title", "release_date",
-                      "production_country"):
-        assert redundant not in kept, f"{redundant} is already in the library snapshot"
+    facts = tmdb.parse_movie(MOVIE)
+    assert facts.vote_average == MOVIE["vote_average"]
+    assert facts.vote_count == MOVIE["vote_count"]
+    assert facts.original_title == MOVIE["original_title"]
+    assert facts.release_date == MOVIE["release_date"]
 
 
-def test_prose_and_images_are_not_kept():
-    """A warehouse is not the place for free text, and it is most of the payload."""
+def test_the_columns_jellyfin_has_no_field_for_at_all():
+    """The genuinely new half: franchise, spoken languages, release status."""
+    facts = tmdb.parse_movie(MOVIE)
+    assert facts.status == MOVIE["status"]
+    assert facts.genres == [g["name"] for g in MOVIE["genres"]]
+    assert facts.spoken_languages == [
+        lang["english_name"] for lang in MOVIE["spoken_languages"]
+    ]
+    assert facts.production_companies == [
+        c["name"] for c in MOVIE["production_companies"]
+    ]
+
+
+def test_a_film_in_a_franchise_says_which_one():
+    """Nothing else in this warehouse says two films are episodes of one series."""
+    facts = tmdb.parse_movie({**MOVIE, "belongs_to_collection": {"id": 1565, "name": "28 Days Later"}})
+    assert facts.collection_id == 1565
+    assert facts.collection_name == "28 Days Later"
+
+
+def test_a_standalone_film_has_no_collection_rather_than_a_zero():
+    facts = tmdb.parse_movie({**MOVIE, "belongs_to_collection": None})
+    assert facts.collection_id is None
+    assert facts.collection_name is None
+
+
+def test_image_paths_are_still_not_kept():
+    """Poster and backdrop paths are CDN cache keys; they answer nothing.
+
+    The prose beside them does now travel -- a synopsis is a fact about the film --
+    but an artwork path is not a fact about anything.
+    """
     facts = tmdb.parse_movie(MOVIE)
     stored = [v for v in vars(facts).values() if isinstance(v, str)]
-    assert not any("thief" in v or v.endswith(".jpg") for v in stored)
-    assert not hasattr(facts, "overview")
+    assert not any(v.endswith((".jpg", ".png")) for v in stored)
+    assert not hasattr(facts, "poster_path")
+    assert not hasattr(facts, "backdrop_path")
 
 
 @pytest.mark.parametrize("value", [0, "0", None, "", "not a number"])

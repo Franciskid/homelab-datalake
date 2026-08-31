@@ -54,6 +54,27 @@ _SCHEMA = pa.schema(
         ("revenue_usd", pa.int64()),
         ("popularity", pa.float64()),
         ("vote_count", pa.int64()),
+        # Kept beside Jellyfin's `community_rating`, which is this number as of the
+        # library scan. Two columns for one fact, deliberately: without both there is
+        # no way to see that the copy has drifted.
+        ("vote_average", pa.float64()),
+        ("runtime_minutes", pa.int64()),
+        ("status", pa.string()),
+        ("tagline", pa.string()),
+        ("overview", pa.string()),
+        ("homepage", pa.string()),
+        ("release_date", pa.string()),
+        ("imdb_id", pa.string()),
+        ("original_title", pa.string()),
+        ("title", pa.string()),
+        ("is_adult", pa.bool_()),
+        ("collection_id", pa.int64()),
+        ("collection_name", pa.string()),
+        ("genres", pa.list_(pa.string())),
+        ("production_companies", pa.list_(pa.string())),
+        ("production_countries", pa.list_(pa.string())),
+        ("spoken_languages", pa.list_(pa.string())),
+        ("origin_countries", pa.list_(pa.string())),
     ]
 )
 
@@ -172,14 +193,17 @@ def tmdb_titles_raw(context: AssetExecutionContext, lake: LakeStorage) -> Output
                                  if f.name not in ("tmdb_id", "_enriched_at")}}
             missing += 1
             continue
+        # Built from the dataclass rather than field by field: the two lists are one
+        # definition apart, and spelling them out twice is how a column gets added to
+        # the schema and quietly never populated.
         known[tmdb_id] = {
             "tmdb_id": facts.tmdb_id,
             "_enriched_at": now,
-            "original_language": facts.original_language,
-            "budget_usd": facts.budget_usd,
-            "revenue_usd": facts.revenue_usd,
-            "popularity": facts.popularity,
-            "vote_count": facts.vote_count,
+            **{
+                f.name: getattr(facts, f.name)
+                for f in _SCHEMA
+                if f.name not in ("tmdb_id", "_enriched_at")
+            },
         }
         fetched += 1
 

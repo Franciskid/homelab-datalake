@@ -25,6 +25,7 @@ from dagster import (
 
 from homelab_datalake import layout
 from homelab_datalake.parsing.jellyfin import snapshot
+from homelab_datalake.projection import project
 from homelab_datalake.resources import LakeStorage
 
 # There is no history before the pipeline: a snapshot is of the library *now*, so
@@ -41,6 +42,8 @@ library_partitions = DailyPartitionsDefinition(start_date=LIBRARY_START, end_off
 
 TITLE_PREFIX = layout.prefix("jellyfin_titles")
 GENRE_PREFIX = layout.prefix("jellyfin_title_genres")
+STREAM_PREFIX = layout.prefix("jellyfin_title_streams")
+PEOPLE_PREFIX = layout.prefix("jellyfin_title_people")
 
 # A library does not lose a fifth of itself overnight. A drop that large means a mount
 # went missing or a scan is mid-flight, and writing that snapshot would record a
@@ -70,9 +73,37 @@ _TITLE_SCHEMA = pa.schema(
         ("audio_channels", pa.int32()),
         ("tmdb_id", pa.string()),
         ("imdb_id", pa.string()),
+        ("tmdb_collection_id", pa.string()),
+        ("tvdb_id", pa.string()),
+        # The primary studio and country stay, and the full lists travel beside them.
+        # One title in this library has twenty-five studios and two countries.
         ("studio", pa.string()),
+        ("studios", pa.list_(pa.string())),
         ("production_country", pa.string()),
+        ("production_countries", pa.list_(pa.string())),
         ("decade", pa.int32()),
+        ("sort_name", pa.string()),
+        ("overview", pa.string()),
+        ("tagline", pa.string()),
+        ("taglines", pa.list_(pa.string())),
+        ("tags", pa.list_(pa.string())),
+        ("parent_id", pa.string()),
+        ("item_type", pa.string()),
+        ("media_type", pa.string()),
+        ("video_type", pa.string()),
+        ("has_subtitles", pa.bool_()),
+        # Derived from the streams so the common question -- "what can I watch in
+        # French" -- does not need the bridge table.
+        ("subtitle_languages", pa.list_(pa.string())),
+        ("audio_languages", pa.list_(pa.string())),
+        ("stream_count", pa.int32()),
+        ("chapter_count", pa.int32()),
+        ("remote_trailer_count", pa.int32()),
+        ("external_urls", pa.list_(pa.struct([("name", pa.string()), ("url", pa.string())]))),
+        ("file_size_bytes", pa.int64()),
+        ("file_bitrate", pa.int64()),
+        ("media_source_count", pa.int32()),
+        ("_unmapped", pa.string()),
     ]
 )
 
@@ -80,8 +111,54 @@ _GENRE_SCHEMA = pa.schema(
     [("dt", pa.date32()), ("item_id", pa.string()), ("genre", pa.string())]
 )
 
+# One row per media stream. The whole reason this table exists is that keeping the
+# first video and the first audio stream lost every subtitle track in the library.
+_STREAM_SCHEMA = pa.schema(
+    [
+        ("dt", pa.date32()),
+        ("item_id", pa.string()),
+        ("stream_index", pa.int32()),
+        ("stream_type", pa.string()),
+        ("codec", pa.string()),
+        ("language", pa.string()),
+        ("title", pa.string()),
+        ("display_title", pa.string()),
+        ("is_default", pa.bool_()),
+        ("is_forced", pa.bool_()),
+        ("is_external", pa.bool_()),
+        ("is_hearing_impaired", pa.bool_()),
+        ("is_interlaced", pa.bool_()),
+        ("height", pa.int32()),
+        ("width", pa.int32()),
+        ("channels", pa.int32()),
+        ("channel_layout", pa.string()),
+        ("bit_rate", pa.int64()),
+        ("bit_depth", pa.int32()),
+        ("sample_rate", pa.int32()),
+        ("video_range", pa.string()),
+        ("video_range_type", pa.string()),
+        ("profile", pa.string()),
+        ("level", pa.float64()),
+    ]
+)
+
+# Cast and crew. Public film metadata: who acted in and made a film, not anything
+# about anybody using this library.
+_PEOPLE_SCHEMA = pa.schema(
+    [
+        ("dt", pa.date32()),
+        ("item_id", pa.string()),
+        ("person_id", pa.string()),
+        ("name", pa.string()),
+        ("person_type", pa.string()),
+        ("role", pa.string()),
+        ("sort_order", pa.int32()),
+    ]
+)
+
 CHECK_NOT_SHRUNK = "library_has_not_shrunk_unexpectedly"
 CHECK_TMDB_COVERAGE = "tmdb_id_coverage"
+CHECK_NO_UNMAPPED = "no_unmapped_fields"
 
 
 @asset(
@@ -108,6 +185,15 @@ CHECK_TMDB_COVERAGE = "tmdb_id_coverage"
                 "to matching on titles, which gets remakes wrong."
             ),
         ),
+        AssetCheckSpec(
+            name=CHECK_NO_UNMAPPED,
+            asset="jellyfin_library_raw",
+            description=(
+                "Warns when Jellyfin returned a field nothing here reads. The value is "
+                "kept in `_unmapped` rather than dropped; this is the prompt to give it "
+                "a column."
+            ),
+        ),
     ],
     description=(
         "A daily snapshot of the movie library: metadata, codecs and ratings. No "
@@ -124,17 +210,23 @@ def jellyfin_library_raw(context: AssetExecutionContext, lake: LakeStorage):
             "or an unreachable server, not a real state -- refusing to write it."
         )
 
-    title_prefix = f"{TITLE_PREFIX}/dt={day.isoformat()}"
-    genre_prefix = f"{GENRE_PREFIX}/dt={day.isoformat()}"
-    lake.delete_prefix(title_prefix)
-    lake.delete_prefix(genre_prefix)
-
-    written = lake.write_table(
-        f"{title_prefix}/data.parquet", pa.Table.from_pylist(result.titles, schema=_TITLE_SCHEMA)
-    )
-    written += lake.write_table(
-        f"{genre_prefix}/data.parquet", pa.Table.from_pylist(result.genres, schema=_GENRE_SCHEMA)
-    )
+    written = 0
+    for prefix, rows, schema in (
+        (TITLE_PREFIX, result.titles, _TITLE_SCHEMA),
+        (GENRE_PREFIX, result.genres, _GENRE_SCHEMA),
+        (STREAM_PREFIX, result.streams, _STREAM_SCHEMA),
+        (PEOPLE_PREFIX, result.people, _PEOPLE_SCHEMA),
+    ):
+        partition = f"{prefix}/dt={day.isoformat()}"
+        # Replaced, not merged: a snapshot describes the library at a moment, and a
+        # title deleted from it should be absent rather than preserved. The shrink
+        # check below is what makes that safe -- the camera's problem, where the
+        # source forgets and the lake is the only copy, does not arise here.
+        lake.delete_prefix(partition)
+        projected, _ = project(rows, schema)
+        written += lake.write_table(
+            f"{partition}/data.parquet", pa.Table.from_pylist(projected, schema=schema)
+        )
 
     with_tmdb = sum(1 for t in result.titles if t["tmdb_id"])
     coverage = with_tmdb / result.count
@@ -151,10 +243,15 @@ def jellyfin_library_raw(context: AssetExecutionContext, lake: LakeStorage):
             "titles": result.count,
             "genre_pairs": len(result.genres),
             "distinct_genres": len({g["genre"] for g in result.genres}),
+            "media_streams": len(result.streams),
+            "credits": len(result.people),
             "tmdb_coverage_pct": MetadataValue.float(round(100 * coverage, 2)),
             "pages_fetched": result.pages,
             "bytes_written": written,
-            "destination": MetadataValue.path(f"{lake.describe()}/{title_prefix}/data.parquet"),
+            "unmapped_fields": MetadataValue.text(", ".join(sorted(result.unmapped)) or "none"),
+            "destination": MetadataValue.path(
+                f"{lake.describe()}/{TITLE_PREFIX}/dt={day.isoformat()}/data.parquet"
+            ),
         },
     )
 
@@ -171,6 +268,13 @@ def jellyfin_library_raw(context: AssetExecutionContext, lake: LakeStorage):
         passed=coverage >= 0.95,
         severity=AssetCheckSeverity.WARN,
         metadata={"coverage_pct": MetadataValue.float(round(100 * coverage, 2))},
+    )
+
+    yield AssetCheckResult(
+        check_name=CHECK_NO_UNMAPPED,
+        passed=not result.unmapped,
+        severity=AssetCheckSeverity.WARN,
+        metadata={"fields": MetadataValue.text(", ".join(sorted(result.unmapped)) or "none")},
     )
 
 

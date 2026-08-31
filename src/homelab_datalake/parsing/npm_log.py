@@ -92,6 +92,9 @@ class ParsedLine:
     upstream_status: str | None = None
     cache_status: str | None = None
     sent_to: str | None = None
+    #: `$gzip_ratio`, which both NPM formats log and neither used to keep. "-" when
+    #: the response was not compressed, which is a fact about the response.
+    gzip_ratio: str | None = None
 
 
 @dataclass
@@ -184,6 +187,7 @@ def parse_line(line: str) -> ParsedLine | Rejected:
             upstream_status=_dash_to_none(groups.get("upstream_status")),
             cache_status=_dash_to_none(groups.get("cache_status")),
             sent_to=_dash_to_none(groups.get("sent_to")),
+            gzip_ratio=_dash_to_none(groups.get("gzip")),
         )
 
     m = _COMBINED.match(raw)

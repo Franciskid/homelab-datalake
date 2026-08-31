@@ -50,8 +50,8 @@ def test_raw_and_curated_name_their_source():
 
 
 def test_unknown_table_names_itself_in_the_error():
-    with pytest.raises(KeyError, match="camera_zones"):
-        layout.dataset("camera_zones")
+    with pytest.raises(KeyError, match="camera_thermal"):
+        layout.dataset("camera_thermal")
 
 
 def test_migration_moves_every_legacy_prefix():
