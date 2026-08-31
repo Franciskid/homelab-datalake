@@ -34,8 +34,8 @@ def call(server, name, arguments=None):
 def test_every_tool_is_registered(tools):
     names = {t.name for t in asyncio.run(tools.list_tools())}
     assert names == {
-        "list_datasets", "describe_dataset", "llm_spend", "web_traffic",
-        "camera_activity", "media_library", "export_workbook",
+        "list_datasets", "describe_dataset", "describe_schema", "llm_spend",
+        "web_traffic", "camera_activity", "media_library", "export_workbook",
     }
 
 
@@ -123,3 +123,13 @@ def test_exporting_nothing_returns_an_error_not_a_file(tools):
     })
     assert "empty result" in payload["error"]
     assert payload["row_count"] == 0
+
+
+def test_describe_schema_hands_over_the_join_graph(tools):
+    """The tool that exists so an agent stops guessing joins and retrying."""
+    out = call(tools, "describe_schema")
+    assert "tables" in out and "edges" in out
+    # Shape, not contents: the manifest is built at image build time, so a checkout
+    # without one must still get a usable answer rather than an error.
+    assert isinstance(out["tables"], list)
+    assert isinstance(out["edges"], list)

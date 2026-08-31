@@ -37,7 +37,8 @@ from starlette.routing import Route
 
 from homelab_datalake.api import query as q
 from homelab_datalake.api.audit import AuditLog, Entry
-from homelab_datalake.api.catalogue import CatalogueCache
+from homelab_datalake.api import relations
+from homelab_datalake.api.catalogue import CatalogueCache, DEFAULT_MANIFEST_PATH
 from homelab_datalake.mcp.auth import KeycloakTokenVerifier, verifier_from_env
 
 logger = logging.getLogger(__name__)
@@ -101,6 +102,7 @@ def create_app(
     sessions: q.SessionCache | None = None,
     audit: AuditLog | None = None,
     verifier: KeycloakTokenVerifier | None = None,
+    manifest_path: str = DEFAULT_MANIFEST_PATH,
 ) -> Starlette:
     """Build the application.
 
@@ -108,6 +110,8 @@ def create_app(
     the real routes against a lake in a temporary directory and no Keycloak.
     """
     cache = catalogue or CatalogueCache()
+    # Built on first use, then held: the manifest ships in the image.
+    _relations: dict | None = None
     pool = sessions or q.SessionCache()
     log = audit or AuditLog()
 
@@ -125,6 +129,21 @@ def create_app(
         if isinstance(caller, Response):
             return caller
         return JSONResponse(cache.get().as_dict())
+
+    async def get_relations(request: Request) -> Response:
+        """How the tables connect, so a caller does not have to guess.
+
+        Cached for the process lifetime rather than per request: the manifest is baked
+        into the image, so it cannot change without a restart, and rebuilding the graph
+        per call would be work with no possible new answer.
+        """
+        caller = await authenticate(request, verifier)
+        if isinstance(caller, Response):
+            return caller
+        nonlocal _relations
+        if _relations is None:
+            _relations = relations.build(manifest_path)
+        return JSONResponse(_relations)
 
     async def refresh_catalogue(request: Request) -> Response:
         caller = await authenticate(request, verifier)
@@ -154,10 +173,15 @@ def create_app(
         # the switch on: the direction a mistake falls in is the whole point of a
         # default.
         read_only = body.get("read_only", True) is not False
+        # 0 means "no cap", which is the default. A caller may still ask for one, and
+        # the deployment may impose one with DATALAKE_API_MAX_ROWS -- but the ceiling is
+        # only applied when there is a ceiling, or every request would be clamped to
+        # zero rows the moment the deployment default went back to unlimited.
         max_rows = body.get("max_rows", q.MAX_ROWS)
-        if not isinstance(max_rows, int) or isinstance(max_rows, bool) or max_rows < 1:
-            return _refused("`max_rows` must be a positive integer.")
-        max_rows = min(max_rows, q.MAX_ROWS)
+        if not isinstance(max_rows, int) or isinstance(max_rows, bool) or max_rows < 0:
+            return _refused("`max_rows` must be a non-negative integer (0 means no cap).")
+        if q.MAX_ROWS > 0:
+            max_rows = min(max_rows, q.MAX_ROWS) if max_rows > 0 else q.MAX_ROWS
 
         session = pool.get() if read_only else pool.writable()
         try:
@@ -188,6 +212,7 @@ def create_app(
         routes=[
             Route("/health", health, methods=["GET"]),
             Route("/catalogue", get_catalogue, methods=["GET"]),
+            Route("/catalogue/relations", get_relations, methods=["GET"]),
             Route("/catalogue/refresh", refresh_catalogue, methods=["POST"]),
             Route("/query", run_query, methods=["POST"]),
         ]

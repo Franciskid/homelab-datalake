@@ -25,6 +25,8 @@ from mcp.server.mcpserver import MCPServer
 from mcp.server.transport_security import TransportSecuritySettings
 from pydantic import Field
 
+from homelab_datalake.api import relations
+from homelab_datalake.api.catalogue import DEFAULT_MANIFEST_PATH
 from homelab_datalake.mcp import query as q
 from homelab_datalake.mcp.auth import verifier_from_env
 from homelab_datalake.mcp.deliverables import ExportError, write_workbook
@@ -156,6 +158,28 @@ def list_datasets() -> dict:
             entry["covers"] = {"error": str(error)}
         out.append(entry)
     return {"datasets": out, "grains": [*GRAINS, TOTAL_GRAIN]}
+
+
+@server.tool(
+    description=(
+        "How the warehouse tables connect: every table's primary key, its declared "
+        "foreign keys with the exact ON clause, and which models it is built from. "
+        "Call this once before writing SQL that joins, rather than guessing a join "
+        "and retrying on the binder error. Every edge here is a declared and enforced "
+        "relationship, not a guess from matching column names."
+    )
+)
+def describe_schema() -> dict:
+    """The join graph, from the same dbt manifest the descriptions come from.
+
+    Read through the API's own module rather than re-derived here, so the graph an
+    agent is given and the graph the SQL console shows cannot disagree.
+    """
+    try:
+        return relations.build(DEFAULT_MANIFEST_PATH)
+    except Exception as error:  # noqa: BLE001 - a caller that cannot get the graph
+        # should be told so and fall back to describe_dataset, not see the tool vanish.
+        return _describe_error(error)
 
 
 @server.tool(
