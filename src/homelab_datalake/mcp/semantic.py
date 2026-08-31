@@ -42,6 +42,15 @@ GRAINS: dict[str, str] = {
 }
 TOTAL_GRAIN = "total"  # no time bucketing at all: one row per dimension combination
 
+# The bottom of the ladder: no bucketing and no aggregation, one row per record with
+# its own timestamp. It lives in the same vocabulary as the other grains because that
+# is the one place a caller reliably looks -- `grains` is in every list_datasets and
+# describe_dataset response. Offering it as a separate tool instead would leave a
+# model reading "day, week, month, quarter, year, total" and concluding, reasonably
+# and wrongly, that the finest thing this data can say is a day.
+EVENT_GRAIN = "event"
+ALL_GRAINS: list[str] = [*GRAINS, TOTAL_GRAIN, EVENT_GRAIN]
+
 
 @dataclass(frozen=True)
 class Dimension:
@@ -63,6 +72,26 @@ class Measure:
 
 
 @dataclass(frozen=True)
+class Attribute:
+    """A column of one record, projected as itself rather than aggregated.
+
+    The distinction from Dimension is not cosmetic. A dimension is something you may
+    group by, so it has to be low enough in cardinality for a GROUP BY to mean
+    something -- which is exactly why `started_at` was never one. An attribute has no
+    such constraint: it is only ever selected, one value per row, and a timestamp
+    unique to every event is the normal case rather than a mistake.
+
+    Without this distinction a mart column that is unique per row has nowhere to live
+    in the semantic layer, and the layer ends up describing the data as though the
+    column did not exist.
+    """
+
+    name: str
+    sql: str
+    description: str
+
+
+@dataclass(frozen=True)
 class Dataset:
     name: str
     table: str
@@ -72,6 +101,19 @@ class Dataset:
     dimensions: tuple[Dimension, ...]
     measures: tuple[Measure, ...]
     default_measures: tuple[str, ...]
+    # Row-level retrieval. A dataset with no attributes cannot be asked for records,
+    # and says so when asked -- rather than answering with an aggregate that looks
+    # like the list somebody wanted.
+    attributes: tuple[Attribute, ...] = ()
+    default_fields: tuple[str, ...] = ()
+    # What records are ordered by when the caller does not say. Chronological, for a
+    # ledger of things that happened.
+    record_order: str | None = None
+    # Columns of the underlying mart that are deliberately absent from this dataset,
+    # each with the reason. Declaring them is what makes `missing_columns` a real
+    # check rather than a list of known noise: a column that is neither exposed nor
+    # named here is drift, and drift is reported.
+    not_exposed: tuple[tuple[str, str], ...] = ()
 
     @property
     def dimension_names(self) -> list[str]:
@@ -80,6 +122,21 @@ class Dataset:
     @property
     def measure_names(self) -> list[str]:
         return [m.name for m in self.measures]
+
+    @property
+    def attribute_names(self) -> list[str]:
+        return [a.name for a in self.attributes]
+
+    @property
+    def field_names(self) -> list[str]:
+        """Everything projectable one-row-per-record: attributes and dimensions both.
+
+        A dimension is a perfectly good column to put in a listing -- `zone_name` next
+        to `started_at` is the obvious export -- and forcing it to be declared twice
+        would guarantee the two lists drift.
+        """
+        return self.attribute_names + [d.name for d in self.dimensions
+                                       if d.name not in set(self.attribute_names)]
 
     def dimension(self, name: str) -> Dimension:
         for d in self.dimensions:
@@ -92,6 +149,12 @@ class Dataset:
             if m.name == name:
                 return m
         raise KeyError(name)
+
+    def field(self, name: str) -> Attribute | Dimension:
+        for a in self.attributes:
+            if a.name == name:
+                return a
+        return self.dimension(name)
 
 
 # --- LLM spend ----------------------------------------------------------------
@@ -118,6 +181,11 @@ LLM_SPEND = Dataset(
         Dimension("status", "status", "success or failure."),
         Dimension("is_self_hosted", "is_self_hosted", "True for locally hosted models."),
         Dimension("was_cache_hit", "was_cache_hit", "True when the response was cached."),
+        Dimension("team_id", "team_id", "The LiteLLM team the key belongs to."),
+        Dimension("client_trust", "client_trust",
+                  "resolved when the caller's address was known, unknown otherwise."),
+        Dimension("geo_country_code", "geo_country_code", "Where the call came from."),
+        Dimension("geo_as_org", "geo_as_org", "The calling network's owner."),
     ),
     measures=(
         Measure("calls", "count(*)", "Number of calls.", "calls"),
@@ -141,6 +209,30 @@ LLM_SPEND = Dataset(
                 "expensive one.", "USD"),
     ),
     default_measures=("calls", "spend_usd", "total_tokens"),
+    attributes=(
+        Attribute("call_key", "call_key", "The call's stable id."),
+        Attribute("partition_date", "partition_date", "The UTC day the call belongs to."),
+        Attribute("started_at", "started_at", "When the call started, to the microsecond, UTC."),
+        Attribute("started_hour", "started_hour", "started_at truncated to the hour."),
+        Attribute("spend_usd", "spend_usd", "What this one call cost."),
+        Attribute("usd_per_token", "usd_per_token", "Cost per token for this call."),
+        Attribute("total_tokens", "total_tokens", "Prompt plus completion tokens."),
+        Attribute("prompt_tokens", "prompt_tokens", "Input tokens."),
+        Attribute("completion_tokens", "completion_tokens", "Output tokens."),
+        Attribute("duration_ms", "duration_ms", "Wall-clock duration."),
+        Attribute("time_to_first_token_ms", "time_to_first_token_ms", "Time to first token."),
+        Attribute("session_id", "session_id", "The session the call belonged to."),
+        Attribute("api_key_hash", "api_key_hash",
+                  "Pseudonym of the key that made the call -- the key itself is never "
+                  "stored, so this counts and groups but does not authenticate."),
+        Attribute("end_user_hash", "end_user_hash", "Pseudonym of the end user."),
+        Attribute("client_hash", "client_hash", "Pseudonym of the calling address."),
+    ),
+    default_fields=(
+        "started_at", "model", "workload", "status", "spend_usd", "total_tokens",
+        "duration_ms", "session_id", "call_key",
+    ),
+    record_order="started_at",
 )
 
 
@@ -175,6 +267,9 @@ WEB_TRAFFIC = Dataset(
         Dimension("geo_country_name", "geo_country_name", "Country name, when known."),
         Dimension("geo_city", "geo_city", "City, when known."),
         Dimension("geo_as_org", "geo_as_org", "The network's owner."),
+        Dimension("upstream_status", "cast(upstream_status AS VARCHAR)",
+                  "What the backend returned, before the proxy had its say."),
+        Dimension("log_format", "log_format", "Which proxy log format the row was parsed from."),
     ),
     measures=(
         Measure("requests", "count(*)", "Number of requests.", "requests"),
@@ -205,6 +300,29 @@ WEB_TRAFFIC = Dataset(
         Measure("countries", "count(DISTINCT geo_country_code)", "Distinct countries.", "countries"),
     ),
     default_measures=("requests", "visitors", "server_error_pct"),
+    attributes=(
+        Attribute("request_key", "request_key", "The request's stable id."),
+        Attribute("partition_date", "partition_date", "The UTC day the request belongs to."),
+        Attribute("requested_at", "requested_at", "When it arrived, to the second, in UTC."),
+        Attribute("requested_hour", "requested_hour", "requested_at truncated to the hour."),
+        # Not a dimension: one path per request makes a GROUP BY meaningless, which
+        # is what path_group exists for. As a field in a listing it is the thing you
+        # actually wanted to read.
+        Attribute("path", "path", "The exact path requested, query string excluded."),
+        Attribute("upstream_target", "upstream_target", "Which backend served it."),
+        Attribute("bytes_sent", "bytes_sent", "Response size."),
+        Attribute("user_agent", "user_agent", "The client's user agent string."),
+        Attribute("client_hash", "client_hash",
+                  "Pseudonym of the client address. The address itself is discarded at "
+                  "ingestion, after geo and network are derived from it."),
+        Attribute("client_network", "client_network", "The /24 or /48 the client sat in."),
+        Attribute("geo_asn", "geo_asn", "The network's autonomous system number."),
+    ),
+    default_fields=(
+        "requested_at", "request_host", "method", "path", "status", "bytes_sent",
+        "client_kind", "geo_country_code", "request_key",
+    ),
+    record_order="requested_at",
 )
 
 
@@ -216,33 +334,66 @@ CAMERA_ACTIVITY = Dataset(
     kind="event",
     date_column="partition_date",
     description=(
-        "One row per camera attention event: which camera and zone, what the vision "
-        "model made of it, and whether it was confirmed or dismissed. No zone geometry, "
-        "no media, no identities -- the export refuses to send them."
+        "One row per camera attention event: which camera and zone, when it happened "
+        "to the microsecond, what the vision model made of it, how many people, "
+        "vehicles and animals it counted, whether a human later corrected it, and the "
+        "clip it belongs to. Ask for grain='event' to get the events themselves with "
+        "their exact timestamps; any other grain aggregates them."
     ),
     dimensions=(
         Dimension("camera_id", "camera_id", "Which camera."),
+        Dimension("zone_id", "zone_id", "The zone's stable id."),
         Dimension("zone_name", "zone_name", "Which zone within the view."),
+        Dimension("rule_id", "rule_id", "The stable id of the rule that fired."),
         Dimension("rule_type", "rule_type", "The rule that fired."),
         Dimension("lifecycle", "lifecycle",
                   "candidate (analysis still pending), confirmed, or dismissed."),
+        Dimension("is_confirmed", "is_confirmed", "True for confirmed events."),
+        Dimension("is_dismissed", "is_dismissed", "True for dismissed events."),
+        Dimension("is_awaiting_analysis", "is_awaiting_analysis",
+                  "True while the vision analysis has not come back."),
         Dimension("direction", "direction", "Direction of travel, when the rule reports one."),
         Dimension("zone_state", "zone_state", "The state the zone was observed in."),
+        Dimension("previous_zone_state", "previous_zone_state",
+                  "The state it was in before. Read with state_changed: a state event "
+                  "that repeats the previous state is an observation, not a transition."),
+        Dimension("state_changed", "state_changed",
+                  "True when this event actually changed the zone's state. Filter on "
+                  "this to count openings and closings rather than observations."),
+        Dimension("state_source", "state_source",
+                  "How the state was decided: the vision model, a rule, or a person."),
         Dimension("dismissal_reason", "dismissal_reason", "Why an event was dismissed."),
+        Dimension("is_duplicate", "is_duplicate", "True when folded into another event."),
         Dimension("started_weekday", "started_weekday", "Day of week, in UTC."),
         # Left as an integer, not cast to text like the other numeric dimensions:
         # this is the axis of "when does it get busy", and as text it orders
         # 0, 1, 10, 11, 2 -- which produces a chart that is simply wrong.
         Dimension("started_hour_of_day", "started_hour_of_day",
-                  "Hour of day 0-23, in UTC. The dimension for 'when does it get busy'."),
+                  "Hour of day 0-23, in UTC. The dimension for 'when does it get busy'. "
+                  "This is a bucket: for the actual time an event happened, ask for "
+                  "grain='event' and the happened_at field."),
         Dimension("is_weekend", "is_weekend", "True for Saturday and Sunday."),
         Dimension("is_unusual", "is_unusual", "Flagged unusual by the vision model."),
         Dimension("should_notify", "should_notify", "Would have raised a notification."),
+        Dimension("was_corrected", "was_corrected",
+                  "True when a person overrode what the model concluded."),
+        Dimension("corrected_by_name", "corrected_by_name", "Who made the correction."),
+        Dimension("lifecycle_was_corrected", "lifecycle_was_corrected",
+                  "True when the correction changed confirmed/dismissed."),
+        Dimension("zone_state_was_corrected", "zone_state_was_corrected",
+                  "True when the correction changed open/closed."),
+        Dimension("has_clip", "has_clip", "True when a recording is attached."),
+        Dimension("clip_kind", "clip_kind", "What sort of recording it is."),
+        Dimension("clip_storage_quality", "clip_storage_quality", "The quality it was kept at."),
+        Dimension("clip_ai_source", "clip_ai_source", "Which analyser produced the clip's verdict."),
+        Dimension("clip_ai_type", "clip_ai_type", "The kind of analysis run on the clip."),
+        Dimension("clip_is_archived", "clip_is_archived", "True for archived clips."),
+        Dimension("clip_is_deleted", "clip_is_deleted", "True once the media is gone."),
     ),
     measures=(
         Measure("events", "count(*)", "Number of events.", "events"),
         Measure("confirmed", "count(*) FILTER (WHERE is_confirmed)", "Confirmed events.", "events"),
-        Measure("dismissed", "count(*) FILTER (WHERE lifecycle = 'dismissed')",
+        Measure("dismissed", "count(*) FILTER (WHERE is_dismissed)",
                 "Dismissed events.", "events"),
         Measure("awaiting_analysis", "count(*) FILTER (WHERE is_awaiting_analysis)",
                 "Still waiting on vision analysis.", "events"),
@@ -251,6 +402,31 @@ CAMERA_ACTIVITY = Dataset(
         Measure("unusual", "count(*) FILTER (WHERE is_unusual)", "Flagged unusual.", "events"),
         Measure("duplicates", "count(*) FILTER (WHERE is_duplicate)", "Marked duplicate.",
                 "events"),
+        Measure("state_changes", "count(*) FILTER (WHERE state_changed)",
+                "Events that actually changed the zone's state -- an opening or a "
+                "closing, rather than an observation of a state already held.", "events"),
+        # These five are why the dataset exists at all for the person who asked for
+        # it: an alerts chart is people-per-hour, and before these it could only be
+        # rebuilt by exporting rows and summing them somewhere else.
+        Measure("people", "sum(count_person)", "People counted across the events.", "people"),
+        Measure("vehicles", "sum(count_vehicle)", "Vehicles counted.", "vehicles"),
+        Measure("animals", "sum(count_animal)", "Animals counted.", "animals"),
+        Measure("other_objects", "sum(count_other)", "Anything else counted.", "objects"),
+        Measure("objects", "sum(count_total)", "Everything counted, of any kind.", "objects"),
+        # A min and a max over a timestamp, which is what makes "when did the gate
+        # first open that day" answerable at grain='day' instead of needing the rows.
+        Measure("first_event_at", "min(happened_at)",
+                "Earliest event in the bucket, to the microsecond. With a filter on "
+                "zone_state this is the first opening (or closing) of the day.", "UTC"),
+        Measure("last_event_at", "max(happened_at)",
+                "Latest event in the bucket, to the microsecond.", "UTC"),
+        Measure("corrections", "count(*) FILTER (WHERE was_corrected)",
+                "Events a person overrode.", "events"),
+        Measure("events_with_clip", "count(*) FILTER (WHERE has_clip)",
+                "Events with a recording attached.", "events"),
+        Measure("clip_bytes", "sum(clip_size_bytes)", "Recorded footage, in bytes.", "bytes"),
+        Measure("annotations", "sum(clip_annotation_count)",
+                "Notes people left on the attached clips.", "annotations"),
         # Confidence is null when the model would not commit, and avg() skips nulls, so
         # the count of scored events has to travel beside the average -- otherwise an
         # average over three events reads identically to one over three hundred.
@@ -261,8 +437,93 @@ CAMERA_ACTIVITY = Dataset(
                 "Mean confidence over scored events only.", ""),
         Measure("median_duration_seconds", "round(median(duration_seconds)::numeric, 1)",
                 "Median event duration.", "s"),
+        Measure("total_duration_seconds", "sum(duration_seconds)",
+                "Time the zone spent in this state, summed.", "s"),
     ),
     default_measures=("events", "confirmed", "dismissed"),
+    # --- row level -------------------------------------------------------------
+    attributes=(
+        Attribute("event_id", "event_id", "The event's stable id. Joins to fct_camera_clip."),
+        Attribute("partition_date", "partition_date", "The UTC day the event belongs to."),
+        Attribute("happened_at", "happened_at",
+                  "When it happened, to the microsecond, in UTC. The column to order a "
+                  "listing by: it is occurred_at when the camera reported one and "
+                  "started_at otherwise, so it is never null."),
+        Attribute("started_at", "started_at", "When the event opened, in UTC."),
+        Attribute("occurred_at", "occurred_at",
+                  "The instant the camera itself attributes the event to, when it "
+                  "reports one. Null on events that never had it."),
+        Attribute("completed_at", "completed_at", "When the event closed, in UTC."),
+        Attribute("state_observed_at", "state_observed_at",
+                  "When the zone state in this row was observed."),
+        Attribute("started_hour", "started_hour", "started_at truncated to the hour."),
+        Attribute("duration_seconds", "duration_seconds", "How long the event lasted."),
+        Attribute("summary", "summary", "What the vision model said about it, in words."),
+        Attribute("confidence", "confidence", "The model's confidence, 0 to 1, or null."),
+        Attribute("count_person", "count_person", "People counted in this event."),
+        Attribute("count_vehicle", "count_vehicle", "Vehicles counted in this event."),
+        Attribute("count_animal", "count_animal", "Animals counted in this event."),
+        Attribute("count_other", "count_other", "Anything else counted in this event."),
+        Attribute("count_total", "count_total", "Everything counted in this event."),
+        Attribute("duplicate_of", "duplicate_of", "The event this one was folded into."),
+        # The correction block. The row already carries the corrected value in
+        # lifecycle, zone_state and the rest; these say that it was corrected, by
+        # whom, and what the machine had originally concluded.
+        Attribute("corrected_at", "corrected_at", "When the correction was made."),
+        Attribute("corrected_by_hash", "corrected_by_hash",
+                  "Pseudonym of whoever corrected it, for counting without naming."),
+        Attribute("machine_lifecycle", "machine_lifecycle",
+                  "The lifecycle the model concluded, before any correction."),
+        Attribute("machine_direction", "machine_direction", "The direction the model concluded."),
+        Attribute("machine_zone_state", "machine_zone_state", "The state the model concluded."),
+        Attribute("machine_previous_zone_state", "machine_previous_zone_state",
+                  "The previous state the model recorded."),
+        Attribute("machine_state_observed_at", "machine_state_observed_at",
+                  "When the model observed the state, before correction."),
+        Attribute("machine_dismissal_reason", "machine_dismissal_reason",
+                  "Why the model dismissed it, before correction."),
+        Attribute("machine_duplicate_of", "machine_duplicate_of",
+                  "What the model folded it into, before correction."),
+        Attribute("machine_summary", "machine_summary", "The model's original wording."),
+        Attribute("machine_confidence", "machine_confidence", "The model's original confidence."),
+        Attribute("machine_should_notify", "machine_should_notify",
+                  "Whether the model would have notified, before correction."),
+        Attribute("machine_count_person", "machine_count_person", "People the model counted."),
+        Attribute("machine_count_vehicle", "machine_count_vehicle", "Vehicles the model counted."),
+        Attribute("machine_count_animal", "machine_count_animal", "Animals the model counted."),
+        Attribute("machine_count_other", "machine_count_other", "Other objects the model counted."),
+        # The clip.
+        Attribute("clip_id", "clip_id", "The recording attached to this event."),
+        Attribute("transition_clip_id", "transition_clip_id",
+                  "The recording of the state transition, when one was kept separately."),
+        Attribute("clip_title", "clip_title", "The recording's title."),
+        Attribute("clip_duration_seconds", "clip_duration_seconds", "How long the recording runs."),
+        Attribute("clip_size_bytes", "clip_size_bytes", "How large the recording is."),
+        Attribute("clip_local_confidence", "clip_local_confidence",
+                  "The on-device analyser's confidence in the clip."),
+        Attribute("clip_annotation_count", "clip_annotation_count",
+                  "How many notes people left on it."),
+        # The four lifecycle blobs, kept as JSON because their shape is the source's
+        # to change. They are here so "everything the camera recorded" is literally
+        # true rather than nearly true.
+        Attribute("backfill_json", "backfill_json",
+                  "The backfill record, as JSON, when the event was reconstructed."),
+        Attribute("repair_json", "repair_json", "The repair record, as JSON."),
+        Attribute("restoration_json", "restoration_json", "The restoration record, as JSON."),
+        Attribute("timing_correction_json", "timing_correction_json",
+                  "The timing correction record, as JSON."),
+        Attribute("unmapped_json", "unmapped_json",
+                  "Any source field the lake has no typed column for yet. Normally null; "
+                  "when it is not, the source has grown a field and this is it."),
+        Attribute("extracted_at", "extracted_at", "When the lake read this event."),
+    ),
+    default_fields=(
+        "happened_at", "camera_id", "zone_name", "rule_type", "zone_state",
+        "previous_zone_state", "state_changed", "direction", "lifecycle",
+        "count_person", "count_vehicle", "count_animal", "count_total",
+        "duration_seconds", "confidence", "summary", "was_corrected", "event_id",
+    ),
+    record_order="happened_at",
 )
 
 
@@ -349,6 +610,35 @@ MEDIA_LIBRARY = Dataset(
                 "measures -- an unknown budget is null, not zero.", "titles"),
     ),
     default_measures=("titles", "runtime_hours", "avg_community_rating"),
+    attributes=(
+        Attribute("title_key", "title_key", "The row's stable id for this snapshot."),
+        Attribute("item_id", "item_id", "The title's Jellyfin id, stable across snapshots."),
+        Attribute("snapshot_date", "snapshot_date", "The day this snapshot was taken."),
+        Attribute("title", "title", "The title as the library shows it."),
+        Attribute("original_title", "original_title", "The title in its original language."),
+        Attribute("premiere_date", "premiere_date", "When it was released."),
+        Attribute("added_at", "added_at", "When it was added to the library."),
+        Attribute("runtime_minutes", "runtime_minutes",
+                  "Runtime as reported. Check is_runtime_plausible before averaging it."),
+        Attribute("community_rating", "community_rating", "TMDB's vote average."),
+        Attribute("critic_rating", "critic_rating", "The critic score, when there is one."),
+        Attribute("video_height", "video_height", "Frame height in pixels."),
+        Attribute("video_width", "video_width", "Frame width in pixels."),
+        Attribute("audio_channels", "audio_channels", "Number of audio channels."),
+        Attribute("tmdb_id", "tmdb_id", "The TMDB id, when the library knows one."),
+        Attribute("imdb_id", "imdb_id", "The IMDb id, when the library knows one."),
+        Attribute("budget_usd", "budget_usd", "Production budget, from TMDB."),
+        Attribute("revenue_usd", "revenue_usd", "Box office, from TMDB."),
+        Attribute("revenue_to_budget", "revenue_to_budget",
+                  "Revenue over budget. Null when either is missing -- not zero."),
+        Attribute("tmdb_popularity", "tmdb_popularity", "TMDB's popularity score."),
+        Attribute("tmdb_vote_count", "tmdb_vote_count", "How many people voted on TMDB."),
+    ),
+    default_fields=(
+        "title", "production_year", "resolution_class", "runtime_minutes",
+        "community_rating", "video_codec", "studio", "item_id",
+    ),
+    record_order="title",
 )
 
 
@@ -381,11 +671,17 @@ def validation_statements(dataset: Dataset) -> list[tuple[str, str]]:
     measures = ", ".join(f'{m.sql} AS "{m.name}"' for m in dataset.measures)
     # S608: every fragment is a literal defined in this module. Nothing here is
     # reachable from a caller -- that is the property the whole file exists to hold.
-    return [
+    statements = [
         ("date_column", f"SELECT {dataset.date_column} FROM {dataset.table} WHERE false"),  # noqa: S608
         ("dimensions", f"SELECT {dims} FROM {dataset.table} WHERE false"),  # noqa: S608
         ("measures", f"SELECT {measures} FROM {dataset.table} WHERE false"),  # noqa: S608
     ]
+    if dataset.attributes:
+        attrs = ", ".join(f'{a.sql} AS "{a.name}"' for a in dataset.attributes)
+        statements.append(
+            ("attributes", f"SELECT {attrs} FROM {dataset.table} WHERE false")  # noqa: S608
+        )
+    return statements
 
 
 def validate(con) -> list[str]:
@@ -399,3 +695,97 @@ def validate(con) -> list[str]:
                 # just the first, so one deploy fixes all of them rather than one a day.
                 problems.append(f"{dataset.name}.{part}: {error}")
     return problems
+
+
+
+# --- drift: what the mart holds that the semantic layer does not say ----------
+#
+# `validate()` above catches a column that was *renamed*: the expression stops
+# binding and the deploy fails. It cannot catch a column that was *added*, because
+# nothing here refers to it -- everything still binds perfectly, and the new column
+# is simply invisible to every caller.
+#
+# That is not a hypothetical. fct_camera_event grew from 29 columns to 78, including
+# five timestamps, and the semantic layer went on describing it as a table whose
+# finest time resolution was an hour bucket. An agent asked for exact opening times,
+# read describe_dataset, and concluded -- correctly, from what it was told -- that
+# the data did not exist. It then delivered something else.
+#
+# So the check has to run in the other direction: every column of the mart must be
+# either referenced by this dataset or explicitly declared as not exposed. It is the
+# same shape as the `_unmapped` capture at ingestion, one layer up, and for the same
+# reason: an omission that nobody is told about is indistinguishable from a decision.
+
+# Words that appear in a SQL expression and are not column names. Kept deliberately
+# short: this list only has to be good enough that a *mart column* is never mistaken
+# for a keyword, and every real column that slips through the net is reported as
+# missing, which is the safe direction to be wrong in.
+_SQL_WORDS = frozenset("""
+    select from where filter cast as and or not null is in between case when then else end
+    distinct count sum avg min max median round nullif coalesce decimal numeric varchar
+    integer bigint double boolean date timestamp interval asc desc order by group having
+    true false on using left right inner outer join over partition
+""".split())
+
+
+def referenced_columns(dataset: Dataset) -> set[str]:
+    """Every identifier the dataset's expressions mention.
+
+    A regex rather than a SQL parser, and that is a considered choice: the input is
+    the handful of expressions in this file, not arbitrary SQL, and the failure mode
+    of being too eager is a column reported as covered when it is only mentioned --
+    while the failure mode of a parser dependency is a build that breaks on a DuckDB
+    function it has not heard of.
+    """
+    import re as _re
+
+    expressions = [dataset.date_column]
+    expressions += [d.sql for d in dataset.dimensions]
+    expressions += [m.sql for m in dataset.measures]
+    expressions += [a.sql for a in dataset.attributes]
+    found: set[str] = set()
+    for expression in expressions:
+        for word in _re.findall(r"[A-Za-z_][A-Za-z0-9_]*", expression):
+            lowered = word.lower()
+            if lowered not in _SQL_WORDS:
+                found.add(lowered)
+    return found
+
+
+def missing_columns(dataset: Dataset, columns: list[str]) -> list[str]:
+    """Mart columns this dataset neither exposes nor declares it is leaving out.
+
+    `columns` is the real column list of `dataset.table`, so this is a pure function
+    over a fact obtained elsewhere -- which is what lets it be tested without a
+    warehouse and run against the live one.
+    """
+    declared = {name.lower() for name, _reason in dataset.not_exposed}
+    referenced = referenced_columns(dataset)
+    return sorted(
+        column for column in columns
+        if column.lower() not in referenced and column.lower() not in declared
+    )
+
+
+def coverage(con) -> dict[str, list[str]]:
+    """Run `missing_columns` for every dataset against a live database.
+
+    Returns {dataset: [columns]} holding only the datasets that have drifted, so an
+    empty dict is the passing case and the failure message is the fix.
+    """
+    out: dict[str, list[str]] = {}
+    for dataset in DATASETS.values():
+        schema, _, table = dataset.table.rpartition(".")
+        rows = con.execute(
+            "SELECT column_name FROM duckdb_columns() WHERE table_name = ? "
+            "AND (? = '' OR schema_name = ? OR schema_name LIKE '%_' || ?)",
+            [table, schema, schema, schema],
+        ).fetchall()
+        columns = [r[0] for r in rows]
+        if not columns:
+            out[dataset.name] = [f"table {dataset.table} was not found"]
+            continue
+        missing = missing_columns(dataset, columns)
+        if missing:
+            out[dataset.name] = missing
+    return out

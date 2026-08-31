@@ -36,9 +36,9 @@ from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
 
 from homelab_datalake.api import query as q
-from homelab_datalake.api.audit import AuditLog, Entry
 from homelab_datalake.api import relations
-from homelab_datalake.api.catalogue import CatalogueCache, DEFAULT_MANIFEST_PATH
+from homelab_datalake.api.audit import AuditLog, Entry
+from homelab_datalake.api.catalogue import DEFAULT_MANIFEST_PATH, CatalogueCache
 from homelab_datalake.mcp.auth import KeycloakTokenVerifier, verifier_from_env
 
 logger = logging.getLogger(__name__)

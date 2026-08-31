@@ -29,10 +29,30 @@ from datetime import date, datetime
 
 import duckdb
 
-from homelab_datalake.mcp.semantic import GRAINS, TOTAL_GRAIN, Dataset, get_dataset
+from homelab_datalake.mcp.semantic import (
+    ALL_GRAINS,
+    EVENT_GRAIN,
+    GRAINS,
+    TOTAL_GRAIN,
+    Dataset,
+    get_dataset,
+)
 
+# Two ceilings, because the two destinations have nothing in common.
+#
+# MAX_ROWS bounds what a tool result carries back into the conversation, where every
+# row costs context and a large listing crowds out the reasoning that should be
+# reading it. MAX_EXPORT_ROWS bounds what may be written to a workbook, which nobody
+# reads into context -- so the only real limit there is the spreadsheet, and holding
+# an export to a conversational budget is what produced a 1000-row "complete" answer
+# to a 5252-row question.
 MAX_ROWS = 5_000
+MAX_EXPORT_ROWS = 200_000
 DEFAULT_ROWS = 200
+# Records default to the ceiling rather than to a round number. A listing is asked
+# for because somebody wants the rows; silently returning the first 200 of them and
+# calling it the answer is the failure this whole module was rewritten to stop.
+DEFAULT_RECORD_ROWS = MAX_ROWS
 QUERY_TIMEOUT_SECONDS = 20.0
 MAX_RANGE_DAYS = 1_100  # about three years
 
@@ -174,6 +194,59 @@ def build_sql(
     return sql, params
 
 
+def _where_clause(dataset: Dataset, start: date, end: date, filters: dict[str, list]) -> tuple[str, list]:
+    """The date range and the dimension filters, shared by both query shapes.
+
+    Filters are dimensions only, in records as in aggregates. A dimension is by
+    construction something with few enough distinct values to be worth naming, which
+    is exactly the property that makes a filter useful; attributes are unique per row
+    and filtering on one is a lookup by primary key wearing a filter's clothes.
+    """
+    params: list = [start, end]
+    where = [f"{dataset.date_column} BETWEEN ? AND ?"]
+    for name, values in filters.items():
+        dim = dataset.dimension(name)
+        literals = [v for v in values if v is not None]
+        wants_null = len(literals) != len(values)
+        clause = []
+        if literals:
+            placeholders = ", ".join("?" for _ in literals)
+            clause.append(f"{dim.sql} IN ({placeholders})")
+            params.extend(literals)
+        if wants_null:
+            clause.append(f"{dim.sql} IS NULL")
+        where.append("(" + " OR ".join(clause) + ")")
+    return " AND ".join(where), params
+
+
+def build_records_sql(
+    dataset: Dataset,
+    start: date,
+    end: date,
+    fields: list[str],
+    filters: dict[str, list],
+    order_by: str | None,
+    descending: bool,
+    limit: int,
+) -> tuple[str, list]:
+    """One row per record: no GROUP BY, no aggregate, nothing collapsed.
+
+    Everything that makes the aggregate builder safe still holds here. Identifiers
+    come from the registry, literals are bound, there is one table and no join. The
+    only thing that changes is that the rows are not folded together -- which is what
+    a question like "every time the gate opened, with the time" actually asks for,
+    and what the layer previously had no way to express at all.
+    """
+    select_parts = [f'{dataset.field(name).sql} AS "{name}"' for name in fields]
+    clause, params = _where_clause(dataset, start, end, filters)
+    sql = f"SELECT {', '.join(select_parts)} FROM {dataset.table} WHERE {clause}"  # noqa: S608
+    if order_by:
+        direction = "DESC" if descending else "ASC"
+        sql += f' ORDER BY "{order_by}" {direction} NULLS LAST'
+    sql += f" LIMIT {int(limit) + 1}"
+    return sql, params
+
+
 def _execute_bounded(
     con: duckdb.DuckDBPyConnection, sql: str, params: list, timeout: float
 ) -> tuple[list[str], list[tuple]]:
@@ -205,17 +278,49 @@ def run_query(
     grain: str = "day",
     dimensions: list[str] | None = None,
     measures: list[str] | None = None,
+    fields: list[str] | None = None,
     filters: dict[str, list] | None = None,
     order_by: str | None = None,
-    descending: bool = True,
-    limit: int = DEFAULT_ROWS,
+    descending: bool | None = None,
+    limit: int | None = None,
     timeout: float = QUERY_TIMEOUT_SECONDS,
+    ceiling: int = MAX_ROWS,
 ) -> QueryResult:
     dataset = get_dataset(dataset_name)
+    records = grain == EVENT_GRAIN
     dimensions = list(dimensions or [])
-    measures = list(measures or dataset.default_measures)
+    fields = list(fields or [])
     filters = dict(filters or {})
     notes: list[str] = []
+
+    if grain not in ALL_GRAINS:
+        raise QueryError(f"unknown grain {grain!r}. Available: {ALL_GRAINS}.")
+
+    if records and not dataset.attributes:
+        raise QueryError(
+            f"{dataset.name!r} cannot be queried at grain 'event': it declares no "
+            f"row-level fields. Use one of {sorted([*GRAINS, TOTAL_GRAIN])}."
+        )
+
+    # Measures are aggregates. Asking for one alongside a row-level listing is a
+    # request for two different shapes at once, and quietly ignoring it would return
+    # a listing that is missing a column the caller believes it asked for.
+    if records:
+        if measures:
+            raise QueryError(
+                "measures do not apply at grain 'event', which returns the rows "
+                f"themselves rather than aggregating them. Asked for: {sorted(measures)}. "
+                "Drop them and name `fields` instead, or use a different grain."
+            )
+        measures = []
+    else:
+        if fields:
+            raise QueryError(
+                "`fields` only applies at grain 'event'. At any other grain the rows "
+                "are aggregated, so there is no single value to project -- ask for "
+                "dimensions and measures instead, or set grain='event'."
+            )
+        measures = list(measures if measures is not None else dataset.default_measures)
 
     start_day = _parse_day(start, "start")
     end_day = _parse_day(end, "end")
@@ -230,7 +335,13 @@ def run_query(
 
     dimensions = _validated_names(dimensions, dataset.dimension_names, "dimension", dataset)
     measures = _validated_names(measures, dataset.measure_names, "measure", dataset)
-    if not measures:
+    if records:
+        fields = _validated_names(
+            fields or list(dataset.default_fields), dataset.field_names, "field", dataset
+        )
+        if not fields:
+            fields = list(dataset.field_names)
+    elif not measures:
         raise QueryError(
             f"at least one measure is required. Available: {sorted(dataset.measure_names)}."
         )
@@ -245,11 +356,6 @@ def run_query(
     for name, values in filters.items():
         if not values:
             raise QueryError(f"filter on {name!r} has no values; drop it instead.")
-
-    if grain not in GRAINS and grain != TOTAL_GRAIN:
-        raise QueryError(
-            f"unknown grain {grain!r}. Available: {sorted([*GRAINS, TOTAL_GRAIN])}."
-        )
 
     # A snapshot dataset describes a moment, not an interval. Bucketing it by day and
     # summing would count the same film once per day it sat on the disk -- a number
@@ -276,32 +382,63 @@ def run_query(
                     ),
                 ],
             )
-        if grain != TOTAL_GRAIN:
+        # Records are still records on a snapshot -- one row per title as it stood on
+        # that day -- so only the bucketing grains collapse to a single snapshot.
+        if grain not in (TOTAL_GRAIN, EVENT_GRAIN):
             notes.append(
                 f"{dataset.name} is a snapshot, so grain does not apply: this is the "
                 f"library as it stood on {chosen.isoformat()}, the latest snapshot in "
                 "the requested range."
             )
+            grain = TOTAL_GRAIN
         else:
             notes.append(f"Snapshot of {chosen.isoformat()}.")
-        grain = TOTAL_GRAIN
         start_day = end_day = chosen
 
-    projected = ([_PERIOD] if grain != TOTAL_GRAIN else []) + dimensions + measures
-    if order_by and order_by not in projected:
-        raise QueryError(
-            f"cannot order by {order_by!r}: it is not among the selected columns "
-            f"{projected}. Order by a measure or dimension you asked for."
+    if records:
+        # An ordering you cannot see is an ordering you cannot check, so the column
+        # the listing is sorted by is always projected.
+        if order_by is None:
+            order_by = dataset.record_order
+        if order_by and order_by not in fields:
+            if order_by in dataset.field_names:
+                fields = [order_by, *fields]
+                notes.append(f"Added {order_by!r} to the columns, because the rows are sorted by it.")
+            else:
+                raise QueryError(
+                    f"cannot order by {order_by!r}: it is not a field of "
+                    f"{dataset.name!r}. Available fields: {sorted(dataset.field_names)}."
+                )
+        if descending is None:
+            # Chronological. A listing of things that happened reads forwards, and the
+            # aggregate default of newest-first would put the last day of the month at
+            # the top of an export nobody asked to reverse.
+            descending = False
+        projected = list(fields)
+    else:
+        descending = True if descending is None else descending
+        projected = ([_PERIOD] if grain != TOTAL_GRAIN else []) + dimensions + measures
+        if order_by and order_by not in projected:
+            raise QueryError(
+                f"cannot order by {order_by!r}: it is not among the selected columns "
+                f"{projected}. Order by a measure or dimension you asked for."
+            )
+        if order_by is None and grain == TOTAL_GRAIN:
+            order_by = measures[0]
+
+    default_limit = DEFAULT_RECORD_ROWS if records else DEFAULT_ROWS
+    ceiling = max(1, int(ceiling))
+    limit = max(1, min(int(default_limit if limit is None else limit), ceiling))
+
+    if records:
+        sql, params = build_records_sql(
+            dataset, start_day, end_day, fields, filters, order_by, descending, limit,
         )
-    if order_by is None and grain == TOTAL_GRAIN:
-        order_by = measures[0]
-
-    limit = max(1, min(int(limit), MAX_ROWS))
-
-    sql, params = build_sql(
-        dataset, start_day, end_day, grain, dimensions, measures,
-        filters, order_by, descending, limit,
-    )
+    else:
+        sql, params = build_sql(
+            dataset, start_day, end_day, grain, dimensions, measures,
+            filters, order_by, descending, limit,
+        )
 
     began = time.perf_counter()
     columns, raw = _execute_bounded(con, sql, params, timeout)
@@ -310,10 +447,21 @@ def run_query(
     truncated = len(raw) > limit
     if truncated:
         raw = raw[:limit]
-        notes.append(
-            f"Truncated to {limit} rows. This is not the whole answer -- narrow the "
-            "range, filter, or use a coarser grain before drawing a conclusion from it."
-        )
+        if records:
+            # Said in the strongest terms available, because this is the exact shape
+            # of the bug that started the rewrite: a listing cut short reads as a
+            # complete listing, and the reader has no way to tell from the rows.
+            notes.append(
+                f"INCOMPLETE: cut off at {limit} rows, and there are more. Do NOT "
+                "describe this as every matching record, and do not summarise it as "
+                "though it were. Narrow the range or add a filter, or use "
+                "export_workbook, which writes to a file and allows far more rows."
+            )
+        else:
+            notes.append(
+                f"Truncated to {limit} rows. This is not the whole answer -- narrow the "
+                "range, filter, or use a coarser grain before drawing a conclusion from it."
+            )
 
     rows = [dict(zip(columns, map(_jsonable, r), strict=True)) for r in raw]
 

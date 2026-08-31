@@ -206,3 +206,139 @@ def test_no_dataset_lets_you_group_by_an_individual():
     for dataset in DATASETS.values():
         exposed = set(dataset.dimension_names) & forbidden
         assert not exposed, f"{dataset.name} exposes {exposed} as a dimension"
+
+
+# --------------------------------------------------------------------------------
+# grain='event': the rows themselves
+# --------------------------------------------------------------------------------
+#
+# The layer could previously only aggregate. Asked for every portal opening in August
+# with its exact time, it had no shape that could answer -- the finest thing it could
+# say was a count in an hour bucket. These tests are about the shape being there, and
+# about it refusing rather than quietly returning an aggregate when the call is
+# inconsistent.
+
+
+def test_records_are_returned_one_per_row_with_their_timestamps(con):
+    result = run_query(con, "camera_activity", grain="event",
+                       fields=["happened_at", "zone_name", "zone_state"], **AUGUST)
+    assert result.grain == "event"
+    assert result.columns == ["happened_at", "zone_name", "zone_state"]
+    # Not folded: more rows than there are days, zones or states.
+    assert result.row_count > 100
+    assert all(isinstance(row["happened_at"], str) for row in result.rows)
+    # Microseconds survive; an hour bucket would have been "…:00:00".
+    assert any(not row["happened_at"].endswith("00:00+00:00") for row in result.rows)
+
+
+def test_records_read_forwards_in_time_by_default(con):
+    """Aggregates default to biggest-first; a listing of what happened does not."""
+    result = run_query(con, "camera_activity", grain="event",
+                       fields=["happened_at"], **AUGUST)
+    stamps = [row["happened_at"] for row in result.rows]
+    assert stamps == sorted(stamps)
+
+
+def test_the_column_the_rows_are_sorted_by_is_always_shown(con):
+    """An ordering you cannot see is an ordering you cannot check."""
+    result = run_query(con, "camera_activity", grain="event",
+                       fields=["zone_name"], **AUGUST)
+    assert result.columns[0] == "happened_at"
+    assert any("sorted by it" in note for note in result.notes)
+
+
+def test_measures_are_refused_at_event_grain_rather_than_ignored(con):
+    with pytest.raises(QueryError) as error:
+        run_query(con, "camera_activity", grain="event", measures=["events"], **AUGUST)
+    assert "do not apply at grain 'event'" in str(error.value)
+
+
+def test_fields_are_refused_at_every_other_grain(con):
+    with pytest.raises(QueryError) as error:
+        run_query(con, "camera_activity", grain="day", fields=["happened_at"], **AUGUST)
+    assert "only applies at grain 'event'" in str(error.value)
+
+
+def test_an_unknown_field_names_the_real_ones(con):
+    with pytest.raises(QueryError) as error:
+        run_query(con, "camera_activity", grain="event", fields=["exact_time"], **AUGUST)
+    message = str(error.value)
+    assert "exact_time" in message and "happened_at" in message
+
+
+def test_a_dimension_may_be_used_as_a_field(con):
+    """The obvious export is a timestamp next to the things you would group by."""
+    result = run_query(con, "camera_activity", grain="event",
+                       fields=["happened_at", "camera_id", "lifecycle"], **AUGUST)
+    assert {"camera_id", "lifecycle"} <= set(result.columns)
+
+
+def test_filters_still_apply_to_a_listing(con):
+    result = run_query(con, "camera_activity", grain="event",
+                       fields=["happened_at", "zone_state"],
+                       filters={"zone_state": ["open"]}, **AUGUST)
+    assert result.row_count > 0
+    assert {row["zone_state"] for row in result.rows} == {"open"}
+
+
+def test_a_truncated_listing_says_so_in_terms_that_cannot_be_read_past(con):
+    """The original bug: [count withheld] rows of 5252 came back looking complete."""
+    result = run_query(con, "camera_activity", grain="event",
+                       fields=["happened_at"], limit=5, **AUGUST)
+    assert result.truncated
+    assert result.row_count == 5
+    assert any("INCOMPLETE" in note for note in result.notes)
+    assert any("export_workbook" in note for note in result.notes)
+
+
+def test_a_listing_defaults_to_the_ceiling_not_to_a_round_number(con):
+    """Somebody asking for the rows wants the rows, not the first two hundred."""
+    everything = run_query(con, "camera_activity", grain="event",
+                           fields=["happened_at"], **AUGUST)
+    assert everything.row_count == 250
+    assert not everything.truncated
+
+
+def test_a_snapshot_still_lists_one_row_per_title(con):
+    """Records on a snapshot are the titles as they stood, not an aggregate."""
+    result = run_query(con, "media_library", grain="event",
+                       fields=["title", "resolution_class"],
+                       start="2026-08-25", end="2026-08-27")
+    assert result.row_count == 120  # one snapshot's worth, not three
+    assert any("Snapshot of" in note for note in result.notes)
+
+
+def test_the_portal_question_that_started_this_can_now_be_answered(con):
+    """Every opening and closing in the window, each with its own exact time.
+
+    This is the shape of the request that produced a workbook of daily aggregates,
+    then a workbook of everything, and never the thing that was asked for.
+    """
+    result = run_query(
+        con, "camera_activity", grain="event",
+        fields=["happened_at", "zone_state", "previous_zone_state", "camera_id"],
+        filters={"zone_name": ["driveway"], "state_changed": [True]},
+        **AUGUST,
+    )
+    assert result.row_count > 1  # many per day, not one
+    assert {row["zone_state"] for row in result.rows} <= {"open", "closed"}
+    stamps = [row["happened_at"] for row in result.rows]
+    assert len(set(stamps)) == len(stamps), "each transition has its own instant"
+
+
+def test_the_first_opening_of_each_day_is_also_answerable_without_the_rows(con):
+    """min() over a timestamp, so the aggregate path can answer it too."""
+    result = run_query(con, "camera_activity", grain="day",
+                       measures=["first_event_at", "last_event_at", "events"],
+                       filters={"zone_state": ["open"]}, **AUGUST)
+    assert result.row_count > 0
+    first = result.rows[0]
+    assert isinstance(first["first_event_at"], str)
+    assert first["first_event_at"] <= first["last_event_at"]
+
+
+def test_the_counts_that_reproduce_the_alerts_graph_are_measures(con):
+    result = run_query(con, "camera_activity", grain="day",
+                       measures=["people", "vehicles", "animals", "objects"], **AUGUST)
+    assert result.row_count > 0
+    assert all(row["objects"] >= row["people"] for row in result.rows)

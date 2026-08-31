@@ -30,7 +30,7 @@ from homelab_datalake.api.catalogue import DEFAULT_MANIFEST_PATH
 from homelab_datalake.mcp import query as q
 from homelab_datalake.mcp.auth import verifier_from_env
 from homelab_datalake.mcp.deliverables import ExportError, write_workbook
-from homelab_datalake.mcp.semantic import DATASETS, GRAINS, TOTAL_GRAIN, get_dataset
+from homelab_datalake.mcp.semantic import ALL_GRAINS, DATASETS, TOTAL_GRAIN, get_dataset
 from homelab_datalake.mcp.warehouse import Warehouse
 
 # How many distinct values describe_dataset will list for one dimension. Enough to
@@ -81,6 +81,12 @@ server = MCPServer(
         "dimensions and measures you want by name; call describe_dataset first if you "
         "are unsure which values a dimension takes, because a filter that matches "
         "nothing returns an empty result that looks exactly like a quiet period.\n\n"
+        "The `grain` parameter decides whether you get totals or rows. Every value "
+        "except one aggregates. `grain='event'` does not: it returns the individual "
+        "records, each with its own exact timestamp, and it is the only way to answer "
+        "a question about when something happened or to list each occurrence. If the "
+        "question contains 'each', 'every', 'exact', or a time of day, reach for it "
+        "first -- an hour-of-day dimension is a bucket, not a time.\n\n"
         "Every result carries a `notes` list. Read it before summarising: it is where "
         "truncation, empty results and snapshot semantics are reported. If a result "
         "has no rows, say so -- do not estimate, and do not describe it as a decline."
@@ -148,6 +154,8 @@ def list_datasets() -> dict:
             "dimensions": dataset.dimension_names,
             "measures": dataset.measure_names,
             "default_measures": list(dataset.default_measures),
+            "fields": dataset.field_names,
+            "supports_event_grain": bool(dataset.attributes),
         }
         try:
             with _warehouse.cursor() as cursor:
@@ -157,7 +165,15 @@ def list_datasets() -> dict:
             # hide the other three; the reason travels with the entry instead.
             entry["covers"] = {"error": str(error)}
         out.append(entry)
-    return {"datasets": out, "grains": [*GRAINS, TOTAL_GRAIN]}
+    return {
+        "datasets": out,
+        "grains": ALL_GRAINS,
+        "grain_note": (
+            "grain='event' returns the individual records with their own timestamps "
+            "instead of aggregating them. Use it whenever the question is 'each' or "
+            "'every' or asks for an exact time; the other grains cannot express that."
+        ),
+    }
 
 
 @server.tool(
@@ -229,7 +245,24 @@ def describe_dataset(
             for m in spec.measures
         ],
         "default_measures": list(spec.default_measures),
-        "grains": [*GRAINS, TOTAL_GRAIN],
+        "fields": [
+            {"name": a.name, "description": a.description} for a in spec.attributes
+        ] + [
+            {"name": d.name, "description": d.description}
+            for d in spec.dimensions if d.name not in set(spec.attribute_names)
+        ],
+        "default_fields": list(spec.default_fields),
+        "record_order": spec.record_order,
+        "grains": ALL_GRAINS,
+        "grain_note": (
+            "Every grain except 'event' aggregates. 'event' returns one row per record "
+            "with the fields listed above, including exact timestamps -- ask for it "
+            "when the question wants each occurrence rather than a count of them. "
+            "Dimensions can be used as fields too; measures cannot, because there is "
+            "nothing to aggregate over a single row."
+        ) if spec.attributes else (
+            "This dataset has no row-level fields, so grain='event' is not available."
+        ),
     }
 
 
@@ -244,8 +277,12 @@ End = Annotated[str, Field(description="Last day of the range, YYYY-MM-DD. Inclu
 Grain = Annotated[
     str,
     Field(description=(
-        "Time bucket: day, week, month, quarter, year, or 'total' for no bucketing "
-        "(one row per group over the whole range)."
+        "How finely to resolve time. 'day', 'week', 'month', 'quarter' and 'year' "
+        "bucket and aggregate; 'total' aggregates the whole range into one row per "
+        "group; 'event' does not aggregate at all and returns the individual records "
+        "with their own exact timestamps. Use 'event' whenever the question says each, "
+        "every, or asks when something happened -- no other grain can answer that, "
+        "because they all group the rows away."
     )),
 ]
 Dimensions = Annotated[
@@ -254,7 +291,18 @@ Dimensions = Annotated[
 ]
 Measures = Annotated[
     list[str] | None,
-    Field(description="Measure names to compute. Omit for the dataset's defaults."),
+    Field(description=(
+        "Measure names to compute. Omit for the dataset's defaults. Not valid with "
+        "grain='event', which returns rows rather than aggregates."
+    )),
+]
+Fields = Annotated[
+    list[str] | None,
+    Field(description=(
+        "Only with grain='event': which columns of each record to return, by name. "
+        "Call describe_dataset to see them -- they include the exact timestamps that "
+        "no dimension carries. Omit for the dataset's default set."
+    )),
 ]
 Filters = Annotated[
     dict[str, list[str]] | None,
@@ -268,9 +316,35 @@ OrderBy = Annotated[
     str | None,
     Field(description="Column to sort by; must be one you asked for. Defaults to time."),
 ]
-Descending = Annotated[bool, Field(description="Sort high to low. Default true.")]
+Descending = Annotated[
+    bool | None,
+    Field(description=(
+        "Sort high to low. Defaults to true when aggregating, and to false at "
+        "grain='event', where a listing of what happened reads forwards in time."
+    )),
+]
 Limit = Annotated[
-    int, Field(description=f"Maximum rows, capped at {q.MAX_ROWS}.", ge=1, le=q.MAX_ROWS)
+    int | None,
+    Field(
+        description=(
+            f"Maximum rows, capped at {q.MAX_ROWS:,}. Omit for the default: "
+            f"{q.DEFAULT_ROWS} aggregated rows, or {q.DEFAULT_RECORD_ROWS:,} records at "
+            "grain='event'. Read the notes in the result -- a listing that hit the cap "
+            "says so there, and it is not the whole answer."
+        ),
+        ge=1, le=q.MAX_ROWS,
+    ),
+]
+ExportLimit = Annotated[
+    int | None,
+    Field(
+        description=(
+            f"Maximum rows, capped at {q.MAX_EXPORT_ROWS:,}. The ceiling is far higher "
+            "here than on the query tools because these rows go to a file rather than "
+            "into the conversation. Omit it unless you want fewer."
+        ),
+        ge=1, le=q.MAX_EXPORT_ROWS,
+    ),
 ]
 
 
@@ -284,11 +358,11 @@ Limit = Annotated[
 )
 def llm_spend(
     start: Start, end: End, grain: Grain = "day", dimensions: Dimensions = None,
-    measures: Measures = None, filters: Filters = None, order_by: OrderBy = None,
-    descending: Descending = True, limit: Limit = q.DEFAULT_ROWS,
+    measures: Measures = None, fields: Fields = None, filters: Filters = None,
+    order_by: OrderBy = None, descending: Descending = None, limit: Limit = None,
 ) -> dict:
     return _run("llm_spend", start=start, end=end, grain=grain, dimensions=dimensions,
-                measures=measures, filters=filters, order_by=order_by,
+                measures=measures, fields=fields, filters=filters, order_by=order_by,
                 descending=descending, limit=limit)
 
 
@@ -302,28 +376,34 @@ def llm_spend(
 )
 def web_traffic(
     start: Start, end: End, grain: Grain = "day", dimensions: Dimensions = None,
-    measures: Measures = None, filters: Filters = None, order_by: OrderBy = None,
-    descending: Descending = True, limit: Limit = q.DEFAULT_ROWS,
+    measures: Measures = None, fields: Fields = None, filters: Filters = None,
+    order_by: OrderBy = None, descending: Descending = None, limit: Limit = None,
 ) -> dict:
     return _run("web_traffic", start=start, end=end, grain=grain, dimensions=dimensions,
-                measures=measures, filters=filters, order_by=order_by,
+                measures=measures, fields=fields, filters=filters, order_by=order_by,
                 descending=descending, limit=limit)
 
 
 @server.tool(
     description=(
-        "Camera attention events: how many, where, when, and what the vision model "
-        "concluded. Good for activity patterns by hour, zone or camera. Contains no "
-        "footage, no zone geometry and no identities."
+        "Camera attention events from the NVR: which camera and zone, the exact "
+        "instant it happened, how many people, vehicles and animals were counted, "
+        "what the vision model concluded, whether a person later corrected it, and "
+        "the clip it belongs to.\n\n"
+        "At the default grain this aggregates -- activity by hour, zone or camera. "
+        "For the events themselves, with `happened_at` to the microsecond, ask for "
+        "grain='event'. That is what answers 'every time the gate opened and when'; "
+        "started_hour_of_day is a bucket and cannot. To count openings rather than "
+        "observations, filter state_changed=true. Contains no footage."
     )
 )
 def camera_activity(
     start: Start, end: End, grain: Grain = "day", dimensions: Dimensions = None,
-    measures: Measures = None, filters: Filters = None, order_by: OrderBy = None,
-    descending: Descending = True, limit: Limit = q.DEFAULT_ROWS,
+    measures: Measures = None, fields: Fields = None, filters: Filters = None,
+    order_by: OrderBy = None, descending: Descending = None, limit: Limit = None,
 ) -> dict:
     return _run("camera_activity", start=start, end=end, grain=grain, dimensions=dimensions,
-                measures=measures, filters=filters, order_by=order_by,
+                measures=measures, fields=fields, filters=filters, order_by=order_by,
                 descending=descending, limit=limit)
 
 
@@ -338,11 +418,11 @@ def camera_activity(
 )
 def media_library(
     start: Start, end: End, grain: Grain = TOTAL_GRAIN, dimensions: Dimensions = None,
-    measures: Measures = None, filters: Filters = None, order_by: OrderBy = None,
-    descending: Descending = True, limit: Limit = q.DEFAULT_ROWS,
+    measures: Measures = None, fields: Fields = None, filters: Filters = None,
+    order_by: OrderBy = None, descending: Descending = None, limit: Limit = None,
 ) -> dict:
     return _run("media_library", start=start, end=end, grain=grain, dimensions=dimensions,
-                measures=measures, filters=filters, order_by=order_by,
+                measures=measures, fields=fields, filters=filters, order_by=order_by,
                 descending=descending, limit=limit)
 
 
@@ -362,16 +442,16 @@ def export_workbook(
     dataset: Annotated[str, Field(description="Dataset name, as in list_datasets.")],
     title: Annotated[str, Field(description="What the workbook answers; also its filename.")],
     start: Start, end: End, grain: Grain = "day", dimensions: Dimensions = None,
-    measures: Measures = None, filters: Filters = None, order_by: OrderBy = None,
-    descending: Descending = True,
-    limit: Limit = q.MAX_ROWS,
+    measures: Measures = None, fields: Fields = None, filters: Filters = None,
+    order_by: OrderBy = None, descending: Descending = None,
+    limit: ExportLimit = None,
 ) -> dict:
     try:
         with _warehouse.cursor() as cursor:
             result = q.run_query(
                 cursor, dataset, start=start, end=end, grain=grain, dimensions=dimensions,
-                measures=measures, filters=filters, order_by=order_by,
-                descending=descending, limit=limit,
+                measures=measures, fields=fields, filters=filters, order_by=order_by,
+                descending=descending, limit=limit, ceiling=q.MAX_EXPORT_ROWS,
             )
     except (q.QueryError, KeyError, FileNotFoundError) as error:
         return _describe_error(error)
