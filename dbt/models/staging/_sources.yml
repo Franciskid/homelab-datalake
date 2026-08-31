@@ -125,6 +125,31 @@ sources:
             description: >
               Basename of the log file the line was read from. Diagnostic only: it says
               which rotation generation a row came out of. Nothing downstream groups by it.
+          - name: referer
+            description: >
+              The Referer header the client sent. Parsed from every line since this
+              pipeline was written, carried on the parsed row, and then left out of the
+              schema -- so it was read and discarded on every line for a month. It is
+              how a link somebody followed is told apart from a URL somebody typed.
+          - name: gzip_ratio
+            description: >
+              nginx's $gzip_ratio for the response. Null when the response was not
+              compressed, which is itself a fact about the response. Absent from the
+              `combined` format, which does not log it.
+          - name: has_query
+            description: >
+              Whether the request carried a query string. The string itself is still
+              removed -- see `path` -- so this is what is left of the fact that there
+              was one.
+          - name: query_param_names
+            description: >
+              The parameter *names* the request carried, sorted and de-duplicated, and
+              never their values. The values are the dangerous half -- a reset token, a
+              session id, an API key -- and dropping them is right; the names are an
+              ordinary question about one's own estate, and dropping the whole query
+              string left "which endpoints take a token parameter" unanswerable. Each
+              name is truncated to 64 characters, because a scanner can put a kilobyte
+              of junk in one and this column exists to be grouped by.
 
       - name: npm_access_rejects
         description: >
@@ -241,6 +266,100 @@ sources:
             description: Autonomous system number of the caller's network.
           - name: geo_as_org
             description: Operator of that autonomous system.
+          - name: model_id
+            description: The specific deployment of the model that served the call, where the group has several.
+          - name: api_base
+            description: Which upstream endpoint the call went to. Says whether a model was served locally or by a provider.
+          - name: cache_key
+            description: >
+              The key the proxy cached the response under. Two calls sharing one asked
+              the same question; `cache_hit` says whether the second was served from it.
+          - name: organization_id
+            description: The organisation the call was billed to. Empty on this deployment today.
+          - name: agent_id
+            description: The agent that made the call, where one did. Empty on this deployment today.
+          - name: user_hash
+            description: >
+              Salted hash of LiteLLM's own end-user label, which is distinct from
+              `end_user`. Hashed on the same boundary as every other caller identity.
+          - name: request_tags
+            description: The tags the caller attached to the request. Populated on most calls.
+          - name: cached_tokens
+            description: >
+              How many prompt tokens were served from the provider's cache. Null when
+              the provider did not report it, which is not the same as zero: a model
+              that cached nothing reports zero, and one whose provider is silent is
+              unknown. `total_tokens` cannot tell a cached prompt from a fresh one, so
+              a cost-per-token figure computed from it alone was wrong.
+          - name: prompt_audio_tokens
+            description: Audio tokens in the prompt. Null when not reported.
+          - name: reasoning_tokens
+            description: >
+              How many tokens the model spent on hidden reasoning. Null when not
+              reported. Counted inside completion_tokens, so it explains a call that
+              looks expensive for the answer it produced.
+          - name: completion_audio_tokens
+            description: Audio tokens in the completion. Null when not reported.
+          - name: accepted_prediction_tokens
+            description: Predicted-output tokens the model accepted. Null when not reported.
+          - name: rejected_prediction_tokens
+            description: Predicted-output tokens the model rejected. Null when not reported.
+          - name: input_cost_usd
+            description: >
+              What the prompt cost, separately from the answer. `spend_usd` is the two
+              added together, which could not answer the first question anybody asks of
+              an LLM bill.
+          - name: output_cost_usd
+            description: What the completion cost.
+          - name: tool_usage_cost_usd
+            description: What tool calls within the request cost, where any were charged.
+          - name: original_cost_usd
+            description: The cost before any discount or margin was applied.
+          - name: discount_amount_usd
+            description: How much was discounted from the original cost.
+          - name: attempted_retries
+            description: >
+              How many times the proxy retried before this call succeeded or gave up. A
+              rising figure is an upstream in trouble, which no other column shows.
+          - name: max_retries
+            description: How many retries the proxy was willing to make.
+          - name: litellm_overhead_ms
+            description: >
+              How long the proxy itself took, as distinct from the model. Separates
+              "the model was slow" from "the gateway was".
+          - name: applied_guardrails
+            description: Which guardrails ran on the call. Empty when none did.
+          - name: api_key_alias
+            description: >
+              The human-readable name of the key that made the call, where it has one.
+              The key itself is hashed; this is what a person recognises.
+          - name: team_alias
+            description: The human-readable name of the team the call was billed to.
+          - name: model_map_key
+            description: The entry in the proxy's model map that resolved the request. Says which alias a caller actually asked for.
+          - name: error_information
+            description: JSON. Why a call failed, when one did. Null on a successful call.
+          - name: metadata_json
+            description: >
+              JSON. LiteLLM's metadata blob, whole and unfiltered. The extracted scalar
+              columns beside it are a convenience over this, not a filter on it.
+          - name: requester_ip
+            description: >
+              The caller's address exactly as the ledger recorded it, beside the hashed
+              and geo columns. On this deployment these are internal container
+              addresses -- a fact about one's own infrastructure, unlike the proxy logs,
+              where the addresses belong to visitors and stay hashed.
+          - name: messages_json
+            description: >
+              JSON. The full prompt sent to the model. Empty on every row today because
+              LiteLLM's payload logging is off; once it is switched on, every
+              conversation through the gateway lands here and is readable by anything
+              that can read the lake -- the SQL console, the workbench, and any agent
+              granted the datalake tools.
+          - name: response_json
+            description: JSON. The model's full completion. Empty today, for the same reason as messages_json.
+          - name: proxy_server_request_json
+            description: JSON. The raw request the proxy received. Empty today, for the same reason as messages_json.
 
       - name: jellyfin_titles
         description: One row per movie per snapshot date. No paths, no playback history.
@@ -322,6 +441,163 @@ sources:
               during the scan. [rate withheld] coverage, so TMDB is not asked for it again.
           - name: decade
             description: production_year rounded down to its decade, derived at ingest so every reader agrees on it.
+          - name: tmdb_collection_id
+            description: >
+              The franchise the film belongs to, as TMDB numbers them. Two films sharing
+              this are episodes of one series, which no other column here says.
+          - name: tvdb_id
+            description: The film's TVDB id, where Jellyfin matched one.
+          - name: studios
+            description: >
+              Every studio credited, in the order the API gave them. `studio` above is
+              the first of these. One title in this library has twenty-five, and keeping
+              only the first described a co-production as the work of one company.
+          - name: production_countries
+            description: >
+              Every production country, primary first. `production_country` above is the
+              first of these.
+          - name: sort_name
+            description: The name the library sorts by, which drops leading articles.
+          - name: overview
+            description: >
+              The film's synopsis. Held back originally as prose no question asked
+              about, which was true until somebody asked one. Unlike `Path` it is a fact
+              about the film rather than about this installation.
+          - name: tagline
+            description: The film's marketing line, first one only. The full list is in `taglines`.
+          - name: taglines
+            description: Every tagline the library holds for the film.
+          - name: tags
+            description: Free-form tags applied to the title in the library.
+          - name: parent_id
+            description: The library folder the title sits in.
+          - name: item_type
+            description: Jellyfin's own type for the row. Always Movie for this snapshot, kept so that stays checkable.
+          - name: media_type
+            description: The kind of media -- Video for everything in this library.
+          - name: video_type
+            description: How the video is stored -- a single file, a disc image, a folder.
+          - name: has_subtitles
+            description: Whether the library believes the title has subtitles at all. The detail is in jellyfin_title_streams.
+          - name: subtitle_languages
+            description: >
+              Distinct subtitle languages across the title's streams, sorted. Derived at
+              ingest so the common question -- what can I watch in French -- does not
+              need the stream table.
+          - name: audio_languages
+            description: Distinct audio languages across the title's streams, sorted.
+          - name: stream_count
+            description: How many media streams the title has in total.
+          - name: chapter_count
+            description: How many chapter markers the file carries.
+          - name: remote_trailer_count
+            description: How many trailers the library knows about for the title.
+          - name: external_urls
+            description: >
+              The film's pages on public databases, as name and url pairs. Public
+              references, not anything about this installation.
+          - name: file_size_bytes
+            description: >
+              Size of the primary media file. The one figure worth taking from
+              MediaSources, which is otherwise transcoding capability rather than
+              analytics -- and the figure a library-growth question needs.
+          - name: file_bitrate
+            description: Overall bitrate of the primary media file.
+          - name: media_source_count
+            description: How many media sources the title has. More than one means several versions of the same film.
+          - name: _unmapped
+            description: >
+              JSON. Any field Jellyfin returned that nothing here reads, kept rather
+              than dropped. Fields deliberately not stored -- `Path` above all -- are
+              excluded from it, so a non-null value here is always a prompt to add a
+              column rather than noise.
+
+      - name: jellyfin_title_streams
+        description: >
+          One row per media stream: every audio, video and subtitle track. This table
+          exists because keeping the first video and the first audio stream and
+          discarding the rest lost every subtitle track in the library and every audio
+          track after the first -- so a bilingual film with thirty-four subtitle tracks
+          was recorded as having one of each.
+
+          Stream file paths are never stored, for the same reason the title's Path is
+          not: an external subtitle sits on disk beside the film.
+        columns:
+          - name: dt
+            description: "Partition date: the day of the snapshot this stream was seen in."
+          - name: item_id
+            description: The title the stream belongs to. Joins to jellyfin_titles.item_id.
+          - name: stream_index
+            description: The stream's position in the file. Unique within a title, and half of the natural key.
+          - name: stream_type
+            description: Video, Audio, Subtitle, or EmbeddedImage.
+          - name: codec
+            description: How the stream is encoded -- h264, ac3, subrip.
+          - name: language
+            description: The stream's language as a three-letter code. Null when the file does not declare one.
+          - name: title
+            description: The label the file gives the stream -- "VFF 5.1 @384Kbps".
+          - name: display_title
+            description: >
+              Jellyfin's own rendering of the stream -- "1080p H264 SDR". Worth keeping
+              beside the derived resolution class, which disagrees with it on cropped
+              encodes: a 1080p film letterboxed to [count withheld] rows is called 720p by the band
+              table and 1080p here.
+          - name: is_default
+            description: Whether this is the track that plays without the viewer choosing.
+          - name: is_forced
+            description: Whether the track is forced -- shown even when subtitles are off.
+          - name: is_external
+            description: Whether the stream is a separate file rather than embedded in the container.
+          - name: is_hearing_impaired
+            description: Whether the subtitle track is marked as for the hearing impaired.
+          - name: is_interlaced
+            description: Whether the video is interlaced.
+          - name: height
+            description: Picture height in pixels. Zero on a subtitle stream.
+          - name: width
+            description: Picture width in pixels.
+          - name: channels
+            description: How many audio channels. 6 for 5.1, 2 for stereo.
+          - name: channel_layout
+            description: How those channels are arranged, as the encoder named it.
+          - name: bit_rate
+            description: The stream's bitrate, where the container declares one.
+          - name: bit_depth
+            description: Bits per colour sample. 10 marks an HDR-capable encode.
+          - name: sample_rate
+            description: Audio sample rate in hertz.
+          - name: video_range
+            description: SDR or HDR.
+          - name: video_range_type
+            description: Which HDR format, where the stream is HDR.
+          - name: profile
+            description: The codec profile the stream was encoded with.
+          - name: level
+            description: The codec level, which bounds resolution and bitrate.
+
+      - name: jellyfin_title_people
+        description: >
+          Cast and crew credits, one row per person per title. Public film metadata --
+          who acted in and made a film -- and not anything about anybody using this
+          library.
+        columns:
+          - name: dt
+            description: "Partition date: the day of the snapshot this credit was seen in."
+          - name: item_id
+            description: The title the credit belongs to. Joins to jellyfin_titles.item_id.
+          - name: person_id
+            description: Jellyfin's stable id for the person, so the same actor matches across films.
+          - name: name
+            description: The person's name as the library holds it.
+          - name: person_type
+            description: What they did -- Actor, Director, Writer, Producer.
+          - name: role
+            description: The character an actor played. Null for crew.
+          - name: sort_order
+            description: >
+              Where the credit sits in the billing order, zero-based. Top billing is 0,
+              which is how a leading role is told from a walk-on.
 
       - name: jellyfin_title_genres
         description: >
@@ -415,6 +691,64 @@ sources:
             description: >
               The model's short description of what it saw, up to 800 characters. Free
               text, so nothing downstream groups by it.
+          - name: occurredAt
+            description: >
+              When the event actually happened, which a replay or a repair moves away
+              from startedAt. The camera's own report ranks on occurredAt falling back
+              to startedAt, so anything here that wants to agree with it must too.
+          - name: ruleId
+            description: >
+              The rule inside the zone that fired. Landed since the first partition and
+              never surfaced downstream until now; it is the join to dim_camera_zone.
+          - name: stateSource
+            description: >
+              How a state reading was arrived at, when the camera recorded it. Null on
+              almost every row; present where a state was set by something other than
+              the ordinary analysis path.
+          - name: transitionClipId
+            description: >
+              The clip that filmed the gate moving. For a state change clipId shows a
+              gate that has already finished moving, so a reader wanting the transition
+              itself wants this one.
+          - name: counts
+            description: >
+              How many of each subject the event counted, as a struct of person,
+              vehicle, animal and other. Every graph of this data is a sum over these
+              four. Null means nothing was counted, which is not the same as four
+              zeroes: an event nobody counted is not an event that counted nobody.
+          - name: dismissed
+            description: >
+              Whether the camera marked the event dismissed outright, as opposed to
+              inferring it from lifecycle.
+          - name: correction
+            description: >
+              What a person overwrote on this event, and what the machine had said
+              before they did. The row's own columns are already the corrected values;
+              `correction.previous` holds the machine's original account, and
+              correctedAt, correctedByName and correctedByHash say when and by whom.
+              Without it a figure a person changed is indistinguishable from one nobody
+              touched.
+          - name: backfill
+            description: >
+              JSON. Present when the row was written by a backfill rather than by the
+              live path, with the reason and the instant.
+          - name: repair
+            description: >
+              JSON. Present when the row was reconstructed by a repair, naming the
+              incident it belongs to.
+          - name: restoration
+            description: >
+              JSON. Present when the row was restored from a backup, naming the source.
+          - name: timingCorrection
+            description: >
+              JSON. Present when the event's own timestamps were corrected, holding the
+              previous occurredAt and stateObservedAt and the evidence for the change.
+          - name: _unmapped
+            description: >
+              JSON. Any field the export sent that this schema does not name, kept
+              rather than dropped. Non-null is the signal that the camera has started
+              sending something worth giving a column to -- the signal whose absence
+              lost `counts` on every row for a month.
 
       - name: camera_clips
         description: Clip metadata. No paths, playlists or thumbnails.
@@ -463,6 +797,16 @@ sources:
               clip the detector triggered.
           - name: annotationCount
             description: How many annotations were left on the clip. 0, never null.
+          - name: title
+            description: >
+              What the clip was labelled -- "1 personne". Generated from what the
+              analysis found rather than prose anybody typed, and it is the caption the
+              app itself shows. Sent on every clip and kept on none of them until now.
+          - name: _unmapped
+            description: >
+              JSON. Any field the export sent that this schema does not name, kept
+              rather than dropped, and reported by an asset check so it can be given a
+              column.
 
       - name: camera_logs
         description: Activity log entries. Free-text titles are never exported.
@@ -489,8 +833,250 @@ sources:
             description: ISO-8601 string of when the entry was written.
           - name: sourceId
             description: The clip or annotation the entry is about, where it refers to one.
+          - name: title
+            description: >
+              The entry's free text, as the person wrote it -- @mentions and all. Held
+              back originally for that reason; landed at the owner's request, on the
+              grounds that these are their own household's notes in their own
+              installation. Expect the names of people they live with in it.
           - name: userHash
             description: Salted hash of the person who caused the entry. Null for anything the system did on its own.
+          - name: _unmapped
+            description: >
+              JSON. Any field the export sent that this schema does not name, kept
+              rather than dropped, and reported by an asset check so it can be given a
+              column.
+
+      - name: camera_zones
+        description: >
+          Attention-zone configuration, one row per zone and rule, snapshotted daily.
+          The reference table the event stream never had: without it the only clue that
+          a zone is a gate is that its events happen to carry ruleType 'state', which is
+          inference from the data rather than a fact about the configuration -- and it
+          says nothing at all about a zone that has fired no events.
+
+          Never carries geometry. The polygon is a map of the property; the anchor and
+          reference counts travel instead, which is what a "is this zone calibrated"
+          question actually needs.
+        columns:
+          - name: dt
+            description: >
+              The day the snapshot was taken. Not backfillable: the camera keeps no
+              history for a zone, so an older date here would describe events by rules
+              that did not exist when they fired.
+          - name: _extracted_at
+            description: When this pipeline read the configuration.
+          - name: id
+            description: The zone's stable id. What camera_events.zoneId points at.
+          - name: cameraId
+            description: Which camera the zone is drawn on.
+          - name: name
+            description: The zone's display name -- "Portail", "Animaux".
+          - name: enabled
+            description: Whether the zone is switched on. A disabled zone fires nothing.
+          - name: revision
+            description: >
+              How many times the zone has been edited. Rises on every change, so two
+              snapshots with the same revision are the same configuration.
+          - name: anchorCount
+            description: >
+              How many calibration anchors the zone holds. Zero means the zone has
+              never been calibrated, which is the usual reason its state readings are
+              unreliable.
+          - name: stateReferenceCount
+            description: How many reference images the zone holds for judging its state.
+          - name: revisionCount
+            description: >
+              How many past configurations the zone keeps. Rises with every edit that
+              was kept, so it says how much churn a zone has had.
+          - name: feedbackCount
+            description: >
+              How many times a person has corrected what this zone concluded. A zone
+              with a lot of feedback is one the model keeps getting wrong, which no
+              count of events would show.
+          - name: autoLearnAnchors
+            description: Whether the zone re-learns its calibration anchors on its own.
+          - name: maxAnchors
+            description: How many anchors the zone is allowed to keep.
+          - name: createdAt
+            description: When the zone was first created. ISO-8601.
+          - name: createdByHash
+            description: Salted hash of whoever created the zone.
+          - name: createdByName
+            description: >
+              The name of whoever created the zone. The name travels beside the hash
+              here for the same reason it does on a correction: "who configured this"
+              is not answered by a pseudonym.
+          - name: updatedAt
+            description: When the zone was last edited. ISO-8601.
+          - name: updatedByHash
+            description: Salted hash of whoever last edited the zone.
+          - name: updatedByName
+            description: The name of whoever last edited the zone.
+          - name: description
+            description: The free-text note describing what the zone is for, if one was written.
+          - name: scope
+            description: >
+              Whether the zone covers drawn shapes or the whole frame. `frame` means the
+              camera's entire picture rather than a region of it.
+          - name: geometryRevision
+            description: >
+              How many times the shapes have changed, separately from the rules. A bump
+              here means the region moved, which can explain a step change in event
+              counts that no rule change would account for.
+          - name: ruleId
+            description: >
+              The rule's id within the zone. What camera_events.ruleId points at. Null
+              on a zone that has no rules configured -- such a zone still appears here
+              rather than vanishing from the export.
+          - name: ruleType
+            description: >
+              What the rule watches: `state` for a gate that is open or closed,
+              `crossing` for passages through a threshold, `motion` for activity.
+          - name: ruleName
+            description: The rule's display name.
+          - name: ruleEnabled
+            description: Whether the rule is switched on, independently of the zone.
+          - name: ruleNotify
+            description: Whether a match sends a notification, as opposed to only being recorded.
+          - name: ruleCooldownSec
+            description: >
+              How long the rule waits before it may fire again. A long cooldown is a
+              reason a busy period shows fewer events than it had activity.
+          - name: ruleSensitivity
+            description: The sensitivity band the rule runs at.
+          - name: rulePrompt
+            description: >
+              The analysis prompt the vision model is given. Configuration of the model
+              rather than anything written about a person, and the only record of *why*
+              a rule fires as it does.
+          - name: ruleTargets
+            description: Which subjects the rule looks for -- person, vehicle, and so on.
+          - name: ruleStates
+            description: The states a state rule may report, usually open and closed.
+          - name: ruleAlertOn
+            description: Which transitions raise an alert, as opposed to being recorded quietly.
+          - name: shapesJson
+            description: >
+              JSON. The zone's polygons, as normalised frame coordinates. This is a map
+              of where each watched region physically sits, landed at the owner's
+              explicit request; the anchor and reference counts above answer most
+              questions without parsing it. Anything that can read the lake can
+              reconstruct the property layout from this column.
+          - name: ignoreShapesJson
+            description: JSON. Regions inside the zone that are deliberately excluded from analysis.
+          - name: anchorsJson
+            description: JSON. The calibration anchors the zone judges its state against.
+          - name: stateReferencesJson
+            description: JSON. The reference samples used to decide whether the zone reads open or closed.
+          - name: anchorPolicyJson
+            description: JSON. Whether the zone re-learns its anchors, and how many it may keep.
+          - name: revisionsJson
+            description: >
+              JSON. Every past configuration of the zone, with the instant and the
+              snapshot. How a step change in event counts is traced back to the edit
+              that caused it.
+          - name: feedbackJson
+            description: >
+              JSON. Every correction a person has made to what this zone concluded,
+              with their verdict. The zone-level counterpart of an event correction.
+          - name: _unmapped
+            description: >
+              JSON. Any field the export sent that this schema does not name, kept
+              rather than dropped, and reported by an asset check so it can be given a
+              column.
+
+      - name: camera_observability
+        description: >
+          Spans where a zone could not be read, and why. The other half of every gate
+          reading: with state events alone there is no way to tell "the gate stayed shut
+          for six hours" from "nobody could see the gate for six hours", and a report
+          drawing the second as the first is confidently wrong rather than incomplete.
+        columns:
+          - name: dt
+            description: "Partition date: the UTC day the span starts in."
+          - name: _extracted_at
+            description: When this pipeline read the span.
+          - name: id
+            description: >
+              Stable id for the span, built from the zone and the instant it began, so
+              re-reading a window merges rather than duplicating.
+          - name: cameraId
+            description: The camera whose zone could not be read.
+          - name: zoneId
+            description: The zone that could not be read. Joins to camera_zones.id.
+          - name: reason
+            description: >
+              Why the zone was unreadable. `night_blind` is darkness, `out_of_view` and
+              `lost` are the tracker losing the region, `state_unconfirmed` is the
+              freshness lease expiring rather than the picture going away -- which is a
+              timing artefact and not a camera that cannot see.
+          - name: detail
+            description: Any extra explanation the camera recorded alongside the reason.
+          - name: fromAt
+            description: When the span began. ISO-8601.
+          - name: toAt
+            description: >
+              When the span ended, or the end of the window asked for when it had not
+              ended by then. Read with `ongoing`.
+          - name: ongoing
+            description: >
+              Whether the span was still open at the end of the window. True means toAt
+              is where the question stopped, not where the blindness did.
+          - name: _unmapped
+            description: >
+              JSON. Any field the export sent that this schema does not name, kept
+              rather than dropped, and reported by an asset check so it can be given a
+              column.
+
+      - name: camera_annotations
+        description: >
+          Notes and marks left against a clip or an event. The note itself is never
+          exported -- people write asides and @mentions in it -- so what is here is that
+          a note exists, on what, when, and by which pseudonymised person. Enough to ask
+          which clips drew attention and which zones people keep returning to.
+        columns:
+          - name: dt
+            description: "Partition date: the UTC day the annotation was written."
+          - name: _extracted_at
+            description: When this pipeline read the annotation.
+          - name: id
+            description: The annotation's stable id.
+          - name: scope
+            description: >
+              Which kind of thing targetId points at -- `clip` for a saved recording,
+              `live` for a camera. A reader joining without checking this would match a
+              clip id against a camera id.
+          - name: targetId
+            description: The clip or camera the note was left on. Read with `scope`.
+          - name: kind
+            description: What kind of mark it is -- a note, an event marker, a reaction.
+          - name: emoji
+            description: The icon chosen for the mark, when one was.
+          - name: offsetSec
+            description: How far into the clip the mark sits, in seconds. Null for a live mark.
+          - name: timestampMs
+            description: The wall-clock instant the mark refers to, in epoch milliseconds.
+          - name: createdAt
+            description: When the annotation was written. ISO-8601.
+          - name: text
+            description: >
+              The note itself, as written. Landed for the same reason the log title is.
+          - name: userHash
+            description: >
+              Salted hash of the person who wrote it. Null for anything the system
+              wrote on its own -- a zone marking its own analysis, for instance.
+          - name: zoneId
+            description: The zone the mark relates to, when it came from zone analysis.
+          - name: ruleId
+            description: The rule the mark relates to, when it came from zone analysis.
+          - name: eventType
+            description: The kind of event the mark was raised for.
+          - name: _unmapped
+            description: >
+              JSON. Any field the export sent that this schema does not name, kept
+              rather than dropped, and reported by an asset check so it can be given a
+              column.
 
       - name: tmdb_titles
         description: >
@@ -520,6 +1106,51 @@ sources:
             description: TMDB's own popularity score. A relative, time-varying figure, so it is meaningful for ranking and not as an absolute.
           - name: vote_count
             description: >
-              How many people rated the film on TMDB. Kept while the average is not: the
-              average is already in the library as community_rating, and the count is what
-              says whether to trust it.
+              How many people rated the film on TMDB. Says whether to trust the average
+              beside it.
+          - name: vote_average
+            description: >
+              TMDB's rating out of ten. Jellyfin holds a copy of this as
+              community_rating, taken when it scanned the file -- which can be years
+              stale. Both are kept, each named for where it came from, because with only
+              one there was no way to see that the copy had drifted.
+          - name: runtime_minutes
+            description: TMDB's runtime. Comparable against the library's own, which is measured from the file.
+          - name: status
+            description: Released, Post Production, Planned. A film in the library with a
+              non-released status is usually a mismatched id.
+          - name: tagline
+            description: The film's marketing line, as TMDB holds it.
+          - name: overview
+            description: TMDB's synopsis. Comparable against the library's, which may be localised.
+          - name: homepage
+            description: The film's official site, where TMDB has one.
+          - name: release_date
+            description: TMDB's release date, as an ISO date string. The library's premiere_date is the same fact from its own scan.
+          - name: imdb_id
+            description: The film's IMDb id, as TMDB holds it. A second opinion on the library's own.
+          - name: original_title
+            description: The title as released, before any localisation.
+          - name: title
+            description: TMDB's primary title, which is usually the English one.
+          - name: is_adult
+            description: Whether TMDB flags the film as adult.
+          - name: collection_id
+            description: >
+              The franchise the film belongs to. Two films sharing this are episodes of
+              one series -- nothing else in this warehouse says so.
+          - name: collection_name
+            description: The franchise's name, for reading rather than joining.
+          - name: genres
+            description: TMDB's genres for the film. A second opinion on the library's own genre list.
+          - name: production_companies
+            description: Every company credited with producing the film.
+          - name: production_countries
+            description: Every country the film was produced in.
+          - name: spoken_languages
+            description: >
+              The languages spoken in the film, by their English names. Distinct from
+              the library's audio_languages, which is what tracks the file happens to
+              carry.
+          - name: origin_countries
+            description: The country codes the film originates from.

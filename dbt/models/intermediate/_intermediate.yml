@@ -70,6 +70,26 @@ models:
       - name: source_file
         description: '{{ doc("req_source_file") }}'
 
+      - name: referer
+        description: >
+          The Referer header the client sent. Parsed from every line since this pipeline was
+          written and then left out of the schema, so it was read and discarded on every line
+          for a month. It is how a link somebody followed is told apart from a URL somebody
+          typed.
+      - name: gzip_ratio
+        description: >
+          nginx's compression ratio for the response. Null when the response was not
+          compressed, which is a fact about the response rather than missing data.
+      - name: has_query
+        description: >
+          Whether the request carried a query string. The string itself is still removed; this
+          is what is left of the fact that there was one.
+      - name: query_param_names
+        description: >
+          The parameter names the request carried, sorted and de-duplicated, never their
+          values. Dropping the whole query string left 'which endpoints take a token
+          parameter' unanswerable; each name is capped at 64 characters because a scanner can
+          put a kilobyte of junk in one.
   - name: int_camera_events
     description: >
       One row per event: the latest version of it. In normal operation this collapses
@@ -133,3 +153,124 @@ models:
         description: '{{ doc("cam_duplicate_of") }}'
       - name: summary
         description: '{{ doc("cam_summary") }}'
+      - name: rule_id
+        description: >
+          The rule inside the zone that fired. Joins to dim_camera_zone; it landed in raw from
+          the first partition and was never surfaced until now.
+      - name: is_dismissed
+        description: >
+          Whether the camera marked the event dismissed outright, rather than it being
+          inferred from lifecycle.
+      - name: occurred_at
+        description: >
+          When the event actually happened, which a replay or a repair moves away from
+          started_at. Null when the camera never recorded one.
+      - name: happened_at
+        description: >
+          The instant to rank an event by: occurred_at when the camera knows it, started_at
+          otherwise. Resolved once, here, because the camera's own report does the same
+          fallback and anything that wants to agree with it must too.
+      - name: state_source
+        description: >
+          How a state reading was arrived at, where the camera recorded something other than
+          the ordinary analysis path.
+      - name: count_person
+        description: >
+          How many people the event counted. Null means nothing was counted, which is not the
+          same as zero: an event nobody counted is not an event that counted nobody.
+      - name: count_vehicle
+        description: >
+          How many vehicles the event counted. Null and zero are different, as for
+          count_person.
+      - name: count_animal
+        description: >
+          How many animals the event counted. Null and zero are different, as for
+          count_person.
+      - name: count_other
+        description: >
+          How many other subjects the event counted. Null and zero are different, as for
+          count_person.
+      - name: count_total
+        description: >
+          The four subject counts added together, or null when nothing was counted. Every
+          graph of this data is a sum over these -- summing four columns by hand is how a
+          headline comes to disagree with the rows beneath it.
+      - name: was_corrected
+        description: >
+          Whether a person overwrote what the machine concluded about this event. Without it a
+          corrected figure is indistinguishable from one nobody touched.
+      - name: corrected_at
+        description: >
+          When the correction was made.
+      - name: corrected_by_name
+        description: >
+          Who made the correction. The name travels because a pseudonym does not answer 'who
+          overrode this'.
+      - name: corrected_by_hash
+        description: >
+          Salted hash of the person who made the correction, for grouping without naming.
+      - name: machine_lifecycle
+        description: >
+          What the machine originally concluded the lifecycle was, before a person changed it.
+      - name: machine_direction
+        description: >
+          The direction the machine originally reported.
+      - name: machine_zone_state
+        description: >
+          The state the machine originally reported.
+      - name: machine_previous_zone_state
+        description: >
+          The previous state the machine originally reported.
+      - name: machine_state_observed_at
+        description: >
+          When the machine originally said the state was observed.
+      - name: machine_dismissal_reason
+        description: >
+          The dismissal reason the machine originally gave.
+      - name: machine_duplicate_of
+        description: >
+          The event the machine originally thought this duplicated.
+      - name: machine_summary
+        description: >
+          The description the machine originally wrote.
+      - name: machine_confidence
+        description: >
+          The confidence the machine originally reported. Comparing it against a correction is
+          how 'is the model overconfident when it is wrong' becomes answerable.
+      - name: machine_should_notify
+        description: >
+          Whether the machine originally decided to notify.
+      - name: machine_count_person
+        description: >
+          How many people the machine originally counted.
+      - name: machine_count_vehicle
+        description: >
+          How many vehicles the machine originally counted.
+      - name: machine_count_animal
+        description: >
+          How many animals the machine originally counted.
+      - name: machine_count_other
+        description: >
+          How many other subjects the machine originally counted.
+      - name: transition_clip_id
+        description: >
+          The clip that filmed the gate moving. For a state change clip_id shows a gate that
+          has already finished moving, so a reader wanting the transition wants this one.
+      - name: backfill_json
+        description: >
+          JSON. Present when the row was written by a backfill rather than the live path.
+      - name: repair_json
+        description: >
+          JSON. Present when the row was reconstructed by a repair, naming the incident.
+      - name: restoration_json
+        description: >
+          JSON. Present when the row was restored from a backup.
+      - name: timing_correction_json
+        description: >
+          JSON. Present when the event's own timestamps were corrected, with the previous
+          values and the evidence.
+      - name: unmapped_json
+        description: >
+          JSON, or null. Anything the export sent that the raw schema does not name. Carried
+          onto the fact rather than left in raw, because the person who notices it is the one
+          looking at the data.

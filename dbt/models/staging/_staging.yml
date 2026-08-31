@@ -65,6 +65,26 @@ models:
       - name: source_file
         description: '{{ doc("req_source_file") }}'
 
+      - name: referer
+        description: >
+          The Referer header the client sent. Parsed from every line since this pipeline was
+          written and then left out of the schema, so it was read and discarded on every line
+          for a month. It is how a link somebody followed is told apart from a URL somebody
+          typed.
+      - name: gzip_ratio
+        description: >
+          nginx's compression ratio for the response. Null when the response was not
+          compressed, which is a fact about the response rather than missing data.
+      - name: has_query
+        description: >
+          Whether the request carried a query string. The string itself is still removed; this
+          is what is left of the fact that there was one.
+      - name: query_param_names
+        description: >
+          The parameter names the request carried, sorted and de-duplicated, never their
+          values. Dropping the whole query string left 'which endpoints take a token
+          parameter' unanswerable; each name is capped at 64 characters because a scanner can
+          put a kilobyte of junk in one.
   - name: stg_camera_events
     description: >
       Camera events, typed. The export sends ISO-8601 strings; they are cast once here so
@@ -124,6 +144,127 @@ models:
       - name: duration_seconds
         description: '{{ doc("cam_duration_seconds") }}'
 
+      - name: rule_id
+        description: >
+          The rule inside the zone that fired. Joins to dim_camera_zone; it landed in raw from
+          the first partition and was never surfaced until now.
+      - name: is_dismissed
+        description: >
+          Whether the camera marked the event dismissed outright, rather than it being
+          inferred from lifecycle.
+      - name: occurred_at
+        description: >
+          When the event actually happened, which a replay or a repair moves away from
+          started_at. Null when the camera never recorded one.
+      - name: happened_at
+        description: >
+          The instant to rank an event by: occurred_at when the camera knows it, started_at
+          otherwise. Resolved once, here, because the camera's own report does the same
+          fallback and anything that wants to agree with it must too.
+      - name: state_source
+        description: >
+          How a state reading was arrived at, where the camera recorded something other than
+          the ordinary analysis path.
+      - name: count_person
+        description: >
+          How many people the event counted. Null means nothing was counted, which is not the
+          same as zero: an event nobody counted is not an event that counted nobody.
+      - name: count_vehicle
+        description: >
+          How many vehicles the event counted. Null and zero are different, as for
+          count_person.
+      - name: count_animal
+        description: >
+          How many animals the event counted. Null and zero are different, as for
+          count_person.
+      - name: count_other
+        description: >
+          How many other subjects the event counted. Null and zero are different, as for
+          count_person.
+      - name: count_total
+        description: >
+          The four subject counts added together, or null when nothing was counted. Every
+          graph of this data is a sum over these -- summing four columns by hand is how a
+          headline comes to disagree with the rows beneath it.
+      - name: was_corrected
+        description: >
+          Whether a person overwrote what the machine concluded about this event. Without it a
+          corrected figure is indistinguishable from one nobody touched.
+      - name: corrected_at
+        description: >
+          When the correction was made.
+      - name: corrected_by_name
+        description: >
+          Who made the correction. The name travels because a pseudonym does not answer 'who
+          overrode this'.
+      - name: corrected_by_hash
+        description: >
+          Salted hash of the person who made the correction, for grouping without naming.
+      - name: machine_lifecycle
+        description: >
+          What the machine originally concluded the lifecycle was, before a person changed it.
+      - name: machine_direction
+        description: >
+          The direction the machine originally reported.
+      - name: machine_zone_state
+        description: >
+          The state the machine originally reported.
+      - name: machine_previous_zone_state
+        description: >
+          The previous state the machine originally reported.
+      - name: machine_state_observed_at
+        description: >
+          When the machine originally said the state was observed.
+      - name: machine_dismissal_reason
+        description: >
+          The dismissal reason the machine originally gave.
+      - name: machine_duplicate_of
+        description: >
+          The event the machine originally thought this duplicated.
+      - name: machine_summary
+        description: >
+          The description the machine originally wrote.
+      - name: machine_confidence
+        description: >
+          The confidence the machine originally reported. Comparing it against a correction is
+          how 'is the model overconfident when it is wrong' becomes answerable.
+      - name: machine_should_notify
+        description: >
+          Whether the machine originally decided to notify.
+      - name: machine_count_person
+        description: >
+          How many people the machine originally counted.
+      - name: machine_count_vehicle
+        description: >
+          How many vehicles the machine originally counted.
+      - name: machine_count_animal
+        description: >
+          How many animals the machine originally counted.
+      - name: machine_count_other
+        description: >
+          How many other subjects the machine originally counted.
+      - name: transition_clip_id
+        description: >
+          The clip that filmed the gate moving. For a state change clip_id shows a gate that
+          has already finished moving, so a reader wanting the transition wants this one.
+      - name: backfill_json
+        description: >
+          JSON. Present when the row was written by a backfill rather than the live path.
+      - name: repair_json
+        description: >
+          JSON. Present when the row was reconstructed by a repair, naming the incident.
+      - name: restoration_json
+        description: >
+          JSON. Present when the row was restored from a backup.
+      - name: timing_correction_json
+        description: >
+          JSON. Present when the event's own timestamps were corrected, with the previous
+          values and the evidence.
+      - name: unmapped_json
+        description: >
+          JSON, or null. Anything the export sent that the raw schema does not name. Carried
+          onto the fact rather than left in raw, because the person who notices it is the one
+          looking at the data.
   - name: stg_litellm_spend
     description: >
       Calls with the workload, provider and self-hosted flags resolved. `spend_usd` is
@@ -196,6 +337,118 @@ models:
       - name: geo_as_org
         description: '{{ doc("geo_as_org") }}'
 
+      - name: model_id
+        description: >
+          The specific deployment of the model that served the call, where the group has
+          several.
+      - name: api_base
+        description: >
+          Which upstream endpoint the call went to. Says whether a model was served locally or
+          by a provider.
+      - name: cache_key
+        description: >
+          The key the proxy cached the response under. Two calls sharing one asked the same
+          question.
+      - name: organization_id
+        description: >
+          The organisation the call was billed to. Empty on this deployment today.
+      - name: agent_id
+        description: >
+          The agent that made the call, where one did. Empty on this deployment today.
+      - name: user_hash
+        description: >
+          Salted hash of LiteLLM's own end-user label, which is distinct from end_user.
+      - name: request_tags
+        description: >
+          The tags the caller attached to the request.
+      - name: cached_tokens
+        description: >
+          Prompt tokens served from the provider's cache. Null when not reported, which is not
+          zero: total_tokens cannot tell a cached prompt from a fresh one, so a cost-per-token
+          figure from it alone was wrong.
+      - name: prompt_audio_tokens
+        description: >
+          Audio tokens in the prompt. Null when not reported.
+      - name: reasoning_tokens
+        description: >
+          Tokens spent on hidden reasoning. Counted inside completion_tokens, so it explains a
+          call that looks expensive for the answer it produced. Null when not reported.
+      - name: completion_audio_tokens
+        description: >
+          Audio tokens in the completion. Null when not reported.
+      - name: accepted_prediction_tokens
+        description: >
+          Predicted-output tokens the model accepted.
+      - name: rejected_prediction_tokens
+        description: >
+          Predicted-output tokens the model rejected.
+      - name: input_cost_usd
+        description: >
+          What the prompt cost, separately from the answer. spend_usd is the two added
+          together, which could not answer the first question anybody asks of an LLM bill.
+      - name: output_cost_usd
+        description: >
+          What the completion cost.
+      - name: tool_usage_cost_usd
+        description: >
+          What tool calls within the request cost, where any were charged.
+      - name: original_cost_usd
+        description: >
+          The cost before any discount or margin.
+      - name: discount_amount_usd
+        description: >
+          How much was discounted from the original cost.
+      - name: attempted_retries
+        description: >
+          How many times the proxy retried before this call succeeded or gave up. A rising
+          figure is an upstream in trouble.
+      - name: max_retries
+        description: >
+          How many retries the proxy was willing to make.
+      - name: litellm_overhead_ms
+        description: >
+          How long the proxy itself took, as distinct from the model. Separates 'the model was
+          slow' from 'the gateway was'.
+      - name: applied_guardrails
+        description: >
+          Which guardrails ran on the call.
+      - name: api_key_alias
+        description: >
+          The human-readable name of the key that made the call. The key itself is hashed;
+          this is what a person recognises.
+      - name: team_alias
+        description: >
+          The human-readable name of the team the call was billed to.
+      - name: model_map_key
+        description: >
+          The entry in the proxy's model map that resolved the request. Says which alias a
+          caller actually asked for.
+      - name: error_information
+        description: >
+          JSON. Why a call failed, when one did.
+      - name: metadata_json
+        description: >
+          JSON. LiteLLM's metadata blob, whole. The extracted scalars beside it are a
+          convenience over it, not a filter on it.
+      - name: requester_ip
+        description: >
+          The caller's address as the ledger recorded it, beside the hashed and geo columns.
+          Internal container addresses on this deployment -- a fact about one's own
+          infrastructure, unlike the proxy logs where addresses belong to visitors and stay
+          hashed.
+      - name: messages_json
+        description: >
+          JSON. The full prompt sent to the model. Empty on every row today because payload
+          logging is off; once it is on, every conversation through the gateway lands here and
+          is readable by anything that can read the lake.
+      - name: response_json
+        description: >
+          JSON. The model's full completion. Empty today, for the same reason as
+          messages_json.
+      - name: proxy_server_request_json
+        description: >
+          JSON. The raw request the proxy received. Empty today, for the same reason as
+          messages_json.
   - name: stg_jellyfin_titles
     description: >
       Titles, typed, with decade and resolution class derived. One row per title per
@@ -262,6 +515,88 @@ models:
       - name: imdb_id
         description: '{{ doc("lib_imdb_id") }}'
 
+      - name: tmdb_collection_id
+        description: >
+          The franchise the film belongs to, as TMDB numbers them. Two films sharing this are
+          episodes of one series, which no other column here says.
+      - name: tvdb_id
+        description: >
+          The film's TVDB id, where Jellyfin matched one.
+      - name: studios
+        description: >
+          Every studio credited, in the order the API gave them. `studio` is the first of
+          these; one title here has twenty-five, and keeping only the first described a co-
+          production as the work of one company.
+      - name: production_countries
+        description: >
+          Every production country, primary first. `production_country` is the first of these.
+      - name: sort_name
+        description: >
+          The name the library sorts by, which drops leading articles.
+      - name: overview
+        description: >
+          The film's synopsis. Held back originally as prose no question asked about, which
+          was true until somebody asked one.
+      - name: tagline
+        description: >
+          The film's marketing line, first only. The full list is in taglines.
+      - name: taglines
+        description: >
+          Every tagline the library holds for the film.
+      - name: tags
+        description: >
+          Free-form tags applied to the title in the library.
+      - name: parent_id
+        description: >
+          The library folder the title sits in.
+      - name: item_type
+        description: >
+          Jellyfin's own type for the row. Always Movie for this snapshot, kept so that stays
+          checkable.
+      - name: media_type
+        description: >
+          The kind of media -- Video for everything in this library.
+      - name: video_type
+        description: >
+          How the video is stored -- a single file, a disc image, a folder.
+      - name: has_subtitles
+        description: >
+          Whether the library believes the title has subtitles at all. The detail is in
+          stg_jellyfin_title_streams.
+      - name: subtitle_languages
+        description: >
+          Distinct subtitle languages across the title's streams, sorted. Derived at ingest so
+          'what can I watch in French' does not need the stream table.
+      - name: audio_languages
+        description: >
+          Distinct audio languages across the title's streams, sorted.
+      - name: stream_count
+        description: >
+          How many media streams the title has in total.
+      - name: chapter_count
+        description: >
+          How many chapter markers the file carries.
+      - name: remote_trailer_count
+        description: >
+          How many trailers the library knows about.
+      - name: external_urls
+        description: >
+          The film's pages on public databases, as name and url pairs.
+      - name: file_size_bytes
+        description: >
+          Size of the primary media file -- the figure a library-growth question needs.
+      - name: file_bitrate
+        description: >
+          Overall bitrate of the primary media file.
+      - name: media_source_count
+        description: >
+          How many media sources the title has. More than one means several versions of the
+          same film.
+      - name: unmapped_json
+        description: >
+          JSON, or null. Anything Jellyfin returned that nothing here reads. Fields
+          deliberately not stored are excluded, so a value here is always a prompt to add a
+          column.
   - name: stg_jellyfin_title_genres
     description: >
       Title-to-genre pairs, trimmed and deduplicated. Blank genres are dropped here
@@ -330,3 +665,624 @@ models:
               config: {where: "revenue_usd is not null"}
       - name: revenue_to_budget
         description: '{{ doc("lib_revenue_to_budget") }}'
+
+      - name: vote_average
+        description: >
+          TMDB's rating out of ten. Jellyfin holds a copy as community_rating, taken when it
+          scanned the file, which can be years stale. Both are kept, each named for where it
+          came from, because with only one there was no way to see the copy had drifted.
+      - name: tmdb_runtime_minutes
+        description: >
+          TMDB's runtime. Comparable against the library's own, which is measured from the
+          file.
+      - name: release_status
+        description: >
+          Released, Post Production, Planned. A library title with a non-released status is
+          usually a mismatched id.
+      - name: tmdb_tagline
+        description: >
+          The film's marketing line as TMDB holds it.
+      - name: tmdb_overview
+        description: >
+          TMDB's synopsis. Comparable against the library's, which may be localised.
+      - name: homepage
+        description: >
+          The film's official site, where TMDB has one.
+      - name: tmdb_release_date
+        description: >
+          TMDB's release date. The library's premiere_date is the same fact from its own scan.
+      - name: tmdb_imdb_id
+        description: >
+          The film's IMDb id as TMDB holds it -- a second opinion on the library's own.
+      - name: tmdb_original_title
+        description: >
+          The title as released, before any localisation.
+      - name: tmdb_title
+        description: >
+          TMDB's primary title, usually the English one.
+      - name: is_adult
+        description: >
+          Whether TMDB flags the film as adult.
+      - name: collection_id
+        description: >
+          The franchise the film belongs to. Two films sharing this are episodes of one
+          series.
+      - name: collection_name
+        description: >
+          The franchise's name, for reading rather than joining.
+      - name: tmdb_genres
+        description: >
+          TMDB's genres -- a second opinion on the library's own genre list.
+      - name: production_companies
+        description: >
+          Every company credited with producing the film.
+      - name: tmdb_production_countries
+        description: >
+          Every country the film was produced in, as TMDB records them.
+      - name: spoken_languages
+        description: >
+          The languages spoken in the film. Distinct from audio_languages, which is what
+          tracks the file happens to carry.
+      - name: origin_countries
+        description: >
+          The country codes the film originates from.
+  - name: stg_camera_clips
+    description: >
+      Clip metadata, typed. This model did not exist: [count withheld] clips had been landing in the raw
+      layer fully documented since the pipeline was written, and nothing read them -- so an
+      event could not reach the footage that filmed it.
+    columns:
+      - name: partition_date
+        description: >
+          Partition date: the UTC day this row belongs to, taken from the data rather than
+          from the file it was found in.
+      - name: extracted_at
+        description: >
+          When this pipeline read the row. What lets a merge pick the newest version of a
+          record the source has since changed.
+      - name: camera_id
+        description: >
+          Which camera. `outdoor-camera` is Entrance, `indoor-camera` is Ferme.
+      - name: unmapped_json
+        description: >
+          JSON, or null. Any field the export sent that the raw schema does not name, kept
+          rather than dropped. Non-null is a prompt to give the field a column -- the signal
+          whose absence lost `counts` on every event for a month.
+      - name: clip_id
+        description: >
+          The clip's stable id. What `fct_camera_event.clip_id` points at; every one of them
+          resolves.
+        tests: [not_null, unique]
+      - name: clip_kind
+        description: >
+          What caused the recording -- `attention` for an analysed event, `manual` for one
+          somebody saved.
+      - name: clip_title
+        description: >
+          The clip's label, such as "1 personne". Generated from what the analysis found
+          rather than prose anybody typed, and it is the caption the app itself shows.
+      - name: created_at
+        description: >
+          When the recording started.
+      - name: saved_at
+        description: >
+          When it finished being written out. Later than created_at by however long the encode
+          took.
+      - name: save_latency_seconds
+        description: >
+          How long the clip took to be written after it began. A rising figure is the recorder
+          falling behind, which nothing else in the warehouse would show.
+      - name: duration_seconds
+        description: >
+          How long the clip runs, parsed from the display string the store keeps.
+      - name: size_bytes
+        description: >
+          Size on disk, parsed from the display string.
+      - name: bytes_per_second
+        description: >
+          Size over duration. Null when either is missing or zero. A sudden change means the
+          encoder settings moved.
+      - name: segment_count
+        description: >
+          How many HLS segments the clip is made of.
+      - name: storage_quality
+        description: >
+          The rendition kept -- 240p for a routine attention clip, higher for one somebody
+          saved.
+      - name: is_archived
+        description: >
+          Whether the clip has been moved to the archive rather than the live history.
+      - name: is_deleted
+        description: >
+          Whether the clip has been deleted. Kept as a row so a deletion is visible rather
+          than a gap.
+      - name: ai_source
+        description: >
+          Which detector raised it -- `opencv` for local motion, or the vision model.
+      - name: ai_type
+        description: >
+          What that detector thought it saw.
+      - name: local_confidence
+        description: >
+          The local detector's own score. Not the same number as the event's `confidence`,
+          which is the vision model's; two different judgements about one moment, named apart.
+      - name: created_by_hash
+        description: >
+          Salted hash of whoever saved the clip by hand. Null for one the system recorded on
+          its own.
+      - name: annotation_count
+        description: >
+          How many notes were left on the clip. Zero, never null.
+
+  - name: stg_camera_logs
+    description: >
+      Camera activity log entries, typed. The record of what a person did, as opposed to what
+      the cameras saw. [count withheld] entries had no model reading them.
+    columns:
+      - name: partition_date
+        description: >
+          Partition date: the UTC day this row belongs to, taken from the data rather than
+          from the file it was found in.
+      - name: extracted_at
+        description: >
+          When this pipeline read the row. What lets a merge pick the newest version of a
+          record the source has since changed.
+      - name: camera_id
+        description: >
+          Which camera. `outdoor-camera` is Entrance, `indoor-camera` is Ferme.
+      - name: unmapped_json
+        description: >
+          JSON, or null. Any field the export sent that the raw schema does not name, kept
+          rather than dropped. Non-null is a prompt to give the field a column -- the signal
+          whose absence lost `counts` on every event for a month.
+      - name: log_id
+        description: >
+          The entry's stable id.
+        tests: [not_null]
+      - name: entry_type
+        description: >
+          What happened -- a comment, a manual recording, a detection pause.
+      - name: is_important
+        description: >
+          Whether the entry was flagged as important when it was written.
+      - name: created_at
+        description: >
+          When the entry was written.
+      - name: entry_title
+        description: >
+          The entry's free text, as the person wrote it, @mentions and all. Landed at the
+          owner's request; expect the names of people in their household in it.
+      - name: source_id
+        description: >
+          The clip or event the entry was written against. What makes the log joinable rather
+          than a flat feed.
+      - name: user_hash
+        description: >
+          Salted hash of the person who caused the entry. Null for anything the system did on
+          its own.
+      - name: was_written_by_a_person
+        description: >
+          Whether a person caused this entry, as opposed to the system recording it. Derived
+          from user_hash being present.
+
+  - name: stg_camera_zones
+    description: >
+      Zone and rule configuration, one row per rule per day. The reference table the event
+      stream never had: without it the only clue that a zone is a gate is that its events
+      happen to carry rule_type 'state', which is inference from the data rather than a fact
+      about the configuration.
+    columns:
+      - name: snapshot_date
+        description: >
+          The day this configuration was observed. Not backfillable: the camera keeps no
+          history for a zone, so an older date would describe events by rules that did not
+          exist when they fired.
+      - name: extracted_at
+        description: >
+          When this pipeline read the row. What lets a merge pick the newest version of a
+          record the source has since changed.
+      - name: zone_id
+        description: >
+          The zone's stable id. What `fct_camera_event.zone_id` points at.
+        tests: [not_null]
+      - name: camera_id
+        description: >
+          Which camera. `outdoor-camera` is Entrance, `indoor-camera` is Ferme.
+      - name: zone_name
+        description: >
+          The zone's display name -- Portail, Animaux.
+      - name: zone_description
+        description: >
+          The free-text note describing what the zone is for.
+      - name: zone_scope
+        description: >
+          Whether the zone covers drawn shapes or the whole frame.
+      - name: is_enabled
+        description: >
+          Whether the zone is switched on. A disabled zone fires nothing.
+      - name: zone_revision
+        description: >
+          How many times the zone has been edited. Two snapshots sharing it are the same
+          configuration.
+      - name: geometry_revision
+        description: >
+          How many times the shapes have moved, separately from the rules. A bump here can
+          explain a step change in event counts that no rule change would account for.
+      - name: anchor_count
+        description: >
+          How many calibration anchors the zone holds. Zero means it has never been
+          calibrated, which is the usual reason its state readings are unreliable.
+      - name: state_reference_count
+        description: >
+          How many reference samples the zone judges open-versus-closed against.
+      - name: revision_count
+        description: >
+          How many past configurations the zone keeps.
+      - name: feedback_count
+        description: >
+          How many times a person has corrected what this zone concluded. A zone with a lot of
+          feedback is one the model keeps getting wrong, which no count of events would show.
+      - name: does_auto_learn_anchors
+        description: >
+          Whether the zone re-learns its calibration on its own.
+      - name: max_anchors
+        description: >
+          How many anchors the zone is allowed to keep.
+      - name: created_at
+        description: >
+          When the zone was created.
+      - name: created_by_hash
+        description: >
+          Salted hash of whoever created it.
+      - name: created_by_name
+        description: >
+          The name of whoever created it. The name travels beside the hash here for the same
+          reason it does on a correction: who configured this is not answered by a pseudonym.
+      - name: updated_at
+        description: >
+          When the zone was last edited.
+      - name: updated_by_hash
+        description: >
+          Salted hash of whoever last edited it.
+      - name: updated_by_name
+        description: >
+          The name of whoever last edited it.
+      - name: rule_id
+        description: >
+          The rule's id within the zone. What `fct_camera_event.rule_id` points at. Null on a
+          zone with no rules, which still appears rather than vanishing.
+      - name: rule_type
+        description: >
+          What the rule watches -- `state` for a gate, `crossing` for passages, `motion` for
+          activity.
+      - name: rule_name
+        description: >
+          The rule's display name.
+      - name: is_rule_enabled
+        description: >
+          Whether the rule is switched on, independently of the zone.
+      - name: does_rule_notify
+        description: >
+          Whether a match notifies, as opposed to only being recorded.
+      - name: rule_cooldown_seconds
+        description: >
+          How long the rule waits before firing again. A long cooldown is a reason a busy
+          period shows fewer events than it had activity.
+      - name: rule_sensitivity
+        description: >
+          The sensitivity band the rule runs at.
+      - name: rule_prompt
+        description: >
+          The analysis prompt the vision model is given. The only record of why a rule fires
+          as it does.
+      - name: rule_targets
+        description: >
+          Which subjects the rule looks for.
+      - name: rule_states
+        description: >
+          The states a state rule may report.
+      - name: rule_alert_on
+        description: >
+          Which transitions raise an alert rather than being recorded quietly.
+      - name: shapes_json
+        description: >
+          JSON. The zone's polygons in normalised frame coordinates -- a map of where each
+          watched region physically sits. Landed at the owner's explicit request; the counts
+          above answer most questions without parsing it.
+      - name: ignore_shapes_json
+        description: >
+          JSON. Regions inside the zone deliberately excluded from analysis.
+      - name: anchors_json
+        description: >
+          JSON. The calibration anchors themselves.
+      - name: state_references_json
+        description: >
+          JSON. The reference samples used to decide open versus closed.
+      - name: anchor_policy_json
+        description: >
+          JSON. Whether the zone re-learns anchors, and how many it may keep.
+      - name: revisions_json
+        description: >
+          JSON. Every past configuration, with the instant and the snapshot. How a step change
+          in event counts is traced to the edit that caused it.
+      - name: feedback_json
+        description: >
+          JSON. Every correction a person has made to what this zone concluded.
+      - name: unmapped_json
+        description: >
+          JSON, or null. Any field the export sent that the raw schema does not name, kept
+          rather than dropped. Non-null is a prompt to give the field a column -- the signal
+          whose absence lost `counts` on every event for a month.
+      - name: is_gate_rule
+        description: >
+          Whether this rule watches a gate, derived from rule_type. The question `rule_type =
+          'state'` was standing in for before this table existed.
+      - name: has_rule
+        description: >
+          Whether the zone has any rule configured at all.
+
+  - name: stg_camera_observability
+    description: >
+      Spans where a zone could not be read, typed. The other half of every gate reading: with
+      state events alone there is no way to tell a gate that stayed shut from a gate nobody
+      could see.
+    columns:
+      - name: partition_date
+        description: >
+          Partition date: the UTC day this row belongs to, taken from the data rather than
+          from the file it was found in.
+      - name: extracted_at
+        description: >
+          When this pipeline read the row. What lets a merge pick the newest version of a
+          record the source has since changed.
+      - name: camera_id
+        description: >
+          Which camera. `outdoor-camera` is Entrance, `indoor-camera` is Ferme.
+      - name: unmapped_json
+        description: >
+          JSON, or null. Any field the export sent that the raw schema does not name, kept
+          rather than dropped. Non-null is a prompt to give the field a column -- the signal
+          whose absence lost `counts` on every event for a month.
+      - name: span_id
+        description: >
+          Stable id for the span, built from the zone and the instant it began, so re-reading
+          a window merges rather than duplicating.
+        tests: [not_null]
+      - name: zone_id
+        description: >
+          The zone that could not be read. Joins to dim_camera_zone.
+      - name: reason
+        description: >
+          Why it was unreadable. `night_blind` is darkness; `out_of_view` and `lost` are the
+          tracker losing the region; `state_unconfirmed` is the freshness lease expiring
+          rather than the picture going away.
+      - name: detail
+        description: >
+          Any extra explanation the camera recorded alongside the reason.
+      - name: from_at
+        description: >
+          When the span began.
+      - name: to_at
+        description: >
+          When it ended, or the end of the window asked for when it had not. Read with
+          is_ongoing.
+      - name: is_ongoing
+        description: >
+          Whether the span was still open at the end of the window. True means to_at is where
+          the question stopped, not where the blindness did.
+      - name: duration_seconds
+        description: >
+          How long the zone was unreadable.
+      - name: is_lease_expiry
+        description: >
+          Whether this is the freshness lease expiring rather than a camera that could not
+          see. A timing artefact, and it must not be counted as vision loss.
+      - name: is_vision_loss
+        description: >
+          Whether the camera genuinely could not see -- darkness, the region out of view, an
+          unreadable picture.
+
+  - name: stg_camera_annotations
+    description: >
+      Notes and marks left against a clip or an event, typed.
+    columns:
+      - name: partition_date
+        description: >
+          Partition date: the UTC day this row belongs to, taken from the data rather than
+          from the file it was found in.
+      - name: extracted_at
+        description: >
+          When this pipeline read the row. What lets a merge pick the newest version of a
+          record the source has since changed.
+      - name: camera_id
+        description: >
+          Which camera. `outdoor-camera` is Entrance, `indoor-camera` is Ferme.
+      - name: unmapped_json
+        description: >
+          JSON, or null. Any field the export sent that the raw schema does not name, kept
+          rather than dropped. Non-null is a prompt to give the field a column -- the signal
+          whose absence lost `counts` on every event for a month.
+      - name: annotation_id
+        description: >
+          The annotation's stable id.
+        tests: [not_null]
+      - name: scope
+        description: >
+          Which kind of thing target_id points at -- `clip` or `live`. A reader joining
+          without checking it would match a clip id against a camera id.
+      - name: target_id
+        description: >
+          The clip or camera the note was left on. Read with scope.
+      - name: annotation_kind
+        description: >
+          What kind of mark it is -- a note, an event marker, a reaction.
+      - name: emoji
+        description: >
+          The icon chosen for the mark.
+      - name: offset_seconds
+        description: >
+          How far into the clip the mark sits. Null for a live mark.
+      - name: timestamp_ms
+        description: >
+          The wall-clock instant the mark refers to, in epoch milliseconds.
+      - name: created_at
+        description: >
+          When the annotation was written.
+      - name: note_text
+        description: >
+          The note itself, as written. Landed for the same reason the log title is.
+      - name: user_hash
+        description: >
+          Salted hash of whoever wrote it. Null for anything the system wrote on its own.
+      - name: zone_id
+        description: >
+          The zone the mark relates to, when it came from zone analysis.
+      - name: rule_id
+        description: >
+          The rule the mark relates to, when it came from zone analysis.
+      - name: event_type
+        description: >
+          The kind of event the mark was raised for.
+      - name: targets_a_clip
+        description: >
+          Whether target_id is a clip id. Derived from scope so a join does not have to re-
+          derive it.
+      - name: targets_a_camera
+        description: >
+          Whether target_id is a camera id.
+      - name: was_written_by_a_person
+        description: >
+          Whether a person wrote it, as opposed to the system marking its own analysis.
+  - name: stg_jellyfin_title_people
+    description: >
+      Cast and crew credits, one row per person per title. Public film metadata, not anything
+      about anybody using this library.
+    columns:
+      - name: snapshot_date
+        description: >
+          The day of the snapshot this credit was seen in.
+      - name: item_id
+        description: >
+          The title the credit belongs to.
+      - name: person_id
+        description: >
+          Jellyfin's stable id for the person, so the same actor matches across films.
+      - name: person_name
+        description: >
+          The person's name as the library holds it.
+      - name: person_type
+        description: >
+          What they did -- Actor, Director, Writer, Producer.
+      - name: role
+        description: >
+          The character an actor played. Null for crew.
+      - name: sort_order
+        description: >
+          Where the credit sits in the billing order, zero-based.
+      - name: is_cast
+        description: >
+          Whether this is an acting credit rather than a crew one.
+      - name: is_top_billed
+        description: >
+          Whether the credit is in the first five. The distinction between a lead and a walk-
+          on, which is why the order is kept rather than the set of names alone.
+  - name: stg_jellyfin_title_streams
+    description: >
+      Media streams, typed. One row per audio, video or subtitle track. Keeping the first
+      video and first audio stream lost every subtitle track in the library and every audio
+      track after the first.
+    columns:
+      - name: snapshot_date
+        description: >
+          The day of the snapshot this stream was seen in.
+      - name: item_id
+        description: >
+          The title the stream belongs to.
+      - name: stream_index
+        description: >
+          The stream's position in the file. Unique within a title, and half of the natural
+          key.
+      - name: stream_type
+        description: >
+          Video, Audio, Subtitle, or EmbeddedImage.
+      - name: codec
+        description: >
+          How the stream is encoded -- h264, ac3, subrip.
+      - name: language
+        description: >
+          The stream's language as a three-letter code. Null when the file does not declare
+          one.
+      - name: stream_title
+        description: >
+          The label the file gives the stream -- "VFF 5.1 @384Kbps".
+      - name: display_title
+        description: >
+          Jellyfin's own rendering of the stream -- "1080p H264 SDR". Worth keeping beside the
+          derived resolution class, which disagrees with it on cropped encodes: a 1080p film
+          letterboxed to [count withheld] rows is called 720p by the band table and 1080p here.
+      - name: is_default
+        description: >
+          Whether this is the track that plays without the viewer choosing.
+      - name: is_forced
+        description: >
+          Whether the track is forced -- shown even when subtitles are off.
+      - name: is_external
+        description: >
+          Whether the stream is a separate file rather than embedded in the container.
+      - name: is_hearing_impaired
+        description: >
+          Whether the subtitle track is marked as for the hearing impaired.
+      - name: is_interlaced
+        description: >
+          Whether the video is interlaced.
+      - name: height
+        description: >
+          Picture height in pixels. Null on a subtitle stream, which reports zero.
+      - name: width
+        description: >
+          Picture width in pixels.
+      - name: channels
+        description: >
+          How many audio channels. 6 for 5.1, 2 for stereo.
+      - name: channel_layout
+        description: >
+          How those channels are arranged, as the encoder named it.
+      - name: bit_rate
+        description: >
+          The stream's bitrate, where the container declares one.
+      - name: bit_depth
+        description: >
+          Bits per colour sample. 10 marks an HDR-capable encode.
+      - name: sample_rate
+        description: >
+          Audio sample rate in hertz.
+      - name: video_range
+        description: >
+          SDR or HDR.
+      - name: video_range_type
+        description: >
+          Which HDR format, where the stream is HDR.
+      - name: profile
+        description: >
+          The codec profile the stream was encoded with.
+      - name: level
+        description: >
+          The codec level, which bounds resolution and bitrate.
+      - name: stream_key
+        description: >
+          The natural key: item and index together, because the index is unique only within a
+          title.
+      - name: is_video
+        description: >
+          Whether this is the picture.
+      - name: is_audio
+        description: >
+          Whether this is a sound track.
+      - name: is_subtitle
+        description: >
+          Whether this is a subtitle track. The class of stream the old schema discarded
+          entirely.
+      - name: is_hdr
+        description: >
+          Whether the stream declares an HDR range. Read with bit_depth: either alone is a
+          claim the other does not support.

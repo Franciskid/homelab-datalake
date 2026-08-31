@@ -13,6 +13,19 @@ select
     count(*) filter (where should_notify)                   as notified,
     count(*) filter (where is_unusual)                      as unusual,
     count(*) filter (where is_duplicate)                    as duplicates,
+    count(*) filter (where was_corrected)                   as corrected,
+    count(*) filter (where has_clip)                        as with_clip,
+
+    -- The subject totals. This is the row the alerts graph is drawn from, and until
+    -- `counts` was carried through ingest there was nothing here to draw it with.
+    -- `sum` skips nulls, so a day where nothing was counted reads as null rather than
+    -- as a measured zero -- and `counted_events` beside it says which it was.
+    sum(count_person)                                       as people,
+    sum(count_vehicle)                                      as vehicles,
+    sum(count_animal)                                       as animals,
+    sum(count_other)                                        as other_subjects,
+    sum(count_total)                                        as subjects,
+    count(*) filter (where count_total is not null)         as counted_events,
 
     -- Confidence is null when the model would not commit, and avg() skips nulls --
     -- so the count of scored events travels beside the average. An average over three

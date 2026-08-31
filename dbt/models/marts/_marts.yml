@@ -467,6 +467,8 @@ models:
           on the day rather than only what is true now.
       - name: item_id
         description: '{{ doc("lib_item_id") }}'
+        tests:
+          - relationships: {to: ref('fct_library_title'), field: item_id}
       - name: genre
         description: >
           The genre name, carried beside its key so a reader can see the pairing without
@@ -486,7 +488,11 @@ models:
         tests: [not_null, unique]
       - name: item_id
         description: '{{ doc("lib_item_id") }}'
-        tests: [not_null]
+        tests:
+          - not_null
+          # Every version of a title must name a title that exists. Measured before
+          # declaring: [count withheld] distinct ids, zero orphans.
+          - relationships: {to: ref('fct_library_title'), field: item_id}
       - name: version
         description: >
           How many times this title's tracked attributes had changed when this row
@@ -549,6 +555,8 @@ models:
         tests: [not_null]
       - name: zone_id
         description: '{{ doc("cam_zone_id") }}'
+        tests:
+          - relationships: {to: ref('dim_camera_zone'), field: zone_id}
       - name: zone_name
         description: '{{ doc("cam_zone_name") }}'
       - name: lifecycle
@@ -626,12 +634,188 @@ models:
         description: '{{ doc("cam_summary") }}'
       - name: clip_id
         description: '{{ doc("cam_clip_id") }}'
+        tests:
+          - relationships: {to: ref('fct_camera_clip'), field: clip_id}
       - name: extracted_at
         description: >
           When this pipeline read the version of the event that survived. Beside the
           event rather than dropped, because "why did this row change since yesterday"
           is answered by it and by nothing else.
 
+      - name: rule_id
+        description: >
+          The rule inside the zone that fired. Joins to dim_camera_zone; it landed in raw from
+          the first partition and was never surfaced until now.
+        tests:
+          - relationships: {to: ref('dim_camera_zone'), field: rule_id}
+      - name: is_dismissed
+        description: >
+          Whether the camera marked the event dismissed outright, rather than it being
+          inferred from lifecycle.
+      - name: occurred_at
+        description: >
+          When the event actually happened, which a replay or a repair moves away from
+          started_at. Null when the camera never recorded one.
+      - name: happened_at
+        description: >
+          The instant to rank an event by: occurred_at when the camera knows it, started_at
+          otherwise. Resolved once, here, because the camera's own report does the same
+          fallback and anything that wants to agree with it must too.
+      - name: state_observed_at
+        description: >
+          When the zone's state was observed. For a gate transition this is the instant the
+          gate was seen to have moved -- it existed in raw and staging and was dropped at the
+          mart, which is why a portal report had only the day and the hour to work with.
+      - name: state_source
+        description: >
+          How a state reading was arrived at, where the camera recorded something other than
+          the ordinary analysis path.
+      - name: count_person
+        description: >
+          How many people the event counted. Null means nothing was counted, which is not the
+          same as zero: an event nobody counted is not an event that counted nobody.
+      - name: count_vehicle
+        description: >
+          How many vehicles the event counted. Null and zero are different, as for
+          count_person.
+      - name: count_animal
+        description: >
+          How many animals the event counted. Null and zero are different, as for
+          count_person.
+      - name: count_other
+        description: >
+          How many other subjects the event counted. Null and zero are different, as for
+          count_person.
+      - name: count_total
+        description: >
+          The four subject counts added together, or null when nothing was counted. Every
+          graph of this data is a sum over these -- summing four columns by hand is how a
+          headline comes to disagree with the rows beneath it.
+      - name: was_corrected
+        description: >
+          Whether a person overwrote what the machine concluded about this event. Without it a
+          corrected figure is indistinguishable from one nobody touched.
+      - name: corrected_at
+        description: >
+          When the correction was made.
+      - name: corrected_by_name
+        description: >
+          Who made the correction. The name travels because a pseudonym does not answer 'who
+          overrode this'.
+      - name: corrected_by_hash
+        description: >
+          Salted hash of the person who made the correction, for grouping without naming.
+      - name: machine_lifecycle
+        description: >
+          What the machine originally concluded the lifecycle was, before a person changed it.
+      - name: machine_direction
+        description: >
+          The direction the machine originally reported.
+      - name: machine_zone_state
+        description: >
+          The state the machine originally reported.
+      - name: machine_previous_zone_state
+        description: >
+          The previous state the machine originally reported.
+      - name: machine_state_observed_at
+        description: >
+          When the machine originally said the state was observed.
+      - name: machine_dismissal_reason
+        description: >
+          The dismissal reason the machine originally gave.
+      - name: machine_duplicate_of
+        description: >
+          The event the machine originally thought this duplicated.
+      - name: machine_summary
+        description: >
+          The description the machine originally wrote.
+      - name: machine_confidence
+        description: >
+          The confidence the machine originally reported. Comparing it against a correction is
+          how 'is the model overconfident when it is wrong' becomes answerable.
+      - name: machine_should_notify
+        description: >
+          Whether the machine originally decided to notify.
+      - name: machine_count_person
+        description: >
+          How many people the machine originally counted.
+      - name: machine_count_vehicle
+        description: >
+          How many vehicles the machine originally counted.
+      - name: machine_count_animal
+        description: >
+          How many animals the machine originally counted.
+      - name: machine_count_other
+        description: >
+          How many other subjects the machine originally counted.
+      - name: lifecycle_was_corrected
+        description: >
+          Whether the correction actually changed the lifecycle. Called out because it is one
+          of the two corrections that move a headline figure; the other is the zone state.
+      - name: zone_state_was_corrected
+        description: >
+          Whether the correction actually changed the zone state -- the other correction that
+          moves a headline figure.
+      - name: transition_clip_id
+        description: >
+          The clip that filmed the gate moving. For a state change clip_id shows a gate that
+          has already finished moving, so a reader wanting the transition wants this one.
+      - name: clip_kind
+        description: >
+          What caused the recording the event points at -- attention, or a manual save.
+      - name: clip_title
+        description: >
+          The clip's own label, such as "1 personne".
+      - name: clip_duration_seconds
+        description: >
+          How long the clip runs.
+      - name: clip_size_bytes
+        description: >
+          The clip's size on disk.
+      - name: clip_storage_quality
+        description: >
+          The rendition kept for the clip.
+      - name: clip_is_archived
+        description: >
+          Whether the clip has been moved to the archive.
+      - name: clip_is_deleted
+        description: >
+          Whether the clip has been deleted. The event survives the footage.
+      - name: clip_ai_source
+        description: >
+          Which detector raised the clip.
+      - name: clip_ai_type
+        description: >
+          What that detector thought it saw. Comparable against the event's own rule_type.
+      - name: clip_local_confidence
+        description: >
+          The local detector's score on the clip, which is not the vision model's confidence
+          on the event.
+      - name: clip_annotation_count
+        description: >
+          How many notes were left on the clip.
+      - name: has_clip
+        description: >
+          Whether the event resolved to a clip at all. False is normal for an event whose
+          analysis has not produced one yet.
+      - name: backfill_json
+        description: >
+          JSON. Present when the row was written by a backfill rather than the live path.
+      - name: repair_json
+        description: >
+          JSON. Present when the row was reconstructed by a repair, naming the incident.
+      - name: restoration_json
+        description: >
+          JSON. Present when the row was restored from a backup.
+      - name: timing_correction_json
+        description: >
+          JSON. Present when the event's own timestamps were corrected, with the previous
+          values and the evidence.
+      - name: unmapped_json
+        description: >
+          JSON, or null. Anything the export sent that the raw schema does not name. Carried
+          onto the fact rather than left in raw, because the person who notices it is the one
+          looking at the data.
   - name: agg_camera_activity_daily
     description: Daily activity by camera, zone and rule.
     columns:
@@ -680,3 +864,377 @@ models:
         description: >
           Median event duration, to one decimal. Unresolved events carry no duration and
           do not contribute.
+      - name: corrected
+        description: >
+          How many of the day's events a person overrode. Rising against a steady event count
+          means the model is drifting.
+      - name: with_clip
+        description: >
+          How many of the day's events resolved to a clip.
+      - name: people
+        description: >
+          People counted across the day's events. Null when nothing was counted, which is not
+          a measured zero.
+      - name: vehicles
+        description: >
+          Vehicles counted across the day's events.
+      - name: animals
+        description: >
+          Animals counted across the day's events.
+      - name: other_subjects
+        description: >
+          Other subjects counted across the day's events.
+      - name: subjects
+        description: >
+          All four subject counts added together -- the figure the alerts graph plots.
+      - name: counted_events
+        description: >
+          How many of the day's events carried a count at all. Travels beside the sums so an
+          average over three events does not read like one over three hundred.
+  - name: fct_camera_clip
+    description: >
+      One row per clip, with the event that caused it. The mirror of fct_camera_event: 'what
+      did the cameras see' is answered by the event, 'what is on disk, how big is it, and is
+      it still there' is answered by the clip -- and [count withheld] clips had no model at all, so the
+      second question had no table.
+    columns:
+      - name: partition_date
+        description: >
+          Partition date: the UTC day this row belongs to, taken from the data rather than
+          from the file it was found in.
+      - name: camera_id
+        description: >
+          Which camera. `outdoor-camera` is Entrance, `indoor-camera` is Ferme.
+      - name: extracted_at
+        description: >
+          When this pipeline read the row. What lets a merge pick the newest version of a
+          record the source has since changed.
+      - name: unmapped_json
+        description: >
+          JSON, or null. Anything the export sent that the raw schema does not name, kept
+          rather than dropped.
+      - name: zone_id
+        description: >
+          The zone this belongs to. Joins to dim_camera_zone.
+        tests:
+          - relationships: {to: ref('dim_camera_zone'), field: zone_id}
+      - name: zone_name
+        description: >
+          The zone's display name -- Portail, Animaux.
+      - name: clip_id
+        description: >
+          The clip's stable id. What fct_camera_event.clip_id points at; every one of them
+          resolves.
+      - name: clip_kind
+        description: >
+          What caused the recording -- `attention` for an analysed event, `manual` for one
+          somebody saved.
+      - name: clip_title
+        description: >
+          The clip's label, such as "1 personne". Generated from what the analysis found, and
+          the caption the app itself shows.
+      - name: created_at
+        description: >
+          When the recording started.
+      - name: saved_at
+        description: >
+          When it finished being written out.
+      - name: save_latency_seconds
+        description: >
+          How long the clip took to be written after it began. A rising figure is the recorder
+          falling behind, which nothing else here would show.
+      - name: created_hour
+        description: >
+          The hour the clip was created, truncated. For grouping without re-deriving it per
+          query.
+      - name: created_hour_of_day
+        description: >
+          Hour of day, 0-23, in UTC. The shape of a day.
+      - name: created_weekday
+        description: >
+          Weekday name, in UTC.
+      - name: is_weekend
+        description: >
+          Whether the clip was created at the weekend.
+      - name: duration_seconds
+        description: >
+          How long the clip runs.
+      - name: size_bytes
+        description: >
+          Size on disk.
+      - name: bytes_per_second
+        description: >
+          Size over duration. Null when either is missing or zero. A sudden change means
+          encoder settings moved.
+      - name: segment_count
+        description: >
+          How many HLS segments the clip is made of.
+      - name: storage_quality
+        description: >
+          The rendition kept -- 240p for a routine attention clip, higher for one somebody
+          saved.
+      - name: is_archived
+        description: >
+          Whether the clip has been moved to the archive rather than the live history.
+      - name: is_deleted
+        description: >
+          Whether the clip has been deleted. Kept as a row so a deletion is visible rather
+          than a gap.
+      - name: ai_source
+        description: >
+          Which detector raised it -- `opencv` for local motion, or the vision model.
+      - name: ai_type
+        description: >
+          What that detector thought it saw.
+      - name: local_confidence
+        description: >
+          The local detector's own score. Not the vision model's confidence on the event; two
+          judgements about one moment, named apart.
+      - name: created_by_hash
+        description: >
+          Salted hash of whoever saved the clip by hand. Null for one the system recorded on
+          its own.
+      - name: was_saved_by_a_person
+        description: >
+          Whether a person saved this clip deliberately, derived from created_by_hash.
+      - name: annotation_count
+        description: >
+          How many notes were left on the clip.
+      - name: is_annotated
+        description: >
+          Whether anybody left a note on it -- the clips somebody actually looked at.
+      - name: event_id
+        description: >
+          The attention event that caused the recording, when one did.
+        tests:
+          - relationships: {to: ref('fct_camera_event'), field: event_id}
+      - name: rule_type
+        description: >
+          What the causing event's rule watched.
+      - name: event_lifecycle
+        description: >
+          What the causing event was concluded to be.
+      - name: event_confidence
+        description: >
+          The vision model's confidence on the causing event.
+      - name: event_zone_state
+        description: >
+          The zone state the causing event reported.
+      - name: event_count_total
+        description: >
+          How many subjects the causing event counted.
+      - name: has_event
+        description: >
+          Whether the clip resolved to an event. False for a manual recording, and for one
+          whose event was swept.
+  - name: fct_camera_coverage
+    description: >
+      One row per span where a zone could not be read. The table that makes a gate report
+      honest: 'closed all afternoon' means one thing when the camera could see the gate
+      throughout and another when it could not see it at all, and until this existed the
+      warehouse drew the second as the first.
+    columns:
+      - name: partition_date
+        description: >
+          Partition date: the UTC day this row belongs to, taken from the data rather than
+          from the file it was found in.
+      - name: camera_id
+        description: >
+          Which camera. `outdoor-camera` is Entrance, `indoor-camera` is Ferme.
+      - name: extracted_at
+        description: >
+          When this pipeline read the row. What lets a merge pick the newest version of a
+          record the source has since changed.
+      - name: unmapped_json
+        description: >
+          JSON, or null. Anything the export sent that the raw schema does not name, kept
+          rather than dropped.
+      - name: zone_id
+        description: >
+          The zone this belongs to. Joins to dim_camera_zone.
+        tests:
+          - relationships: {to: ref('dim_camera_zone'), field: zone_id}
+      - name: zone_name
+        description: >
+          The zone's display name -- Portail, Animaux.
+      - name: span_id
+        description: >
+          Stable id built from the zone and the instant the span began, so re-reading a window
+          merges rather than duplicating.
+      - name: is_on_a_gate_zone
+        description: >
+          Whether the unreadable zone is one with a gate rule. A blind span on a gate is the
+          one that makes a portal report wrong.
+      - name: reason
+        description: >
+          Why the zone was unreadable. `night_blind` is darkness; `out_of_view` and `lost` are
+          the tracker losing the region; `state_unconfirmed` is the freshness lease expiring
+          rather than the picture going away.
+      - name: detail
+        description: >
+          Any extra explanation the camera recorded alongside the reason.
+      - name: is_lease_expiry
+        description: >
+          Whether this is the freshness lease expiring rather than a camera that could not
+          see. A timing artefact that must not be counted as vision loss.
+      - name: is_vision_loss
+        description: >
+          Whether the camera genuinely could not see -- darkness, the region out of view, an
+          unreadable picture.
+      - name: from_at
+        description: >
+          When the span began.
+      - name: to_at
+        description: >
+          When it ended, or the end of the window asked for when it had not. Read with
+          is_ongoing.
+      - name: is_ongoing
+        description: >
+          Whether the span was still open at the end of the window. True means to_at is where
+          the question stopped, not where the blindness did.
+      - name: duration_seconds
+        description: >
+          How long the zone was unreadable.
+      - name: duration_minutes
+        description: >
+          The same, in minutes, for reading rather than computing.
+      - name: from_hour
+        description: >
+          The hour the span began, truncated.
+      - name: from_hour_of_day
+        description: >
+          Hour of day the span began, 0-23, UTC.
+      - name: from_weekday
+        description: >
+          Weekday the span began, UTC.
+  - name: dim_camera_zone
+    description: >
+      The zone and rule a camera event points at. Without it the only clue that a zone is a
+      gate is that its events happen to carry rule_type 'state', which is inference from the
+      data rather than a fact about the configuration -- and it says nothing about a zone that
+      has fired no events.
+    columns:
+      - name: zone_rule_key
+        description: >
+          The grain. A zone with several rules is several rows, so neither id alone is the
+          key.
+      - name: zone_id
+        description: >
+          The zone's stable id. What fct_camera_event.zone_id points at.
+      - name: rule_id
+        description: >
+          The rule's id within the zone. What fct_camera_event.rule_id points at. Null on a
+          zone with no rules, which still appears rather than vanishing.
+      - name: camera_id
+        description: >
+          Which camera. `outdoor-camera` is Entrance, `indoor-camera` is Ferme.
+      - name: zone_name
+        description: >
+          The zone's display name.
+      - name: zone_description
+        description: >
+          The free-text note describing what the zone is for.
+      - name: zone_scope
+        description: >
+          Whether the zone covers drawn shapes or the whole frame.
+      - name: is_enabled
+        description: >
+          Whether the zone is switched on. A disabled zone fires nothing.
+      - name: zone_revision
+        description: >
+          How many times the zone has been edited. Two snapshots sharing it are the same
+          configuration.
+      - name: geometry_revision
+        description: >
+          How many times the shapes have moved, separately from the rules. A bump can explain
+          a step change in event counts that no rule change accounts for.
+      - name: anchor_count
+        description: >
+          How many calibration anchors the zone holds.
+      - name: state_reference_count
+        description: >
+          How many reference samples it judges open-versus-closed against.
+      - name: revision_count
+        description: >
+          How many past configurations the zone keeps.
+      - name: feedback_count
+        description: >
+          How many times a person has corrected what this zone concluded.
+      - name: is_calibrated
+        description: >
+          Whether the zone has any calibration anchors at all. Zero anchors is the usual
+          reason a zone's state readings are unreliable.
+      - name: has_been_corrected
+        description: >
+          Whether anybody has ever corrected this zone's conclusions -- the zones the model
+          keeps getting wrong.
+      - name: does_auto_learn_anchors
+        description: >
+          Whether the zone re-learns its calibration on its own.
+      - name: max_anchors
+        description: >
+          How many anchors the zone is allowed to keep.
+      - name: created_at
+        description: >
+          When the zone was created.
+      - name: created_by_name
+        description: >
+          Who created it. The name travels beside the hash for the same reason it does on a
+          correction.
+      - name: created_by_hash
+        description: >
+          Salted hash of whoever created it.
+      - name: updated_at
+        description: >
+          When the zone was last edited.
+      - name: updated_by_name
+        description: >
+          Who last edited it.
+      - name: updated_by_hash
+        description: >
+          Salted hash of whoever last edited it.
+      - name: rule_type
+        description: >
+          What the rule watches -- `state` for a gate, `crossing` for passages, `motion` for
+          activity.
+      - name: rule_name
+        description: >
+          The rule's display name.
+      - name: is_rule_enabled
+        description: >
+          Whether the rule is switched on, independently of the zone.
+      - name: is_gate_rule
+        description: >
+          Whether this rule watches a gate. The fact `rule_type = 'state'` was standing in for
+          before this table existed.
+      - name: does_rule_notify
+        description: >
+          Whether a match notifies, as opposed to only being recorded.
+      - name: rule_cooldown_seconds
+        description: >
+          How long the rule waits before firing again. A long cooldown is a reason a busy
+          period shows fewer events than it had activity.
+      - name: rule_sensitivity
+        description: >
+          The sensitivity band the rule runs at.
+      - name: rule_prompt
+        description: >
+          The analysis prompt the vision model is given. The only record of why a rule fires
+          as it does.
+      - name: rule_targets
+        description: >
+          Which subjects the rule looks for.
+      - name: rule_states
+        description: >
+          The states a state rule may report.
+      - name: rule_alert_on
+        description: >
+          Which transitions raise an alert rather than being recorded quietly.
+      - name: observed_on
+        description: >
+          The day this configuration was observed. Not a validity range: the camera keeps no
+          history, so this is when it was read and nothing more.
+      - name: extracted_at
+        description: >
+          When this pipeline read the row. What lets a merge pick the newest version of a
+          record the source has since changed.
