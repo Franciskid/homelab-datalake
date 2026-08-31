@@ -18,6 +18,9 @@ from pathlib import Path
 import duckdb
 import pyarrow as pa
 from dagster import (
+    AssetCheckResult,
+    AssetCheckSeverity,
+    AssetCheckSpec,
     AssetExecutionContext,
     AssetKey,
     AssetSpec,
@@ -70,6 +73,7 @@ from homelab_datalake.assets.npm_access import (
 from homelab_datalake.assets.npm_access import _SCHEMA as ACCESS_SCHEMA
 from homelab_datalake.assets.tmdb import _SCHEMA as _TMDB_SCHEMA
 from homelab_datalake.assets.tmdb import TMDB_PREFIX, tmdb_titles_raw
+from homelab_datalake.mcp import semantic
 from homelab_datalake.resources import LakeStorage
 
 # Resolved to an absolute path once, here, and written back to the environment.
@@ -248,6 +252,9 @@ def warehouse_tables(context: AssetExecutionContext, lake: LakeStorage):
         yield MaterializeResult(asset_key=AssetKey(["raw", name]), metadata=metadata)
 
 
+CHECK_SEMANTIC_COVERAGE = "semantic_layer_covers_the_marts"
+
+
 @asset(
     deps=[dbt_marts],
     group_name="warehouse",
@@ -257,6 +264,23 @@ def warehouse_tables(context: AssetExecutionContext, lake: LakeStorage):
         "on the dbt models, so a failed build never reaches readers -- they keep "
         "serving the previous copy rather than half a rebuild."
     ),
+    check_specs=[
+        AssetCheckSpec(
+            name=CHECK_SEMANTIC_COVERAGE,
+            asset="warehouse_serving",
+            description=(
+                "Fails when a mart holds a column the semantic layer neither exposes "
+                "nor declares it is leaving out. `serving.publish` already refuses a "
+                "copy where an expression no longer binds, which catches a *renamed* "
+                "column. Nothing catches an *added* one: every expression still binds, "
+                "and the new column is simply invisible to every caller. That is not "
+                "hypothetical -- fct_camera_event grew to 78 columns while the layer "
+                "went on describing a table whose finest resolution was an hour "
+                "bucket, and an agent asked for exact times read that, believed it, "
+                "and delivered something else."
+            ),
+        ),
+    ],
 )
 def warehouse_serving(context: AssetExecutionContext) -> Output[dict]:
     published = serving.publish(DUCKDB_PATH)
@@ -264,7 +288,16 @@ def warehouse_serving(context: AssetExecutionContext) -> Output[dict]:
         "published %d tables, %d rows, %.1f MB to %s",
         len(published.tables), published.rows, published.bytes_written / 1e6, published.path,
     )
-    return Output(
+
+    # Read the copy that was just published, not the build database: the question is
+    # what a caller can see, and the caller reads the serving file.
+    con = serving.connect(published.path)
+    try:
+        drifted = semantic.coverage(con)
+    finally:
+        con.close()
+
+    yield Output(
         {"tables": published.tables, "rows": published.rows},
         metadata={
             "tables": len(published.tables),
@@ -273,4 +306,22 @@ def warehouse_serving(context: AssetExecutionContext) -> Output[dict]:
             "path": MetadataValue.path(published.path),
             "published": MetadataValue.text(", ".join(published.tables)),
         },
+    )
+    yield AssetCheckResult(
+        check_name=CHECK_SEMANTIC_COVERAGE,
+        passed=not drifted,
+        severity=AssetCheckSeverity.WARN,
+        metadata={
+            "datasets_with_unexposed_columns": len(drifted),
+            "detail": MetadataValue.text(
+                "\n".join(f"{name}: {', '.join(cols)}" for name, cols in drifted.items())
+                or "every mart column is exposed or declared."
+            ),
+        },
+        description=(
+            "Add each column to the dataset in mcp/semantic.py as a dimension, a "
+            "measure or an attribute, or name it in `not_exposed` with the reason. "
+            "A column in neither list is invisible to every caller, and a caller told "
+            "the data does not exist will answer a different question instead."
+        ),
     )
