@@ -15,6 +15,14 @@ the reason people distrust generated reports. This one can be checked.
 human as "the answer is zero", which is a different claim from "no data matched".
 Rather than produce a file that misleads, the export refuses and says which range
 does hold data.
+
+**The bytes come back, not only the path.** A workbook on this host is not a
+deliverable for someone reading a chat window somewhere else; it is a file they
+cannot reach. So `write_workbook` returns what it wrote alongside where it wrote it,
+and the MCP layer hands those bytes to the client as an embedded resource. The file
+on disk stays, because a local stdio client (and anyone reading the export directory)
+still wants it, and because it is the only answer left for an export too large to
+travel.
 """
 
 from __future__ import annotations
@@ -44,6 +52,9 @@ class Deliverable:
     filename: str
     rows: int
     bytes_written: int
+    #: What was written. Held so the caller can deliver the file itself rather
+    #: than a path to it -- see the module docstring.
+    data: bytes
 
 
 class ExportError(ValueError):
@@ -135,10 +146,12 @@ def write_workbook(result, title: str, directory: str = EXPORT_DIR) -> Deliverab
     if target_dir.resolve() not in path.parents:
         raise ExportError(f"refusing to write outside {target_dir.resolve()}")
     book.save(path)
+    data = path.read_bytes()
 
     return Deliverable(
         path=str(path),
         filename=filename,
         rows=result.row_count,
-        bytes_written=path.stat().st_size,
+        bytes_written=len(data),
+        data=data,
     )
