@@ -6,9 +6,12 @@ be encoded is broken however correct the query was.
 """
 
 import asyncio
+import base64
 import json
+from io import BytesIO
 
 import pytest
+from openpyxl import load_workbook
 
 from homelab_datalake import serving
 from homelab_datalake.mcp import server as server_module
@@ -135,26 +138,89 @@ def test_describe_schema_hands_over_the_join_graph(tools):
     assert isinstance(out["edges"], list)
 
 
-def test_an_export_says_it_is_not_attached_to_the_conversation(tools, tmp_path, monkeypatch):
-    """The result reads as "here is your file" unless it says otherwise.
+def test_the_workbook_itself_comes_back_with_the_answer(tools, tmp_path, monkeypatch):
+    """The point of the whole tool: the file travels, not a path to it.
 
-    `export_workbook` writes to the datalake host. Two agent runs took a path, a
-    filename and a byte count, and told the owner the workbook was attached to a
-    chat that had no attachment in it. The correction belongs in the result rather
-    than only in the tool description: the description is read once, when the tool is
-    chosen, and this is read at the moment the answer is written.
+    A path on the datalake host is not a deliverable to somebody reading a chat on
+    another machine, and when a path was all this returned, two agent runs duly
+    reported a workbook as attached to a conversation that had no attachment in it.
+    The bytes now ride back as an MCP embedded resource, which is the standard shape
+    for exactly this and needs nothing datalake-specific at the other end.
     """
     monkeypatch.setenv("DATALAKE_EXPORT_DIR", str(tmp_path / "out"))
     monkeypatch.setattr("homelab_datalake.mcp.deliverables.EXPORT_DIR", str(tmp_path / "out"))
-    out = call(tools, "export_workbook", {
+    result = asyncio.run(tools.call_tool("export_workbook", {
         "dataset": "camera_activity", "title": "Portal events",
         "start": "2026-08-01", "end": "2026-08-20", "grain": "event",
-    })
-    assert "error" not in out, out
-    delivery = out["delivery"]
-    assert "NOT attached" in delivery
-    assert "create_excel" in delivery
-    assert out["path"] in delivery
+    }))
+
+    resources = [b for b in result.content if b.type == "resource"]
+    assert len(resources) == 1, [b.type for b in result.content]
+    blob = resources[0].resource
+
+    summary = json.loads(result.content[0].text)
+    # A host saves the file under the last segment of the URI, so that segment has to
+    # be the name -- not a directory, and not the whole path.
+    assert str(blob.uri).endswith(f"/{summary['filename']}")
+    assert blob.mime_type == server_module.XLSX_MIME
+
+    written = base64.b64decode(blob.blob)
+    assert len(written) == summary["bytes"]
+    # It is the workbook, not a description of one.
+    assert load_workbook(BytesIO(written)).sheetnames == ["Data", "About this export"]
+
+
+def test_the_bytes_are_not_shown_to_the_model(tools, tmp_path, monkeypatch):
+    """A megabyte of base64 in a text block would cost more than the answer is worth.
+
+    A host builds the model's view of a tool result out of its text blocks. Keeping
+    the file in a resource block rather than encoding it into the summary is what
+    makes attaching one free, in context terms, however large it is.
+    """
+    monkeypatch.setenv("DATALAKE_EXPORT_DIR", str(tmp_path / "out"))
+    monkeypatch.setattr("homelab_datalake.mcp.deliverables.EXPORT_DIR", str(tmp_path / "out"))
+    result = asyncio.run(tools.call_tool("export_workbook", {
+        "dataset": "camera_activity", "title": "Portal events",
+        "start": "2026-08-01", "end": "2026-08-20", "grain": "event",
+    }))
+    text = "\n".join(b.text for b in result.content if b.type == "text")
+    assert len(text) < 2_000
+    assert "blob" not in text
+
+
+def test_an_export_that_says_it_is_attached_has_something_attached(tools, tmp_path,
+                                                                   monkeypatch):
+    """The sentence the model repeats, and the block that makes it true, in one test.
+
+    These two must not be able to drift apart: a `delivery` that claims an attachment
+    with no resource block beside it is precisely the failure this tool already had
+    once, told the other way round.
+    """
+    monkeypatch.setenv("DATALAKE_EXPORT_DIR", str(tmp_path / "out"))
+    monkeypatch.setattr("homelab_datalake.mcp.deliverables.EXPORT_DIR", str(tmp_path / "out"))
+    result = asyncio.run(tools.call_tool("export_workbook", {
+        "dataset": "camera_activity", "title": "Portal events",
+        "start": "2026-08-01", "end": "2026-08-20", "grain": "event",
+    }))
+    delivery = json.loads(result.content[0].text)["delivery"]
+    assert "attached" in delivery and "NOT attached" not in delivery
+    assert any(b.type == "resource" for b in result.content)
+
+
+def test_an_export_too_large_to_travel_says_where_it_went_instead(tools, tmp_path,
+                                                                  monkeypatch):
+    """The one case where a path is the honest answer -- and it is labelled as such."""
+    monkeypatch.setenv("DATALAKE_EXPORT_DIR", str(tmp_path / "out"))
+    monkeypatch.setattr("homelab_datalake.mcp.deliverables.EXPORT_DIR", str(tmp_path / "out"))
+    monkeypatch.setattr(server_module, "ATTACHABLE_BYTES", 16)
+    result = asyncio.run(tools.call_tool("export_workbook", {
+        "dataset": "camera_activity", "title": "Portal events",
+        "start": "2026-08-01", "end": "2026-08-20", "grain": "event",
+    }))
+    summary = json.loads(result.content[0].text)
+    assert not [b for b in result.content if b.type == "resource"]
+    assert "NOT attached" in summary["delivery"]
+    assert summary["path"] in summary["delivery"]
 
 
 def test_a_boolean_dimension_can_be_filtered_with_a_boolean(tools):

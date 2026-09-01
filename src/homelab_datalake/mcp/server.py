@@ -16,13 +16,16 @@ it the real values turns a plausible wrong answer into a correct one.
 
 from __future__ import annotations
 
+import base64
 import os
+from pathlib import Path
 from typing import Annotated, Any
 from urllib.parse import urlparse
 
 from mcp.server.auth.settings import AuthSettings
 from mcp.server.mcpserver import MCPServer
 from mcp.server.transport_security import TransportSecuritySettings
+from mcp.types import BlobResourceContents, ContentBlock, EmbeddedResource
 from pydantic import Field
 
 from homelab_datalake.api import relations
@@ -439,22 +442,54 @@ def media_library(
 
 # --- the deliverable ----------------------------------------------------------
 
+XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+# Above this a workbook is not sent inline. Ten megabytes is what the ai.example
+# platform stores for one generated file, and there is nothing to gain by pushing a
+# larger payload through a gateway that will only refuse it at the other end. An
+# export that big is also one nobody opens in a chat window.
+ATTACHABLE_BYTES = 10 * 1024 * 1024
+
+
+def _as_attachment(written) -> EmbeddedResource:
+    """The workbook itself, as an MCP embedded resource.
+
+    This is the whole reason `export_workbook` is worth calling from a chat. A path is
+    not a deliverable to somebody reading a conversation on another machine; the file
+    is. MCP has a shape for exactly this, so the bytes ride back with the answer and a
+    host that knows what to do with a resource block does it -- no download endpoint,
+    no signed URL, no second round trip, and nothing datalake-specific for the host to
+    have learned.
+
+    The base64 never reaches a model: a host reads text blocks for that, and this is
+    not one.
+    """
+    return EmbeddedResource(
+        type="resource",
+        resource=BlobResourceContents(
+            # The real path, so the URI is a true statement about where this came
+            # from -- and its last segment is the filename a host will save it under.
+            uri=Path(written.path).as_uri(),
+            mimeType=XLSX_MIME,
+            blob=base64.b64encode(written.data).decode("ascii"),
+        ),
+    )
+
 
 @server.tool(
     description=(
-        "Run a query and write the result as a formatted Excel workbook, returning the "
-        "file path on the datalake host.\n\n"
-        "IMPORTANT: this does NOT attach anything to a conversation. The workbook is "
-        "written to the datalake's own export directory, where the owner has to go and "
-        "fetch it. If somebody asked for a spreadsheet in the chat, query the rows at "
-        "grain='event' and pass them to create_excel instead, which attaches. Use this "
-        "tool when the export is too large for that (create_excel takes 2000 rows a "
-        "sheet) or when the file is wanted on the host rather than in the chat -- and "
-        "when you do, say where it was written rather than calling it attached.\n\n"
+        "Run a query and hand back the result as a formatted Excel workbook.\n\n"
+        "The file itself comes back with the answer, so a client that can take delivery "
+        "of a file (the ai.example platform does) puts it in front of the person who "
+        "asked. Say the workbook is attached; do not read them a file path. This is the "
+        "tool for a spreadsheet of any real size -- it carries far more rows than "
+        "create_excel, and the rows never pass through the conversation.\n\n"
         "The workbook carries a second sheet recording the dataset, range, grain and "
         "the exact query used, so the figures can be checked later. An empty result is "
         "refused rather than exported, because a sheet with no rows reads as 'zero'. "
-        "Parameters are the same as the dataset tools."
+        "Read `delivery` in the result before writing your answer: an export too large "
+        "to travel says so there, and is on the datalake host instead. Parameters are "
+        "the same as the dataset tools."
     )
 )
 def export_workbook(
@@ -464,7 +499,7 @@ def export_workbook(
     measures: Measures = None, fields: Fields = None, filters: Filters = None,
     order_by: OrderBy = None, descending: Descending = None,
     limit: ExportLimit = None,
-) -> dict:
+) -> list[dict[str, Any] | ContentBlock]:
     try:
         with _warehouse.cursor() as cursor:
             result = q.run_query(
@@ -473,34 +508,43 @@ def export_workbook(
                 descending=descending, limit=limit, ceiling=q.MAX_EXPORT_ROWS,
             )
     except (q.QueryError, KeyError, FileNotFoundError) as error:
-        return _describe_error(error)
+        return [_describe_error(error)]
 
     try:
         written = write_workbook(result, title)
     except ExportError as error:
-        return {"error": str(error), "notes": result.notes, "row_count": result.row_count}
+        return [{"error": str(error), "notes": result.notes, "row_count": result.row_count}]
 
-    return {
-        "path": written.path,
+    summary: dict[str, Any] = {
         "filename": written.filename,
         "rows": written.rows,
         "bytes": written.bytes_written,
         "dataset": result.dataset,
         "range": {"start": result.start, "end": result.end},
+        "path": written.path,
         # Said in the result and not only in the tool description, because the
         # description is read once when the tool is chosen and this is read at the
         # moment the answer is written. A path, a filename and a byte count read as
-        # "here is your file", and two agent runs duly reported a workbook as
-        # attached to a conversation that had no attachment in it.
+        # "here is your file", and when that was all this returned, two agent runs
+        # duly reported a workbook as attached to a conversation that had no
+        # attachment in it.
         "delivery": (
-            f"Written to {written.path} on the datalake host. This is NOT attached to "
-            "the conversation and the person you are answering cannot open it from "
-            "there. Say where it was written -- or, if they wanted it in the chat, "
-            "fetch the rows at grain='event' and pass them to create_excel, which "
-            "attaches."
+            f"{written.filename} travels with this result and the client has it. "
+            "Tell the person it is attached. Do not read them the path -- it names a "
+            "directory on the datalake host that they cannot open."
         ),
         "notes": result.notes,
     }
+    if written.bytes_written > ATTACHABLE_BYTES:
+        summary["delivery"] = (
+            f"NOT attached: {written.bytes_written} bytes is over the "
+            f"{ATTACHABLE_BYTES} a client will take. The workbook is on the datalake "
+            f"host at {written.path}. Say where it was written, or export a narrower "
+            "range or fewer fields so it can travel."
+        )
+        return [summary]
+
+    return [summary, _as_attachment(written)]
 
 
 def main() -> None:
