@@ -155,3 +155,40 @@ def test_an_export_says_it_is_not_attached_to_the_conversation(tools, tmp_path, 
     assert "NOT attached" in delivery
     assert "create_excel" in delivery
     assert out["path"] in delivery
+
+
+def test_a_boolean_dimension_can_be_filtered_with_a_boolean(tools):
+    """The schema must accept the values describe_dataset advertises.
+
+    `state_changed` is reported as `[false, true]`. Declaring filters as
+    `dict[str, list[str]]` meant filtering on `true` was refused before it reached
+    the query layer -- "Input validation error: True is not of type 'string'". An
+    agent that hit that could not tell what was wrong, concluded its range was too
+    wide, and split one correct query into thirty until it ran out of steps.
+    """
+    booleans = call(tools, "camera_activity", {
+        "start": "2026-08-01", "end": "2026-08-20", "grain": "event",
+        "fields": ["happened_at", "zone_state"],
+        "filters": {"state_changed": [True]},
+    })
+    assert "error" not in booleans, booleans
+    assert booleans["row_count"] > 0
+
+    # The string form keeps working, because DuckDB coerces it and because a caller
+    # that learned the old shape should not break.
+    strings = call(tools, "camera_activity", {
+        "start": "2026-08-01", "end": "2026-08-20", "grain": "event",
+        "fields": ["happened_at", "zone_state"],
+        "filters": {"state_changed": ["true"]},
+    })
+    assert strings["row_count"] == booleans["row_count"]
+
+
+def test_a_numeric_dimension_can_be_filtered_with_a_number(tools):
+    payload = call(tools, "camera_activity", {
+        "start": "2026-08-01", "end": "2026-08-20", "grain": "total",
+        "dimensions": ["started_hour_of_day"], "measures": ["events"],
+        "filters": {"started_hour_of_day": [7, 8]},
+    })
+    assert "error" not in payload, payload
+    assert {row["started_hour_of_day"] for row in payload["rows"]} <= {7, 8}
