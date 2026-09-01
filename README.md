@@ -170,9 +170,17 @@ llm_spend        spend, tokens, latency, failures — by model, provider, worklo
 web_traffic      requests, visitors, error rates, geography — by host, status, client
 camera_activity  events, confirmations, confidence — by camera, zone, hour of day
 media_library    titles, runtime, resolution, ratings — one snapshot, never summed
-export_workbook  any of the above, as .xlsx with a provenance sheet
+export_workbook  any of the above, as an .xlsx handed back with the answer
 list_datasets / describe_dataset   what exists, and what values each dimension takes
 ```
+
+**A workbook is handed over, not pointed at.** `export_workbook` returns the .xlsx
+itself, as an MCP embedded resource, alongside the summary — so a client that can take
+delivery of a file puts it in front of the person who asked. It used to return a path,
+which to a model reads as "here is your file": two agent runs duly reported a workbook
+as attached to a conversation that had nothing attached to it. The file is still written
+to the export directory, for a local client and for an export too large to travel, and
+in that second case `delivery` says plainly that it did not.
 
 **What stops a model running a cartesian join at 3am.** There are no joins to ask for —
 a question addresses exactly one mart. Beyond that: a row cap applied as `LIMIT` so rows
