@@ -308,11 +308,19 @@ Fields = Annotated[
     )),
 ]
 Filters = Annotated[
-    dict[str, list[str]] | None,
+    # Not `list[str]`. Half the dimensions on these datasets are booleans, and
+    # describe_dataset reports their values as `[false, true]` -- so a caller that
+    # read the description and filtered `state_changed: [true]` was told
+    # "Input validation error: True is not of type 'string'". One did, could not tell
+    # what had gone wrong, decided its query must have been too large, and split it
+    # into thirty day-sized queries until it ran out of steps. A schema that refuses
+    # the values its own documentation advertises is worse than an undocumented one.
+    dict[str, list[str | bool | int | float | None]] | None,
     Field(description=(
-        "Restrict to given values, as {dimension: [values]}. Values must match "
-        "exactly -- call describe_dataset to see them. null in the list matches rows "
-        "where the dimension is null."
+        "Restrict to given values, as {dimension: [values]}. Use the value's own "
+        "type: true rather than \"true\" for a boolean dimension, a number for a "
+        "numeric one. Values must match exactly -- call describe_dataset to see "
+        "them. null in the list matches rows where the dimension is null."
     )),
 ]
 OrderBy = Annotated[
