@@ -342,3 +342,39 @@ def test_the_counts_that_reproduce_the_alerts_graph_are_measures(con):
                        measures=["people", "vehicles", "animals", "objects"], **AUGUST)
     assert result.row_count > 0
     assert all(row["objects"] >= row["people"] for row in result.rows)
+
+
+def test_a_complete_listing_says_it_is_complete(con):
+    """Silence is not an answer a careful reader can act on.
+
+    An agent made the right whole-month query, got every row, and then re-queried it
+    in weeks and then in days -- thirty calls -- because nothing in the result said
+    it was finished. It ran out of steps before writing anything. Truncation had a
+    note; completeness did not.
+    """
+    result = run_query(con, "camera_activity", grain="event",
+                       fields=["happened_at"], **AUGUST)
+    assert not result.truncated
+    note = next(n for n in result.notes if n.startswith("COMPLETE"))
+    assert str(result.row_count) in note
+    assert "re-query" in note
+
+
+def test_the_two_notes_are_never_both_present(con):
+    """One says stop looking and the other says keep looking."""
+    for limit in (5, None):
+        result = run_query(con, "camera_activity", grain="event",
+                           fields=["happened_at"], limit=limit, **AUGUST)
+        complete = [n for n in result.notes if n.startswith("COMPLETE")]
+        incomplete = [n for n in result.notes if n.startswith("INCOMPLETE")]
+        assert not (complete and incomplete)
+        assert bool(incomplete) == result.truncated
+
+
+def test_an_empty_listing_is_not_called_complete(con):
+    """"No rows matched" already says what happened; "all 0 records are here" does not."""
+    result = run_query(con, "camera_activity", grain="event", fields=["happened_at"],
+                       filters={"camera_id": ["nothing-by-this-name"]}, **AUGUST)
+    assert result.row_count == 0
+    assert not any(n.startswith("COMPLETE") for n in result.notes)
+    assert any("empty result" in n for n in result.notes)

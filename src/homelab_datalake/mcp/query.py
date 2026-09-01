@@ -445,6 +445,20 @@ def run_query(
     elapsed = (time.perf_counter() - began) * 1000
 
     truncated = len(raw) > limit
+    if records and not truncated and raw:
+        # The other half of the truncation note, and it earns its place.
+        #
+        # A cut-off listing shouts; a complete one used to say nothing, and an agent
+        # reading "[count withheld] rows, cap 5000" has to *infer* that it has them all. One did
+        # not: it made the correct whole-month query, then re-queried in weeks, then
+        # in days, thirty calls in all, and ran out of steps before writing anything.
+        # Nothing was wrong with the data. The result simply never said it was
+        # finished, and silence is not an answer a careful reader can act on.
+        notes.append(
+            f"COMPLETE: all {len(raw)} matching records are here, and the cap of "
+            f"{limit} was not reached. Do not re-query narrower windows to check -- "
+            "this is the whole set, and splitting it up returns the same rows again."
+        )
     if truncated:
         raw = raw[:limit]
         if records:
