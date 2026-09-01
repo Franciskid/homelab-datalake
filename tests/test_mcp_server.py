@@ -133,3 +133,25 @@ def test_describe_schema_hands_over_the_join_graph(tools):
     # without one must still get a usable answer rather than an error.
     assert isinstance(out["tables"], list)
     assert isinstance(out["edges"], list)
+
+
+def test_an_export_says_it_is_not_attached_to_the_conversation(tools, tmp_path, monkeypatch):
+    """The result reads as "here is your file" unless it says otherwise.
+
+    `export_workbook` writes to the datalake host. Two agent runs took a path, a
+    filename and a byte count, and told the owner the workbook was attached to a
+    chat that had no attachment in it. The correction belongs in the result rather
+    than only in the tool description: the description is read once, when the tool is
+    chosen, and this is read at the moment the answer is written.
+    """
+    monkeypatch.setenv("DATALAKE_EXPORT_DIR", str(tmp_path / "out"))
+    monkeypatch.setattr("homelab_datalake.mcp.deliverables.EXPORT_DIR", str(tmp_path / "out"))
+    out = call(tools, "export_workbook", {
+        "dataset": "camera_activity", "title": "Portal events",
+        "start": "2026-08-01", "end": "2026-08-20", "grain": "event",
+    })
+    assert "error" not in out, out
+    delivery = out["delivery"]
+    assert "NOT attached" in delivery
+    assert "create_excel" in delivery
+    assert out["path"] in delivery

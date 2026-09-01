@@ -435,10 +435,18 @@ def media_library(
 @server.tool(
     description=(
         "Run a query and write the result as a formatted Excel workbook, returning the "
-        "file path. The workbook carries a second sheet recording the dataset, range, "
-        "grain and the exact query used, so the figures can be checked later. An empty "
-        "result is refused rather than exported, because a sheet with no rows reads as "
-        "'zero'. Parameters are the same as the dataset tools."
+        "file path on the datalake host.\n\n"
+        "IMPORTANT: this does NOT attach anything to a conversation. The workbook is "
+        "written to the datalake's own export directory, where the owner has to go and "
+        "fetch it. If somebody asked for a spreadsheet in the chat, query the rows at "
+        "grain='event' and pass them to create_excel instead, which attaches. Use this "
+        "tool when the export is too large for that (create_excel takes 2000 rows a "
+        "sheet) or when the file is wanted on the host rather than in the chat -- and "
+        "when you do, say where it was written rather than calling it attached.\n\n"
+        "The workbook carries a second sheet recording the dataset, range, grain and "
+        "the exact query used, so the figures can be checked later. An empty result is "
+        "refused rather than exported, because a sheet with no rows reads as 'zero'. "
+        "Parameters are the same as the dataset tools."
     )
 )
 def export_workbook(
@@ -471,6 +479,18 @@ def export_workbook(
         "bytes": written.bytes_written,
         "dataset": result.dataset,
         "range": {"start": result.start, "end": result.end},
+        # Said in the result and not only in the tool description, because the
+        # description is read once when the tool is chosen and this is read at the
+        # moment the answer is written. A path, a filename and a byte count read as
+        # "here is your file", and two agent runs duly reported a workbook as
+        # attached to a conversation that had no attachment in it.
+        "delivery": (
+            f"Written to {written.path} on the datalake host. This is NOT attached to "
+            "the conversation and the person you are answering cannot open it from "
+            "there. Say where it was written -- or, if they wanted it in the chat, "
+            "fetch the rows at grain='event' and pass them to create_excel, which "
+            "attaches."
+        ),
         "notes": result.notes,
     }
 
