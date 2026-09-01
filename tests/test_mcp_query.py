@@ -378,3 +378,24 @@ def test_an_empty_listing_is_not_called_complete(con):
     assert result.row_count == 0
     assert not any(n.startswith("COMPLETE") for n in result.notes)
     assert any("empty result" in n for n in result.notes)
+
+
+def test_the_notes_survive_a_host_that_clips_the_result(con):
+    """Everything that says how to read the answer comes before the answer.
+
+    The host caps a tool result at a character budget and appends its own advice to
+    narrow the request. With `notes` serialised last, that cap removed the sentence
+    saying the listing was complete and left the advice to split it up -- and an
+    agent split one correct query into thirty.
+    """
+    import json
+
+    result = run_query(con, "camera_activity", grain="event",
+                       fields=["happened_at", "zone_name", "summary"], **AUGUST)
+    payload = json.dumps(result.as_dict(), indent=2)
+    assert len(payload) > 8_000, "not a big enough result to be worth the test"
+    # Whatever the budget, the notes are in the first slice of it.
+    assert "COMPLETE" in payload[:2_000]
+    assert payload.index('"notes"') < payload.index('"rows"')
+    assert payload.index('"row_count"') < payload.index('"rows"')
+    assert payload.index('"rows"') < payload.index('"sql"')
