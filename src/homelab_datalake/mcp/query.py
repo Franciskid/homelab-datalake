@@ -78,17 +78,31 @@ class QueryResult:
     notes: list[str] = field(default_factory=list)
 
     def as_dict(self) -> dict:
+        # Order matters here, which is not a thing one usually says about a JSON
+        # object. The host clips a tool result at a character budget and appends its
+        # own "the result was too large -- call again with a narrower request". With
+        # `notes` last, that budget ate the notes first: a listing that said
+        # "COMPLETE: all 111 records are here, do not re-query narrower windows"
+        # arrived as rows with the sentence missing and the host's advice attached.
+        # An agent duly split one correct month-wide query into thirty day-sized
+        # ones and ran out of steps.
+        #
+        # So everything that says how to read the answer goes before the answer. If
+        # anything is lost to a cap it should be the tail of the rows, which the
+        # reader can already see is a tail -- never the sentence explaining them.
         return {
             "dataset": self.dataset,
-            "columns": self.columns,
-            "rows": self.rows,
+            "notes": self.notes,
             "row_count": self.row_count,
             "truncated": self.truncated,
             "grain": self.grain,
             "range": {"start": self.start, "end": self.end},
-            "sql": self.sql,
+            "columns": self.columns,
             "elapsed_ms": round(self.elapsed_ms, 1),
-            "notes": self.notes,
+            "rows": self.rows,
+            # Last on purpose: it is the longest field and the least useful one to a
+            # reader who has the rows.
+            "sql": self.sql,
         }
 
 
