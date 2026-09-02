@@ -452,6 +452,12 @@ ssh ssh.fraserv.fr 'docker exec postgresql_postgres_1 psql -U postgres -c "\l+"'
 grant that names its tables is a grant that cannot quietly widen when someone adds a table full
 of prompts next month.
 
+**A second, unrelated role lives on the same container:** Dagster's own run/event-log/schedule
+storage (`dagster.yaml`) needs a database it can write to, which `datalake_ro` deliberately
+cannot do. Provisioning SQL and the reasoning for moving off SQLite are in
+[docs/DAGSTER_POSTGRES_STORAGE.md](docs/DAGSTER_POSTGRES_STORAGE.md), not here — this section
+stays about the read-only ledger role.
+
 ### Keycloak
 
 26.7.2, realm `homelab`, discovery returns 200 at

@@ -8,6 +8,20 @@ dependencies = [
     "dagster-webserver>=1.9",
     "dagster-duckdb>=0.25",
     "dagster-dbt>=0.25",
+    # The run/event-log/schedule storage classes dagster.yaml points at. Without
+    # this installed, the webserver and daemon fail to start: dagster.yaml names
+    # dagster_postgres.run_storage.PostgresRunStorage etc, and there is nothing
+    # else in this dependency list that provides that module.
+    #
+    # Pinned exactly, unlike its neighbours, and that is load-bearing. Every
+    # dagster-postgres release pins `dagster==<one exact version>` -- 0.29.20
+    # pins dagster==1.13.20, which is what this image already runs and what the
+    # ai_automations code location pins on the other side of the gRPC link. A
+    # floating `>=` here would let a resolver pick the newest dagster-postgres
+    # and drag dagster up with it, silently breaking that version match, since
+    # this file only asks for `dagster>=1.9`. Bump this and the dagster pins in
+    # apps/dagster-automations/ together, or not at all.
+    "dagster-postgres==0.29.20",
     "dbt-core>=1.9",
     "dbt-duckdb>=1.9",
     "duckdb>=1.1",
