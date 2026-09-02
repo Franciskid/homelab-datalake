@@ -1,0 +1,74 @@
+# Mounted read-only into dagster-webserver and dagster-daemon at
+# $DAGSTER_HOME/dagster.yaml. See docker-compose.yml.
+#
+# Before this file existed, DAGSTER_HOME had no dagster.yaml at all, so both
+# containers ran on Dagster's built-in defaults: run history in
+# history/runs.db, schedule state in schedules/schedules.db, both SQLite.
+# SQLite there is a single-process/development-mode choice, not a
+# multi-writer database -- and workspace.yaml (see that file) now loads a
+# second code location, ai_automations, served by its own container. When
+# dagster-daemon launches one of that location's jobs, the run and event
+# writes happen from a subprocess inside THAT container, not this one, so
+# two separate processes are writing run/event data concurrently. SQLite
+# does not support that; Postgres does, which is why all three stores below
+# move there together.
+#
+# run_storage, event_log_storage and schedule_storage all point at the SAME
+# database (DAGSTER_PG_DB), on purpose: Dagster's Postgres storage classes
+# each own a disjoint set of tables in one schema (runs/run_tags/... for
+# run_storage, event_logs/... for event_log_storage, jobs/instigators/...
+# for schedule_storage), and one shared database is what Dagster's own docs
+# assume for this shape -- splitting them across separate databases buys
+# nothing and only adds connections to manage.
+#
+# Every value below is env-var indirection (`env:`), never a literal, so no
+# credential is ever committed here. See .env.example for
+# DAGSTER_PG_HOST/PORT/DB/USER/PASSWORD and docs/ for the one-time database
+# provisioning this depends on.
+run_storage:
+  module: dagster_postgres.run_storage
+  class: PostgresRunStorage
+  config:
+    postgres_db:
+      username:
+        env: DAGSTER_PG_USER
+      password:
+        env: DAGSTER_PG_PASSWORD
+      hostname:
+        env: DAGSTER_PG_HOST
+      db_name:
+        env: DAGSTER_PG_DB
+      port:
+        env: DAGSTER_PG_PORT
+
+event_log_storage:
+  module: dagster_postgres.event_log
+  class: PostgresEventLogStorage
+  config:
+    postgres_db:
+      username:
+        env: DAGSTER_PG_USER
+      password:
+        env: DAGSTER_PG_PASSWORD
+      hostname:
+        env: DAGSTER_PG_HOST
+      db_name:
+        env: DAGSTER_PG_DB
+      port:
+        env: DAGSTER_PG_PORT
+
+schedule_storage:
+  module: dagster_postgres.schedule_storage
+  class: PostgresScheduleStorage
+  config:
+    postgres_db:
+      username:
+        env: DAGSTER_PG_USER
+      password:
+        env: DAGSTER_PG_PASSWORD
+      hostname:
+        env: DAGSTER_PG_HOST
+      db_name:
+        env: DAGSTER_PG_DB
+      port:
+        env: DAGSTER_PG_PORT

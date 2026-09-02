@@ -10,6 +10,33 @@ services:
     container_name: datalake-webserver
     restart: unless-stopped
     env_file: [.env]
+    # Dagster's run/event-log/schedule storage now lives in the shared Postgres
+    # rather than its default SQLite -- see dagster.yaml for why.
+    #
+    # This container is the only one that holds pooled connections OPEN. The
+    # webserver calls optimize_for_webserver(), which swaps each of the three
+    # storage classes' default NullPool for a real pool of pool_size=1 plus
+    # max_overflow. Stock max_overflow is 20, so the default behaviour is up to
+    # 3 x 21 = 63 connections from this one container -- against a server-wide
+    # max_connections of 100 that keycloak, banking-tracker, ai_platform and
+    # litellm all draw on too. 5 caps it at 3 x 6 = 18, ample for a UI with one
+    # user. The dagster_rw role additionally carries a hard CONNECTION LIMIT of
+    # 40 in Postgres: this flag is the polite limit, that one cannot be bypassed
+    # by any config change made here.
+    #
+    # Compose replaces a command wholesale rather than appending to it, so naming
+    # one flag means restating the image's own CMD (-h/-p/-m) around it. This
+    # container had no `command:` at all before this change.
+    command:
+      - dagster-webserver
+      - -h
+      - "0.0.0.0"
+      - -p
+      - "3000"
+      - -m
+      - homelab_datalake.definitions
+      - --db-pool-max-overflow
+      - "5"
     # No published port on purpose. Nginx Proxy Manager joins this network and
     # reaches the UI by container name, so Dagster -- which has no authentication of
     # its own -- is not listening anywhere an unauthenticated caller can reach.
@@ -26,6 +53,19 @@ services:
     volumes:
       - dagster_home:/dagster_home
       - warehouse:/warehouse
+      # dagster.yaml is Dagster's own instance config file. It takes no flag and is
+      # auto-discovered at $DAGSTER_HOME/dagster.yaml, so it has to land inside the
+      # dagster_home volume's path rather than beside the code -- hence a bind mount
+      # layered over the volume mount above.
+      #
+      # Deliberately per-service, and deliberately NOT written into the volume
+      # itself: datalake-api and datalake-mcp mount the same dagster_home volume and
+      # never open a DagsterInstance, so leaving the file out of the volume is what
+      # keeps this change invisible to them.
+      #
+      # Read-only, because nothing running in this container should be able to
+      # rewrite its own storage configuration.
+      - ./dagster.yaml:/dagster_home/dagster.yaml:ro
       # NPM's live log volume, READ-ONLY. A pipeline able to corrupt the reverse
       # proxy's logs is a pipeline able to take every service on the box offline.
       - ${PRIMARY_LOG_DIR:-/srv/npm/data/logs}:/logs/primary:ro
@@ -167,6 +207,19 @@ services:
     volumes:
       - dagster_home:/dagster_home
       - warehouse:/warehouse
+      # dagster.yaml is Dagster's own instance config file. It takes no flag and is
+      # auto-discovered at $DAGSTER_HOME/dagster.yaml, so it has to land inside the
+      # dagster_home volume's path rather than beside the code -- hence a bind mount
+      # layered over the volume mount above.
+      #
+      # Deliberately per-service, and deliberately NOT written into the volume
+      # itself: datalake-api and datalake-mcp mount the same dagster_home volume and
+      # never open a DagsterInstance, so leaving the file out of the volume is what
+      # keeps this change invisible to them.
+      #
+      # Read-only, because nothing running in this container should be able to
+      # rewrite its own storage configuration.
+      - ./dagster.yaml:/dagster_home/dagster.yaml:ro
       - ${PRIMARY_LOG_DIR:-/srv/npm/data/logs}:/logs/primary:ro
       - geoip:/geoip:ro
 

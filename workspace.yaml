@@ -1,0 +1,40 @@
+# Mounted read-only into dagster-webserver and dagster-daemon at
+# /app/workspace.yaml (this project's WORKDIR, per the Dockerfile) and passed to
+# both explicitly with `-w /app/workspace.yaml` -- unlike dagster.yaml, Dagster
+# does not auto-discover a workspace file, so both commands must name this path.
+# See docker-compose.yml. Both containers must read the SAME physical file --
+# not two independently maintained copies -- so they never disagree about
+# what locations exist.
+#
+# Before this file existed, both containers loaded exactly one code location
+# by module (`-m homelab_datalake.definitions`), which is all `-m` can ever
+# express. Dagster does not support passing `-m` twice, so a second location
+# needs a workspace file, not a second flag.
+load_from:
+  # This project's own location, unchanged in substance -- still the same
+  # module, still loaded IN-PROCESS by whichever container reads this file
+  # (no gRPC involved for this entry, so no version-skew risk from it).
+  #
+  # No `attribute:` here: src/homelab_datalake/definitions.py defines
+  # exactly one top-level Definitions object (`defs`), the same one
+  # `-m homelab_datalake.definitions` already resolves today, and
+  # python_module resolves that the same way `-m` does.
+  - python_module:
+      module_name: homelab_datalake.definitions
+
+  # ai_automations (ai-platform repo, apps/dagster-automations/),
+  # served over gRPC by its own container joined to primary_reseau under the
+  # fixed name `ai-automations` -- see docker-compose.yml's networks. Port
+  # 4000 is that container's `dagster api grpc` port; if either the name or
+  # the port changes on that side, this entry must change with it.
+  #
+  # gRPC means this entry, unlike the one above, IS exposed to version skew:
+  # the daemon/webserver talk to this location using Dagster's own internal
+  # serialization for job/op/run snapshots, which is not guaranteed stable
+  # across Dagster versions. ai_automations pins dagster==1.13.20 exactly for
+  # this reason; this repo's own installed version must be kept in step with
+  # it (currently also 1.13.20).
+  - grpc_server:
+      host: ai-automations
+      port: 4000
+      location_name: ai_automations
