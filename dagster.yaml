@@ -1,3 +1,19 @@
+# Dagster phones home by default. Turn that off -- and note this is not only a
+# privacy preference, it is load-bearing for the ai_automations code location.
+#
+# The instance settings here travel to a run worker inside the InstanceRef the
+# daemon hands it over gRPC. That worker for an ai_automations job runs in the
+# `ai-automations` container, which is `read_only: true`, and Dagster's
+# telemetry writes an instance id under $HOME/.dagster BEFORE doing anything
+# else. With telemetry on, every automation run there died with
+# "OSError: [Errno 30] Read-only file system: '/home/dagster/.dagster'" -- and
+# reported as a bare GeneratorExit on the step, which points nowhere near the
+# cause. `_get_instance_telemetry_info` only touches the filesystem when
+# telemetry is enabled, so switching it off removes the write entirely rather
+# than papering over it with a writable mount.
+telemetry:
+  enabled: false
+
 # Mounted read-only into dagster-webserver and dagster-daemon at
 # $DAGSTER_HOME/dagster.yaml. See docker-compose.yml.
 #
