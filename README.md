@@ -1,174 +1,173 @@
 # Homelab Datalake
 
-This is where I bring together the data my homelab applications produce. It
-keeps a longer history of web traffic, AI usage, camera activity, and my media
-library, then turns those records into tables I can query and compare.
+Homelab Datalake is where I bring together the records my self-hosted applications
+produce. It keeps a history of web traffic, AI usage, camera activity, and my
+media library, then turns that history into tables I can ask questions about.
 
-I use it to answer questions such as “Which applications used the most AI this
-month?”, “When was the gate busiest?”, or “How has my film library changed?”
-The source applications keep doing their own jobs. The datalake collects their
-records and gives me a consistent place to work with them.
+I built it to understand what my homelab is doing over time: which applications
+use the most AI, when camera activity changes, and how my film library grows.
+Dagster runs the work and shows which steps succeeded, failed, or need a retry.
 
-Homelab AI can read this data through MCP tools or its Data workspace. Dagster,
-which runs the data pipelines, also hosts the AI platform's automation jobs.
+This repository shares the pipeline code, data models, and tests. It uses example
+configuration and synthetic fixtures. My live data and deployment configuration
+remain private. All 93 original commits are retained individually, with private
+references sanitized in each commit.
 
-## What comes into it
+## A look at the project
 
-| Source | What is collected | What I can learn from it |
-| --- | --- | --- |
-| Nginx Proxy Manager | Requests from the mounted reverse-proxy logs. | Traffic by application, response status, visitors, and patterns over time. |
-| LiteLLM | Model-call and spend records. | Which models and callers consume tokens, what requests cost, and how long they take. |
-| Homelab Camera | Structured camera events, analysis, and related activity records from its export API. | Camera activity, passage counts, state changes, and observation coverage. |
-| Jellyfin | Library snapshots and the metadata attached to titles. | What is in the library and how its composition changes. |
-| TMDB and MaxMind, when configured | Additional film metadata and network/geographic enrichment. | Extra context for media and traffic analysis. |
+![Dagster demo: run the pipeline, browse lake folders, inspect a table and its checks](demo.gif)
 
-The datalake works with records and metadata. Camera recordings stay with the
-camera application, and media files stay with Jellyfin.
+This is a screen recording of the running app with synthetic web traffic. It
+shows the dependencies, launching a job, its execution and successful finish,
+then browsing lake folders, a published table, its SQL, and passing checks.
+Pauses are shortened. [Watch the MP4](demo.mp4) or
+[follow the recording](docs/WALKTHROUGH.md).
 
-## How the data moves
+## What I use it for
 
-```mermaid
-flowchart TD
-    NPM["Nginx Proxy Manager · access logs"] --> Collect["Source collectors"]
-    LLM["LiteLLM · usage ledger"] --> Collect
-    Camera["Camera app · structured exports"] --> Collect
-    Jellyfin["Jellyfin · library snapshots"] --> Collect
-    Collect --> Privacy["Parse, validate and apply privacy rules"]
-    Privacy --> Raw["MinIO / Parquet · landed records"]
-    Raw --> Curated["Cleaned and enriched tables"]
-    Curated --> Warehouse["DuckDB and dbt · facts and summaries"]
-    Warehouse --> Checks["Data checks"]
-    Checks --> Serving["Published tables for readers"]
-    Serving --> MCP["MCP tools"]
-    Raw --> API["Catalogue and SQL API"]
-    Curated --> API
-    Serving --> API
-    MCP --> AI["Homelab AI · agents and reports"]
-    API --> Data["Homelab AI · Data workspace and Python"]
-```
+- **Understanding web traffic:** which applications get requests, when errors
+  increase, and how traffic changes from one day to the next.
+- **Following AI usage:** comparing models and workloads by cost, token use,
+  and response time.
+- **Keeping camera history:** analysing events, crossings, state changes, and
+  periods when the camera was actually observing an area.
+- **Following the media library:** comparing snapshots of titles, genres, and
+  technical metadata without copying the films.
+- **Building reports:** querying the same published tables from SQL or AI tools,
+  then exporting a workbook that records where the answer came from.
 
-The stored data has three layers:
+## How records become useful answers
 
-- **Raw** keeps the records as they arrive after the required privacy filtering.
-- **Curated** holds cleaned, typed, and enriched data that can be reused.
-- **Marts** are tables prepared for questions: facts and totals about traffic,
-  model usage, camera activity, and the media library.
-
-Parquet files in MinIO hold the data. DuckDB queries and combines it. dbt defines
-the transformations and checks the resulting tables. Dagster knows which steps
-depend on which others and runs the collection and publishing jobs.
-
-## Asking questions through Homelab AI
-
-There are two interfaces because asking for a known measure and writing an
-analysis are different kinds of work.
+The collectors read each application's records. The pipeline parses them,
+checks their shape, and saves them by date. It then builds cleaned tables and
+summaries, checks the results, and publishes a database for readers.
 
 ```mermaid
 flowchart LR
-    Agent["AI agent · ask for a known dataset or measure"] --> Gateway["Homelab AI MCP gateway"]
-    Gateway --> MCP["Datalake MCP server"]
-    MCP --> Marts["Published analytical tables"]
-    MCP --> Workbook["Excel export with provenance"]
-
-    Person["Me · Data workspace"] --> Platform["Homelab AI Platform API"]
-    Python["Platform Python worker"] -->|"Controlled data relay"| Platform
-    Platform --> API["Datalake HTTP API"]
-    API --> Catalogue["Dataset catalogue and queryable tables"]
-    API --> Audit["Query audit · caller, statement and outcome"]
+    Sources["Web logs · AI usage · camera events · media library"] --> Collect["Collect and apply source-specific privacy rules"]
+    Collect --> Store["Save dated records · Parquet"]
+    Store --> Build["Build tables · DuckDB + dbt"]
+    Build --> Check["Check data quality"]
+    Check --> Publish["Publish a serving snapshot"]
+    Publish --> Answers["SQL · AI tools · reports"]
+    Dagster["Dagster · schedules, dependencies and run history"] -.-> Collect
+    Dagster -.-> Build
 ```
 
-### MCP tools
+Dagster tracks each transformation as an asset. That makes a failed step visible
+in the context of the tables that depend on it. A date partition lets me retry
+one day's collection without reloading the entire history.
 
-The MCP server offers datasets in a shared vocabulary: web traffic, model
-spend, camera activity, and the media library. A caller chooses dimensions,
-measures, filters, and a time range. The server validates those choices and
-builds the query.
+The stored data has three layers: **raw** records after source-specific
+filtering, **curated** tables with consistent types, and **marts**, which are
+facts and summaries prepared for analysis.
 
-For example, an agent can group model spending by day and model without
-inventing table names or deciding how cost should be aggregated. It can also
-discover datasets, read their descriptions, and export an Excel workbook with
-information about where the result came from. This interface is read-only and
-does not accept arbitrary SQL.
+## What data is in it
 
-### Data workspace and Python
+| Source | Records collected | An example question |
+| --- | --- | --- |
+| Nginx Proxy Manager | Requests, response codes, paths, and pseudonymous visitor identifiers | Which application had the most errors? |
+| LiteLLM | Model calls, costs, token counts, timing, and workload metadata | Where did AI spending go? |
+| Homelab Camera | Events, clip metadata, zone states, annotations, and observation coverage | When was activity highest, and was the camera observing then? |
+| Jellyfin | Library snapshots, titles, genres, people, and stream metadata | How has the library changed? |
+| TMDB and MaxMind, optional | Film information and coarse geographic/network context | How do titles or traffic compare by region? |
 
-The HTTP API supplies the catalogue and SQL queries used by the platform's
-Data workspace. It lets me inspect the underlying tables and write an analysis
-that goes beyond the predefined MCP questions.
+Camera recordings stay in the camera application, and media files stay in
+Jellyfin. This public repository contains no production records or actual
+usage totals. The local walkthrough generates web logs; the other collectors
+are exercised by synthetic unit-test fixtures.
 
-Python in the AI platform reaches that API through a controlled relay. The
-relay sends read-only queries with user attribution. The datalake's separate
-SQL API also has an explicit writable mode, gated by deployment settings;
-statement checks and audit records
-belong to the datalake rather than being reimplemented in each client.
+## How it fits into my homelab
 
-## Keeping history useful
-
-The source collectors run on schedules, followed by a job that builds and
-checks the analytical tables and publishes the results. Most collection is
-organised by day, which makes it possible to retry or rebuild a particular
-period.
-
-Camera data needs extra care because clip analysis can arrive after the event,
-and older records eventually disappear from the camera app's own store. The
-collector revisits recent periods and merges records by event identity. It
-keeps previously collected events when a later export returns fewer rows, and
-updates them when newer information is available.
-
-The model-facing tables are published as a separate DuckDB serving copy.
-Readers keep using the last successfully published snapshot while a new build
-runs. A failed build leaves that previous snapshot available, so a query can
-return older data without reading half of a rebuild. Data freshness therefore
-matters alongside the result itself.
-
-## Sharing Dagster with the AI platform
+The datalake reads from the applications without taking over their jobs. MinIO
+stores the dated files. A shared identity service controls access to the live
+interfaces. My AI platform uses the published tables to answer questions and
+produce reports.
 
 ```mermaid
 flowchart TD
-    Dagster["Shared Dagster webserver and scheduler"] --> Lake["Datalake jobs · this repository"]
-    Dagster --> AIJobs["AI automation jobs · platform repository"]
-    Lake --> Sources["Collect source records"]
-    Sources --> Build["Transform, check and publish data"]
-    AIJobs --> Platform["Homelab AI · execute saved automation steps"]
-    Platform --> Work["Tools, Python functions, files and delivery"]
-    Dagster --> History["PostgreSQL · run, event and schedule history"]
+    Apps["Self-hosted applications"] --> Lake["Homelab Datalake"]
+    Lake --> Storage["Private object storage"]
+    Identity["Shared login · Keycloak"] --> Access["Authenticated readers"]
+    Lake --> Serving["Published analytical tables"]
+    Serving --> Tools["MCP · structured tools for AI clients"]
+    Tools --> Reports["AI platform · answers and workbooks"]
+    Lake --> API["HTTP API · catalogue and SQL"]
+    Access --> Tools
+    Access --> API
 ```
 
-The datalake jobs and AI automation jobs are separate code locations in the
-same Dagster workspace. The first builds the warehouse. The second loads the
-platform's saved automations and calls back into the platform to execute their
-steps. This gives both kinds of recurring work a shared place to inspect runs
-and failures, while their application logic stays in their own projects.
+The live Dagster workspace also hosts a separate code location for my AI
+platform's automation jobs. Those jobs belong to another project. The public
+example loads only the datalake.
+
+## Keeping the history trustworthy
+
+Camera analysis can arrive after the event. The collector revisits recent days
+and merges by identity, preserving previously collected events when a later
+export contains fewer rows. Observation coverage helps distinguish a quiet
+period from a period with no camera observations.
+
+Readers use a separate DuckDB serving file. A successful build replaces that
+snapshot; a failed build leaves the previous one available. Results can therefore
+be stale after a failure, and their freshness matters.
+
+Checks cover duplicate events, date alignment, spending totals, library history,
+privacy rules, and the separation between build tables and published tables.
+These choices make the project useful beyond a dashboard: it is a repeatable
+path from application records to an answer I can inspect.
 
 ## Privacy and access
 
-Traffic ingestion removes raw client addresses before writing data to the lake.
-It keeps a keyed pseudonym, a coarse network, and a label indicating whether
-the address represented a visitor or a CDN edge. Geographic enrichment, when
-available, happens before the original address is discarded. This reduces the
-identifying information retained while keeping traffic analysis useful.
+Web-log ingestion removes the raw client address and query-string values. A
+keyed pseudonym supports visitor counts without storing that address in its
+place. Camera ingestion excludes footage and zone geometry; library ingestion
+excludes media file paths.
 
-Camera exports omit footage and zone geometry and pseudonymise creator
-identity. The datalake preserves the structured records it needs for analysis.
-Real datasets, credentials, and generated exports remain private.
+Filtering differs by source. The LiteLLM collector can retain request/response
+payloads, requester addresses, and metadata when the upstream ledger contains
+them. Raw and curated tables must remain private. Pseudonyms and coarse networks
+are not a guarantee of anonymity.
 
-People reach the Dagster interface through Keycloak login. Programmatic callers
-use Keycloak bearer tokens with the datalake query role. The platform passes
-user attribution with its service requests, and the SQL API records queries
-and refusals in its audit log.
+The live interfaces use bearer tokens and roles. MCP provides validated,
+read-only analytical tools. The SQL API has broader access and a separate,
+disabled-by-default write setting. The [sharing notes](docs/PUBLIC_RELEASE.md)
+explain what was removed for this release.
 
-## The main parts of the project
+## What it is built with
 
-| Part | Responsibility |
-| --- | --- |
-| Source collectors | Read application exports, logs, and usage records, organised into time partitions. |
-| MinIO and Parquet | Keep landed records, cleaned data, and published results. |
-| DuckDB | Query files and build the analytical warehouse. |
-| dbt | Define the transformations, table descriptions, and data checks. |
-| MCP server | Expose validated analytical questions and workbook exports to AI clients. |
-| HTTP API | Provide the catalogue, SQL access, and query audit used by the Data workspace. |
-| Dagster | Run pipelines and automations, track their dependencies, and retain execution history. |
+Python implements the collectors and interfaces. **Dagster** schedules work and
+tracks dependencies. **Parquet and MinIO** store records, **DuckDB** queries them,
+and **dbt** defines and tests the analytical tables. **Keycloak** handles identity;
+**MCP and an HTTP API** make the results available to other tools.
 
-The datalake is the shared history behind these applications. It lets a question
-start in an AI conversation, continue as a SQL or Python analysis, and end in a
-report built from the same underlying records.
+To inspect the implementation, start with [the Dagster definitions](src/homelab_datalake/definitions.py),
+[the SQL models](dbt/models), and [the tests](tests).
+
+## Try it with synthetic data
+
+Use Python 3.12 and run these commands from the repository root. Installation and
+the initial dbt package download require internet access; the generated pipeline
+does not need homelab credentials or services.
+
+```sh
+python3.12 -m venv .venv
+. .venv/bin/activate
+pip install -e '.[dev]'
+bash scripts/demo.sh
+```
+
+The script uses an isolated `.demo/` directory, generates three days of example
+web logs, runs all six date/host partitions, checks a repeat run, and builds the
+published tables. It also saves a short traffic summary locally.
+
+To explore the asset graph and run history afterward:
+
+```sh
+. scripts/demo-env.sh
+dagster dev -h 127.0.0.1 -p 3000
+```
+
+Open `http://127.0.0.1:3000`. Source schedules are stopped by default. The demo
+has synthetic web traffic; it does not simulate a connected camera or media
+server. Run `ruff check src scripts tests` and `pytest -q` for the code checks.

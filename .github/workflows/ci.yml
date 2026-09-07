@@ -1,111 +1,32 @@
 name: CI
-
-# Everything here runs against a generated synthetic seed, with no secrets and no
-# network access to the homelab. That is the point: a green run on a fork means the
-# pipeline genuinely works, not that the interesting parts were skipped.
-
 on:
   push:
-    branches: ["**"]
   pull_request:
   workflow_dispatch:
-
-env:
-  # A throwaway salt. Production's lives in .env and is never committed -- rotating it
-  # deliberately breaks visitor-count continuity, which is why it is not a constant.
-  CLIENT_IP_HASH_SALT: ci-salt-not-a-secret
-  DATALAKE_LOCAL_ROOT: .lake
-  NPM_HOSTS: primary,secondary
-  NPM_LOG_DIR_PRIMARY: seed/logs/primary
-  NPM_LOG_DIR_SECONDARY: seed/logs/secondary
-  DUCKDB_PATH: warehouse/datalake.duckdb
-  DAGSTER_HOME: /tmp/dagster_home
-  DBT_PROFILES_DIR: dbt
-
+permissions:
+  contents: read
 jobs:
-  build:
+  synthetic-pipeline:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
-          # The address guard scans every commit, not just the working tree, so it
-          # needs the whole history. A shallow clone would make it skip silently --
-          # a green check that proved nothing.
           fetch-depth: 0
-
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: '3.12'
           cache: pip
-
       - name: Install
-        run: |
-          python -m pip install --upgrade pip
-          pip install -e ".[dev]" "dbt-core>=1.9,<2" "dbt-duckdb>=1.9,<2"
-
-      - name: Resolve dbt packages and compile the manifest
-        # Before any dagster command: dagster-dbt reads the manifest to build one
-        # asset per model, so without this the code location cannot even load. The
-        # image does the same thing at build time.
-        run: cd dbt && dbt deps && dbt parse
-
+        run: pip install -e '.[dev]'
       - name: Lint
         run: ruff check src scripts tests
-
-      - name: Unit tests
+      - name: Compile the dbt asset manifest
+        run: |
+          export DBT_PROFILES_DIR="$PWD/dbt"
+          cd dbt
+          dbt deps
+          dbt parse
+      - name: Unit tests and public address guard
         run: pytest -q
-
-      - name: Generate the synthetic seed
-        run: python scripts/generate_seed.py --days 3
-
-      - name: Land every partition
-        # One run per (date, host), exactly as the schedule does in production, so CI
-        # exercises the real partitioning rather than a single-shot shortcut.
-        run: |
-          mkdir -p "$DAGSTER_HOME"
-          for day in 2026-08-25 2026-08-26 2026-08-27; do
-            for host in primary secondary; do
-              dagster asset materialize --select npm_access_raw \
-                --partition "$day|$host" -m homelab_datalake.definitions
-            done
-          done
-
-      - name: Assert a re-run replaces a partition exactly
-        # The property PLAN.md is built around, checked rather than claimed: the same
-        # inputs must produce a byte-identical object.
-        run: |
-          target=".lake/raw/npm_access/host=primary/dt=2026-08-27/data.parquet"
-          before=$(sha256sum "$target" | cut -d' ' -f1)
-          dagster asset materialize --select npm_access_raw \
-            --partition "2026-08-27|primary" -m homelab_datalake.definitions
-          after=$(sha256sum "$target" | cut -d' ' -f1)
-          echo "before=$before"
-          echo "after =$after"
-          test "$before" = "$after" || { echo "re-running a partition changed its output"; exit 1; }
-
-      - name: Build the analytics layer
-        # The whole downstream chain as one job -- load the warehouse, build and test
-        # every dbt model, publish the serving copy -- which is exactly what runs
-        # nightly in production. Running the same job here rather than a hand-written
-        # sequence of steps means CI cannot drift from what is actually scheduled.
-        #
-        # dbt's tests are the point of this step: reject rate, partition alignment,
-        # and the assertion that no raw address reached the fact table.
-        run: dagster job execute -j analytics_daily -m homelab_datalake.definitions
-
-      - name: Assert the serving copy holds only the marts
-        # The serving file is what the MCP layer reads. It must contain the marts and
-        # nothing else -- a raw or staging table in there would be a privacy boundary
-        # that exists only in intention.
-        run: |
-          python - <<'CHECK'
-          import duckdb
-          con = duckdb.connect("warehouse/serving.duckdb", read_only=True)
-          schemas = {s for (s,) in con.execute(
-              "SELECT DISTINCT schema_name FROM duckdb_tables()").fetchall()}
-          tables = con.execute(
-              "SELECT count(*) FROM duckdb_tables()").fetchone()[0]
-          print("schemas:", sorted(schemas), "tables:", tables)
-          assert schemas == {"marts"}, f"serving copy exposes more than the marts: {schemas}"
-          assert tables > 0, "serving copy is empty"
-          CHECK
+      - name: Build and verify the synthetic pipeline
+        run: bash scripts/demo.sh

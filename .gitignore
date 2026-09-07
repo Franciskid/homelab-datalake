@@ -42,3 +42,15 @@ dbt/.user.yml
 # Generated workbooks. These contain real figures from the warehouse and are
 # deliverables for a person, not source.
 exports/
+
+# Public version: local demo and assistant state never belong in a release.
+.demo/
+.claude/
+**/.claude/
+*.parquet
+*.xlsx
+*.csv
+*.sqlite*
+*.db
+*.log
+.animation-frames/
