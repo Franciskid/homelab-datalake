@@ -229,4 +229,4 @@ Run the tests:
 | A dbt model is not found | The image has old code. | Run `scripts/deploy.sh`. It compares checksums. |
 | `Conflicting lock is held` | A step opened DuckDB to write. | Only the build writes. Use `read_only_warehouse()`. |
 | `Catalog "datalake" does not exist` | DuckDB attached the file with the wrong name. | A view keeps the catalogue name. Attach with the file name. |
-| A run failed and nobody knew | `FAILURE_WEBHOOK_URL` is empty. | Set it in `.env`. |
+| A run failed and nobody knew | `PLATFORM_ALERT_URL` or `PLATFORM_ALERT_TOKEN` is empty, so the sensor logs and delivers nothing. | Set both in `.env`; the token is the platform's `ALERTMANAGER_WEBHOOK_TOKEN`. Failures then open an incident, deduplicated per job and partition. |

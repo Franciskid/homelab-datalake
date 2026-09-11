@@ -35,6 +35,7 @@ from dagster import (
 )
 from dagster_dbt import DbtCliResource
 
+from homelab_datalake.alerting import alert_payload
 from homelab_datalake.assets import (
     backup,
     camera,
@@ -226,7 +227,7 @@ def analytics_daily_schedule(context: ScheduleEvaluationContext):
 
 
 @run_failure_sensor(
-    description="Posts pipeline failures to the existing homelab notification channel.",
+    description="Opens an incident on the AI platform when a run fails.",
     # RUNNING, not STOPPED.
     #
     # This was STOPPED by default and nobody ever started it, so it was dead twice
@@ -239,10 +240,16 @@ def analytics_daily_schedule(context: ScheduleEvaluationContext):
     # off is worth nothing. Starting by default costs one tick per failed run, and the
     # tick itself is the record -- it is visible in the Dagster UI beside the run,
     # which is where somebody looking at a red asset already is.
+    #
+    # It was still not enough. The sensor ran, and it had no webhook to deliver to, so
+    # it logged -- and analytics_daily then failed every night from 4 to 11 Sep 2026
+    # while the serving copy every reader depends on stayed frozen at 2 Sep. Eight
+    # days, into a log nobody reads. Failures now go to the AI platform, which is
+    # where incidents already live and where something actually looks at them.
     default_status=DefaultSensorStatus.RUNNING,
 )
 def notify_on_failure(context):
-    """Reports a failed run, and delivers it if a webhook is configured.
+    """Reports a failed run, and opens an incident if the platform is configured.
 
     Logging loudly and doing nothing is better than a sensor that raises on every
     failure -- that turns one broken run into two, and buries the original error.
@@ -257,15 +264,20 @@ def notify_on_failure(context):
         f"run_id={run.run_id} -- {context.failure_event.message}"
     )
 
-    webhook = os.environ.get("FAILURE_WEBHOOK_URL")
-    if not webhook:
-        context.log.error("%s (no FAILURE_WEBHOOK_URL configured, not notifying)", message)
+    url = os.environ.get("PLATFORM_ALERT_URL")
+    token = os.environ.get("PLATFORM_ALERT_TOKEN")
+    if not url or not token:
+        context.log.error(
+            "%s (PLATFORM_ALERT_URL/PLATFORM_ALERT_TOKEN not configured, not notifying)",
+            message,
+        )
         return
     # Refuse anything but http(s). urlopen also speaks file:// and ftp://, so an
     # operator typo -- or an env var set from somewhere less trusted -- could turn a
-    # notification into a local file read.
-    if not webhook.startswith(("http://", "https://")):
-        context.log.error("FAILURE_WEBHOOK_URL must be http(s); refusing to open %r", webhook)
+    # notification into a local file read. The bearer token makes this stricter than
+    # it looks: the wrong scheme here would hand that secret to whatever answered.
+    if not url.startswith(("http://", "https://")):
+        context.log.error("PLATFORM_ALERT_URL must be http(s); refusing to open %r", url)
         return
 
     try:
@@ -273,13 +285,25 @@ def notify_on_failure(context):
         import urllib.request
 
         request = urllib.request.Request(  # noqa: S310 - scheme checked above
-            webhook,
-            data=json.dumps({"text": message}).encode(),
-            headers={"Content-Type": "application/json"},
+            url,
+            data=json.dumps(
+                alert_payload(
+                    job_name=run.job_name,
+                    partition=partition,
+                    run_id=run.run_id,
+                    detail=context.failure_event.message,
+                )
+            ).encode(),
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {token}",
+            },
         )
         urllib.request.urlopen(request, timeout=10).close()  # noqa: S310
+        context.log.info("opened a platform incident for %s/%s", run.job_name, partition)
     except Exception:
-        # original run failure by raising a second one on top of it.
+        # Never raise: that would compound the original run failure by raising a
+        # second one on top of it, and bury the error that started this.
         context.log.exception("failure notification could not be delivered")
 
 
