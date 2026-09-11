@@ -367,9 +367,58 @@ def run_query(
                 f"Available dimensions: {sorted(dataset.dimension_names)}."
             )
     filters = {k: (v if isinstance(v, list) else [v]) for k, v in filters.items()}
+    # How many distinct values a dimension may hold and still be checked against.
+    # Above this it is not an enumeration but an identifier, and a filter on one is
+    # a lookup rather than a value that can be misspelled.
+    max_known_values = 50
+    dimensions_by_name = {d.name: d for d in dataset.dimensions}
     for name, values in filters.items():
         if not values:
             raise QueryError(f"filter on {name!r} has no values; drop it instead.")
+
+        # A value the column never takes matches nothing -- and a filter that matches
+        # nothing does not fail. It returns zero, and zero reads as an answer.
+        #
+        # That is not hypothetical. On 11 Sep 2026 a weekly camera report filtered
+        # direction on 'in' and 'out' while the column holds 'entrée' and 'sortie'.
+        # Every total came back 0, the row count beside them was real, and the
+        # workbook was emailed. Nothing anywhere had to fail for that to happen,
+        # which is exactly why it must fail here.
+        dimension = dimensions_by_name[name]
+        literals = [v for v in values if v is not None]
+        if not literals:
+            continue
+        known = [
+            row[0]
+            for row in con.execute(
+                f"SELECT DISTINCT {dimension.sql} FROM {dataset.table} "  # noqa: S608
+                f"LIMIT {max_known_values + 1}"
+            ).fetchall()
+        ]
+        if len(known) > max_known_values:
+            continue
+        # Strings only, on both sides.
+        #
+        # A boolean dimension filtered with "true", or a numeric one with "7", is
+        # coerced by DuckDB and means exactly what the caller intended -- and callers
+        # do send those, which is why the filter schema accepts them. Judging a
+        # boolean column against the Python values True and False would refuse "true"
+        # as a value the column never takes, which is both wrong and exactly the kind
+        # of guard that gets switched off.
+        #
+        # The mistake this exists to catch is a misspelt word, and a word is a string.
+        if not all(isinstance(value, str) for value in known if value is not None):
+            continue
+        unknown = [v for v in literals if isinstance(v, str) and v not in known]
+        if unknown:
+            raise QueryError(
+                f"{dataset.name}.{name} never takes {unknown!r}. It holds "
+                f"{sorted(str(k) for k in known if k is not None)}"
+                f"{' (and null)' if any(k is None for k in known) else ''}. "
+                "A filter on a value the column does not hold matches no rows and "
+                "returns zero, which cannot be told apart from a real answer -- so "
+                "it is refused here rather than reported as a result."
+            )
 
     # A snapshot dataset describes a moment, not an interval. Bucketing it by day and
     # summing would count the same film once per day it sat on the disk -- a number
