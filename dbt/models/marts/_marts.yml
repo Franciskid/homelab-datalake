@@ -14,9 +14,15 @@ models:
           all six -- a scanner asking for /login twice in the same second from the same
           address -- and nothing in an access log tells them apart.
 
-          What is tested is that it keeps discriminating: see
-          assert_request_key_stays_discriminating. Measured at 5.27% duplicate rows
-          over 450,095; the build fails above 15%.
+          What is tested is that it keeps discriminating, and it is tested per day --
+          an all-history average only ever climbs, so one abnormal day poisons every
+          build after it, which is what froze this lake for eight days in Sep 2026.
+          assert_request_key_inputs_stay_populated fails the build when a column
+          feeding the key stops carrying information, which is the case that makes
+          the numbers wrong. assert_request_key_stays_discriminating warns when a
+          day's duplicate share passes 40%; measured over 40 days, the median day is
+          6.2%, the 95th percentile 18.1%, and the worst -- a scanner flood on 3 Sep
+          2026 -- 37.1%.
         tests: [not_null]
       - name: partition_date
         description: '{{ doc("req_partition_date") }}'
