@@ -89,6 +89,164 @@ _READ_ONLY_TYPES = frozenset({duckdb.StatementType.SELECT})
 _EXPLAIN = duckdb.StatementType.EXPLAIN
 
 
+# --------------------------------------------------------------------------------
+# comparing a column against a value it never holds
+# --------------------------------------------------------------------------------
+#
+# A filter that matches nothing does not fail. It returns zero, and zero is a number
+# that reads like an answer.
+#
+# On 11 Sep 2026 a weekly camera report reached an inbox saying nobody had entered or
+# left all week. The SQL said `direction = 'in'`; the column holds 'entrée' and
+# 'sortie'. Every SUM came back 0, the row count beside them was real, and nothing
+# anywhere had to fail for that to happen. The statement was valid SQL over an
+# existing column with a well-typed literal -- there is no layer below this one that
+# could have objected.
+#
+# So this layer objects. The parser DuckDB already runs to classify the statement can
+# also say which columns were compared against which literals; where the column is one
+# the semantic layer describes and small enough to enumerate, a literal that is not
+# among its values is refused with the values that do exist.
+#
+# It is deliberately narrow. Only string literals, only columns the semantic layer
+# names, and only when the whole set of values is small enough to be an enumeration
+# rather than a set of identifiers -- above that a filter is a lookup, and a lookup
+# for something absent is an ordinary empty answer rather than a mistake.
+
+# Above this many distinct values a column is an identifier, not an enumeration.
+MAX_ENUM_VALUES = 50
+
+
+def enum_columns() -> dict[str, list[str]]:
+    """Column name -> the tables that describe it, from the semantic layer.
+
+    Imported here rather than at module load: the semantic layer is a description of
+    the marts, nothing else in this module needs it, and keeping the import local
+    means the API keeps starting even if that description fails to import.
+
+    Keyed by bare column name because that is all a statement gives us -- `e.direction`
+    and `direction` are the same column, and the alias cannot be resolved without
+    binding the query. A name used by more than one dataset collects both tables, and
+    a value is only refused when it is absent from all of them.
+    """
+    try:
+        from homelab_datalake.mcp import semantic
+    except Exception:  # noqa: BLE001 - a guard that cannot load must not break querying
+        logger.warning("the semantic layer could not be imported; enum guard disabled")
+        return {}
+
+    columns: dict[str, list[str]] = {}
+    for dataset in semantic.DATASETS.values():
+        for dimension in dataset.dimensions:
+            # Only plain column references. A dimension whose sql is an expression
+            # describes something computed, and the literal a caller compares it
+            # against is not the column's own value.
+            if not dimension.sql.isidentifier():
+                continue
+            columns.setdefault(dimension.sql, [])
+            if dataset.table not in columns[dimension.sql]:
+                columns[dimension.sql].append(dataset.table)
+    return columns
+
+
+def literal_comparisons(con: duckdb.DuckDBPyConnection, sql: str) -> list[tuple[str, str]]:
+    """Every (column, string literal) this statement compares, anywhere in it.
+
+    Anywhere matters. The report that prompted this compared direction inside a
+    `CASE WHEN` in the select list, not in the WHERE clause, so a guard that only read
+    the filter would have watched the one place the mistake was not.
+
+    Returns an empty list rather than raising if the statement cannot be serialised:
+    this is a guard, and a guard that turns an unusual statement into an error is
+    worse than the silence it was added to prevent.
+    """
+    import json
+
+    try:
+        serialised = con.execute("SELECT json_serialize_sql(?)", [sql]).fetchone()[0]
+        tree = json.loads(serialised)
+    except (duckdb.Error, ValueError, TypeError):
+        return []
+
+    def column_of(node) -> str | None:
+        if not isinstance(node, dict) or node.get("class") != "COLUMN_REF":
+            return None
+        names = node.get("column_names") or []
+        # The last part: `e.direction` and `marts.t.direction` are both `direction`.
+        return names[-1] if names else None
+
+    def literal_of(node) -> str | None:
+        if not isinstance(node, dict) or node.get("class") != "CONSTANT":
+            return None
+        value = node.get("value") or {}
+        if value.get("is_null") or (value.get("type") or {}).get("id") != "VARCHAR":
+            return None
+        found = value.get("value")
+        return found if isinstance(found, str) else None
+
+    out: list[tuple[str, str]] = []
+
+    def walk(node) -> None:
+        if isinstance(node, dict):
+            kind = node.get("type")
+            if kind in ("COMPARE_EQUAL", "COMPARE_NOTEQUAL"):
+                column, literal = column_of(node.get("left")), literal_of(node.get("right"))
+                if column is None:  # the literal may be written on either side
+                    column, literal = column_of(node.get("right")), literal_of(node.get("left"))
+                if column and literal is not None:
+                    out.append((column, literal))
+            elif kind in ("COMPARE_IN", "COMPARE_NOT_IN"):
+                children = node.get("children") or []
+                column = column_of(children[0]) if children else None
+                if column:
+                    for child in children[1:]:
+                        literal = literal_of(child)
+                        if literal is not None:
+                            out.append((column, literal))
+            for child in node.values():
+                walk(child)
+        elif isinstance(node, list):
+            for child in node:
+                walk(child)
+
+    walk(tree)
+    return out
+
+
+def enum_refusal(comparisons, values_for) -> str | None:
+    """The message refusing the first literal no column of that name ever holds.
+
+    `values_for` returns the known values of a column, or None when there are too many
+    to enumerate or they could not be read. None always means "do not judge this one":
+    a guard that refuses because it could not check is a guard that blocks real work.
+    """
+    columns = enum_columns()
+    judged: set[tuple[str, str]] = set()
+    for column, literal in comparisons:
+        if column not in columns or (column, literal) in judged:
+            continue
+        judged.add((column, literal))
+        known = values_for(column)
+        if known is None or literal in known:
+            continue
+        # Strings only. `state_changed = 'true'` against a boolean column is coerced
+        # by DuckDB and is a perfectly ordinary way to write it; refusing it would be
+        # this guard inventing a mistake. The one it exists to catch is a misspelt
+        # word, and the column that holds words is the one whose values are strings.
+        if not all(isinstance(value, str) for value in known if value is not None):
+            continue
+        shown = sorted(str(value) for value in known if value is not None)
+        return (
+            f"{column} never holds {literal!r}. It holds {shown}"
+            f"{' (and null)' if any(value is None for value in known) else ''}. "
+            "Comparing it against a value it does not hold matches no rows and "
+            "returns zero, which cannot be told apart from a real answer -- so the "
+            "statement is refused rather than answered. Use one of the values above, "
+            "or ask describe_dataset for them."
+        )
+    return None
+
+
 def writes_are_released() -> bool:
     """Whether this deployment permits the switch to be turned off at all.
 
@@ -264,6 +422,12 @@ class LakeSession:
         self.writable = writable
         self.mounted: list[str] = []
         self.missing: dict[str, str] = {}
+        # What each guarded column actually holds, filled in as columns are asked
+        # about. The session is the right place for it: it is discarded and rebuilt
+        # when the lake is republished, which is the only moment the answer can
+        # change, so the cache needs no invalidation of its own.
+        self._enum_values: dict[str, list | None] = {}
+        self._enum_lock = threading.Lock()
         self._con = self._build()
 
     def _build(self) -> duckdb.DuckDBPyConnection:
@@ -312,6 +476,54 @@ class LakeSession:
         cursor = self._con.cursor()
         cursor.execute(f"SET search_path='{','.join(SEARCH_PATH)}';")
         return cursor
+
+    def enum_values(self, column: str) -> list | None:
+        """What `column` actually holds, or None when it is not worth judging.
+
+        None is not "no values". It means do not judge this one: too many distinct
+        values to be an enumeration, no dataset describing it, or a read that failed.
+        In each of those a refusal would be the guard blocking real work over its own
+        blind spot, which is worse than the silence it was written to prevent.
+
+        Read lazily, one column at a time, and only when a statement actually compares
+        it against a literal. Reading every dimension of every dataset up front would
+        put a scan of the lake in front of the first query, to check something most
+        statements never mention.
+        """
+        with self._enum_lock:
+            if column in self._enum_values:
+                return self._enum_values[column]
+
+        values: list = []
+        judged = False
+        for table in enum_columns().get(column) or []:
+            cursor = self.cursor()
+            try:
+                # Neither name is caller input: both come from the semantic layer, and
+                # the column is checked to be a bare identifier where that mapping is
+                # built. A caller's literal never reaches this statement.
+                rows = cursor.execute(
+                    f'SELECT DISTINCT "{column}" FROM {table} '  # noqa: S608
+                    f"LIMIT {MAX_ENUM_VALUES + 1}"
+                ).fetchall()
+            except duckdb.Error:
+                # A view that would not bind -- nothing landed in it yet -- says
+                # nothing about the column, so it neither judges nor disqualifies it.
+                continue
+            finally:
+                cursor.close()
+            if len(rows) > MAX_ENUM_VALUES:
+                judged = False  # an identifier, not an enumeration
+                break
+            judged = True
+            for (value,) in rows:
+                if value not in values:
+                    values.append(value)
+
+        known = values if judged else None
+        with self._enum_lock:
+            self._enum_values[column] = known
+        return known
 
     def close(self) -> None:
         self._con.close()
@@ -371,6 +583,16 @@ def run(
                 "warehouse still holds what it held before: run analytics_daily to "
                 "rebuild it before trusting anything that reads it."
             )
+
+        # Last, because it is the only refusal here that is about what the statement
+        # would *mean* rather than what it is allowed to do. A write is refused as a
+        # write above; this catches the statement that is permitted, valid, and wrong
+        # -- it would run, return zero, and be believed.
+        refusal = enum_refusal(
+            literal_comparisons(cursor, statement.query), session.enum_values
+        )
+        if refusal:
+            raise QueryRefused(refusal, statement.type.name)
 
         began = time.perf_counter()
         columns, types, rows, truncated = _execute_bounded(cursor, statement.query, max_rows, timeout)

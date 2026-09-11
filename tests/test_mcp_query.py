@@ -75,14 +75,33 @@ def test_sql_shaped_dimension_names_are_just_unknown_names(con, hostile):
         run_query(con, "llm_spend", dimensions=[hostile], **AUGUST)
 
 
-def test_filter_values_are_bound_not_interpolated(con):
-    """A hostile *value* reaches the database as a parameter, so it simply matches nothing."""
-    result = run_query(con, "llm_spend", grain="total", dimensions=["provider"],
-                       filters={"provider": ["'; DROP TABLE marts.fct_llm_call; --"]},
-                       **AUGUST)
-    assert result.row_count == 0
-    # The table is still there, which is the actual assertion.
+def test_a_hostile_filter_value_is_refused_before_it_reaches_sql(con):
+    """It used to be bound and match nothing. Now it does not get that far.
+
+    Matching nothing was safe but silent, and silence is what this layer learned not
+    to do: a filter on a value the column never holds returns zero, and zero reads as
+    an answer. The table still being there is the assertion that matters either way.
+    """
+    with pytest.raises(QueryError) as raised:
+        run_query(con, "llm_spend", grain="total", dimensions=["provider"],
+                  filters={"provider": ["'; DROP TABLE marts.fct_llm_call; --"]},
+                  **AUGUST)
+    assert "never takes" in str(raised.value)
     assert con.execute("SELECT count(*) FROM marts.fct_llm_call").fetchone()[0] == 200
+
+
+def test_filter_values_are_bound_not_interpolated(con):
+    """A value reaches the database as a parameter, never as text in the statement.
+
+    Checked with a value that exists, because the guard above now refuses one that
+    does not -- and the property being tested here is the binding, which a refusal
+    would never reach.
+    """
+    result = run_query(con, "llm_spend", grain="total", dimensions=["provider"],
+                       filters={"provider": ["anthropic"]}, **AUGUST)
+    assert result.row_count == 1
+    assert "?" in result.sql
+    assert "anthropic" not in result.sql, "the value was interpolated, not bound"
 
 
 def test_a_range_wider_than_the_cap_is_refused(con):
@@ -147,9 +166,25 @@ def test_an_empty_window_says_so_and_says_where_the_data_is(con):
 
 
 def test_an_empty_filter_result_points_at_the_filter(con):
-    result = run_query(con, "llm_spend", filters={"provider": ["mistral"]}, **AUGUST)
+    """Both values exist; no row has them together. That is a real empty answer."""
+    result = run_query(con, "llm_spend",
+                       filters={"provider": ["ollama"], "model": ["gpt-4o"]}, **AUGUST)
     assert result.row_count == 0
     assert any("describe_dataset" in note for note in result.notes)
+
+
+def test_a_filter_value_the_column_never_takes_is_refused_with_the_real_ones(con):
+    """The failure this whole guard exists for, in miniature.
+
+    A weekly camera report asked for direction 'in' where the column holds 'entrée',
+    got 0 for every total, and was emailed. Nothing failed. Now something does, and
+    the refusal carries the values that would have worked.
+    """
+    with pytest.raises(QueryError) as raised:
+        run_query(con, "llm_spend", filters={"provider": ["mistral"]}, **AUGUST)
+    message = str(raised.value)
+    assert "mistral" in message
+    assert "anthropic" in message and "openai" in message and "ollama" in message
 
 
 def test_an_empty_filter_list_is_a_mistake_not_a_no_op(con):
@@ -373,8 +408,11 @@ def test_the_two_notes_are_never_both_present(con):
 
 def test_an_empty_listing_is_not_called_complete(con):
     """"No rows matched" already says what happened; "all 0 records are here" does not."""
+    # Both values are real; no event is both, because a state is only recorded on
+    # the events that are confirmed. An empty answer, not a misspelt one.
     result = run_query(con, "camera_activity", grain="event", fields=["happened_at"],
-                       filters={"camera_id": ["nothing-by-this-name"]}, **AUGUST)
+                       filters={"zone_state": ["open"], "lifecycle": ["dismissed"]},
+                       **AUGUST)
     assert result.row_count == 0
     assert not any(n.startswith("COMPLETE") for n in result.notes)
     assert any("empty result" in n for n in result.notes)
