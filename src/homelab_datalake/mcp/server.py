@@ -154,6 +154,10 @@ def list_datasets() -> dict:
             "name": dataset.name,
             "description": dataset.description,
             "kind": dataset.kind,
+            # Named here as well as in describe_dataset, so a caller that intends to
+            # write its own SQL never has to call a second tool to learn the one
+            # thing that SQL cannot do without.
+            "table": dataset.table,
             "dimensions": dataset.dimension_names,
             "measures": dataset.measure_names,
             "default_measures": list(dataset.default_measures),
@@ -244,6 +248,21 @@ def describe_dataset(
         "name": spec.name,
         "description": spec.description,
         "kind": spec.kind,
+        # The physical table, because `name` above is what this layer calls the
+        # dataset and nothing outside this layer answers to it. A caller writing its
+        # own SQL -- the platform's Python workbench relays statements straight to
+        # DuckDB -- reads `camera_activity` here, writes `FROM camera_activity`, and
+        # gets "Table with name camera_activity does not exist". That happened on
+        # 11 Sep 2026, and the rewrite that followed silently changed a filter value
+        # from 'entrée' to 'in', so a weekly report said nobody had entered.
+        # Describing a dataset without naming the table it lives in is describing
+        # half of it.
+        "table": spec.table,
+        "sql_note": (
+            f"Writing SQL yourself? Query {spec.table}. The name above is this "
+            "layer's name for it and is not a table. Use the dimension values "
+            "listed below verbatim -- they are the values the column actually holds."
+        ),
         "covers": {"from": lo, "to": hi},
         "dimensions": dimensions,
         "measures": [
