@@ -82,7 +82,7 @@ docker exec "$CONTAINER" rm -f /opt/keycloak/.keycloak/kcadm.config
 # Only now is there anything to read, so only now does the hourly schedule start. Started
 # earlier it would fail every hour on "permission denied" and open an incident each time.
 docker exec -e DAGSTER_HOME=/dagster_home datalake-daemon \
-  dagster schedule start keycloak_schedule -w /app/workspace.yaml
+  dagster schedule start keycloak_schedule -w /app/workspace.yaml --location homelab_datalake.definitions
 echo "  OK    keycloak_schedule started"
 echo
 echo "Done. keycloak_raw lands events from the next hourly run (at :35)."
