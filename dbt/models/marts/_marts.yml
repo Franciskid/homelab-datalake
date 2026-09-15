@@ -1413,6 +1413,8 @@ models:
         description: occurred_at truncated to the hour.
       - name: run_id
         description: The run this tool call belongs to.
+        tests:
+          - relationships: {to: ref('fct_agent_run'), field: run_key}
       - name: sequence
         description: The step's position within its run.
       - name: tool_name
@@ -1471,6 +1473,8 @@ models:
         description: Who wrote the message, for a human-authored one. Null for the assistant's own messages.
       - name: run_id
         description: The run that produced this message, where one did.
+        tests:
+          - relationships: {to: ref('fct_agent_run'), field: run_key}
       - name: role
         description: user, assistant, system, or tool.
       - name: content
@@ -1498,6 +1502,8 @@ models:
         description: Who triggered the send.
       - name: run_id
         description: The run that triggered the send, where one did.
+        tests:
+          - relationships: {to: ref('fct_agent_run'), field: run_key}
       - name: approval_id
         description: The approval that authorised the send, where one was required.
       - name: was_approved
