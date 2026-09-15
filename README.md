@@ -21,6 +21,9 @@ which runs the data pipelines, also hosts the AI platform's automation jobs.
 | Homelab Camera | Structured camera events, analysis, and related activity records from its export API. | Camera activity, passage counts, state changes, and observation coverage. |
 | Jellyfin | Library snapshots and the metadata attached to titles. | What is in the library and how its composition changes. |
 | TMDB and MaxMind, when configured | Additional film metadata and network/geographic enrichment. | Extra context for media and traffic analysis. |
+| Prometheus | Every raw sample it scrapes, streamed every minute: host, containers, GPU, the LLM gateway, and the status page's view of the other machines. | How the machines and services behaved at any moment, joined to what they were doing. |
+| Radarr, Sonarr, Jellyseerr | Requests, grabs, imports and the files they produced, with every version of each row. | How long a request takes to become watchable, and what was downloaded for it. |
+| Host logs and Keycloak | The server's journal and auth.log, and every sign-in across the single sign-on apps. | Who signed in where and when, and what the host was doing. |
 
 The datalake works with records and metadata. Camera recordings stay with the
 camera application, and media files stay with Jellyfin.
