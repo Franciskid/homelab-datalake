@@ -682,12 +682,23 @@ def jellyfin_playback_raw(context: AssetExecutionContext, lake: LakeStorage):
 # the server activity log
 # --------------------------------------------------------------------------------
 
-# Collection starts here rather than backfilling to the dawn of the log: nothing in
-# the brief asked for the full [count withheld]-entry history, and a backfill of an API that
-# offers only a floor (`minDate`) and no ceiling gets more expensive the further back
-# it reaches -- see `activity_window` in parsing.jellyfin. Daily, and not end_offset=1:
-# an activity day, like a log day, has to be over before it is complete.
-ACTIVITY_START = "2026-09-14"
+# The log's own first day, verified against the real server on 2026-09-15
+# (2023-11-21T16:15:05Z, [count withheld] entries): the owner's decision for this phase is
+# that the warehouse holds everything available, and that includes the three years
+# before this pipeline existed, not only what happens from here on. Daily, and not
+# end_offset=1: an activity day, like a log day, has to be over before it is complete.
+#
+# The history is not meant to arrive through this partitioned asset, though. A
+# backfill would mean materialising roughly [count withheld] partitions, and `activity_window`
+# pages from "now" down to each day's own floor -- cheap for yesterday, and more
+# expensive the further back the target day is, because every day newer than it has
+# to be paged past first. Backfilling the whole range would pay that escalating cost
+# about [count withheld] times over. `jellyfin_activity_history_raw`, below, reads the entire
+# log exactly once by `startIndex` alone and buckets the result by day instead --
+# see `activity_history` in parsing.jellyfin for the numbers. Run that once, by
+# hand, to fill the range this start date now opens up; the schedule below only
+# ever asks for yesterday, same as it always has.
+ACTIVITY_START = "2023-11-21"
 activity_partitions = DailyPartitionsDefinition(start_date=ACTIVITY_START)
 
 ACTIVITY_PREFIX = layout.prefix("jellyfin_activity")
@@ -794,6 +805,120 @@ def jellyfin_activity_raw(context: AssetExecutionContext, lake: LakeStorage):
         passed=not unmapped,
         severity=AssetCheckSeverity.WARN,
         metadata={"fields": MetadataValue.text(", ".join(sorted(unmapped)) or "none")},
+    )
+
+
+CHECK_ACTIVITY_HISTORY_RECONCILED = "activity_history_matches_what_was_read"
+
+
+def _write_activity_history_day(lake: LakeStorage, day: date, rows: list[dict]) -> tuple[int, int, set[str]]:
+    """One day of the history pass, written exactly the way jellyfin_activity_raw
+    writes a partition: same schema, same prefix pattern, same replace-not-merge.
+    Not a call into that asset's function -- there is no per-partition run context to
+    give it here -- but the same primitives, so the bytes on disk cannot tell the two
+    paths apart. Deleting before writing is also what makes a re-run safe: calling
+    this twice for the same day leaves the lake with exactly the second call's rows,
+    never both.
+
+    Returns (bytes written, rows written, unmapped field names).
+    """
+    extracted_at = datetime.now(UTC)
+    stamped = [{**row, "_extracted_at": extracted_at} for row in rows]
+    projected, unmapped = project(stamped, _ACTIVITY_SCHEMA)
+    prefix = f"{ACTIVITY_PREFIX}/dt={day.isoformat()}"
+    lake.delete_prefix(prefix)
+    written = lake.write_table(
+        f"{prefix}/data.parquet", pa.Table.from_pylist(projected, schema=_ACTIVITY_SCHEMA)
+    )
+    return written, len(projected), unmapped
+
+
+# Deliberately not partitioned, not scheduled, and not touching jellyfin_activity_raw
+# above at all -- see ACTIVITY_START's comment for why a one-pass read replaces a
+# thousand-partition backfill. It writes to exactly the partitions
+# jellyfin_activity_raw would have written -- same prefix, same _ACTIVITY_SCHEMA,
+# same project(), same replace-not-merge -- so a day this asset writes and a day the
+# daily asset writes are indistinguishable, and re-running this is as safe as
+# re-running any one day of the daily asset: each day is deleted and replaced, never
+# appended to, so materialising it twice leaves the lake exactly where one run would.
+@asset(
+    group_name="jellyfin",
+    compute_kind="python",
+    retry_policy=RetryPolicy(max_retries=2, delay=30),
+    check_specs=[
+        AssetCheckSpec(
+            name=CHECK_ACTIVITY_HISTORY_RECONCILED,
+            asset="jellyfin_activity_history_raw",
+            description=(
+                "Fails when any day's written row count does not match what the "
+                "history pass collected for that day while bucketing -- the same "
+                "guard jellyfin_activity_raw runs per partition, run here once per "
+                "day across the whole pass."
+            ),
+        ),
+    ],
+    description=(
+        "A one-time, one-pass load of the entire server activity log: every entry "
+        "from the log's first day to now, bucketed by its own UTC day and written "
+        "into the same partitions jellyfin_activity_raw uses. Not partitioned and "
+        "not scheduled -- materialise it once, by hand, after a fresh deploy; the "
+        "daily schedule covers everything from then on."
+    ),
+)
+def jellyfin_activity_history_raw(context: AssetExecutionContext, lake: LakeStorage):
+    base_url = os.environ.get("JELLYFIN_URL", "")
+    api_key = os.environ.get("JELLYFIN_API_KEY", "")
+    if not base_url or not api_key:
+        raise ValueError("JELLYFIN_URL and JELLYFIN_API_KEY are required")
+
+    by_day, unmapped = jellyfin_source.activity_history(base_url, api_key)
+    if not by_day:
+        raise ValueError(
+            "Jellyfin returned no activity log entries at all -- an unreachable "
+            "server or a wrong URL, not a real state -- refusing to write nothing."
+        )
+
+    total_written = 0
+    total_rows = 0
+    mismatched: list[str] = []
+    for day in sorted(by_day):
+        rows = by_day[day]
+        collected_count = len(rows)
+        written, row_count, day_unmapped = _write_activity_history_day(lake, day, rows)
+        unmapped |= day_unmapped
+        total_written += written
+        total_rows += row_count
+        if row_count != collected_count:
+            mismatched.append(day.isoformat())
+
+    first_day, last_day = min(by_day), max(by_day)
+    context.log.info(
+        "history pass: %d entries across %d days (%s .. %s), %d bytes written",
+        total_rows, len(by_day), first_day, last_day, total_written,
+    )
+    if unmapped:
+        context.log.warning(
+            "the activity log sent fields the schema does not name: %s",
+            ", ".join(sorted(unmapped)),
+        )
+
+    yield Output(
+        {"entries": total_rows, "days": len(by_day)},
+        metadata={
+            "entries": total_rows,
+            "days": len(by_day),
+            "first_day": MetadataValue.text(first_day.isoformat()),
+            "last_day": MetadataValue.text(last_day.isoformat()),
+            "bytes_written": total_written,
+            "unmapped_fields": MetadataValue.text(", ".join(sorted(unmapped)) or "none"),
+        },
+    )
+
+    yield AssetCheckResult(
+        check_name=CHECK_ACTIVITY_HISTORY_RECONCILED,
+        passed=not mismatched,
+        severity=AssetCheckSeverity.ERROR,
+        metadata={"mismatched_days": MetadataValue.text(", ".join(mismatched) or "none")},
     )
 
 

@@ -923,17 +923,18 @@ _ACTIVITY_FIELDS = frozenset(
 
 
 def fetch_activity_page(base_url: str, api_key: str, start_index: int, limit: int,
-                        min_date: datetime) -> dict:
+                        min_date: datetime | None = None) -> dict:
     import urllib.parse
     import urllib.request
 
-    query = urllib.parse.urlencode(
-        {
-            "startIndex": start_index,
-            "limit": limit,
-            "minDate": min_date.astimezone(UTC).isoformat().replace("+00:00", "Z"),
-        }
-    )
+    params = {"startIndex": start_index, "limit": limit}
+    # Omitted, not defaulted to the epoch: `activity_history` below wants the whole
+    # log with no floor at all, and the endpoint's own default with no `minDate` is
+    # exactly that -- passing a synthetic minimum would be one more thing that could
+    # disagree with "the beginning" if the log ever starts earlier than expected.
+    if min_date is not None:
+        params["minDate"] = min_date.astimezone(UTC).isoformat().replace("+00:00", "Z")
+    query = urllib.parse.urlencode(params)
     url = f"{base_url.rstrip('/')}/System/ActivityLog/Entries?{query}"
     if not url.startswith(("http://", "https://")):
         raise ValueError(f"JELLYFIN_URL must be http(s), got {base_url!r}")
@@ -1009,3 +1010,59 @@ def activity_window(day: date, base_url: str | None = None, api_key: str | None 
         if len(items) < ACTIVITY_PAGE_SIZE:
             break
     return rows, unmapped
+
+
+def activity_history(base_url: str | None = None, api_key: str | None = None,
+                     pages: list[list[dict]] | None = None) -> tuple[dict[date, list[dict]], set[str]]:
+    """The entire activity log, bucketed by the UTC day each entry falls on.
+
+    Verified against the real server on 2026-09-15: the log runs from
+    2023-11-21T16:15:05Z to now, [count withheld] entries, and `startIndex=32975` reaches the
+    oldest of them -- so a plain walk from `startIndex=0` with no `minDate` at all
+    covers the whole three years in about [count withheld] requests at 500 a page. That is the
+    opposite of `activity_window`'s per-day cost: `activity_window` pages from "now"
+    down to one day's floor, which is cheap for yesterday and gets more expensive
+    the further back the day is, because every day newer than it has to be paged
+    past first. Backfilling three years one partition at a time would mean paying
+    that cost roughly [count withheld] times, re-reading entries newer than each target day
+    over and over. Reading the log exactly once and sorting the result by day pays
+    the cost once, which is the whole reason this function exists beside
+    `activity_window` rather than `activity_window` simply being called in a loop.
+
+    Returns `{day: [rows]}` plus the usual unmapped-field set. `pages` is injectable
+    -- already-paginated `Items` batches -- so tests need no server.
+    """
+    by_day: dict[date, list[dict]] = {}
+    unmapped: set[str] = set()
+
+    def consume(items: list[dict]) -> None:
+        for entry in items:
+            leftovers = {key: value for key, value in entry.items() if key not in _ACTIVITY_FIELDS}
+            unmapped.update(leftovers)
+            parsed_date = _parse_timestamp(entry.get("Date"))
+            if parsed_date is None:
+                continue
+            day = parsed_date.date()
+            by_day.setdefault(day, []).append(_activity_row(entry, day))
+
+    if pages is not None:
+        for page in pages:
+            consume(page)
+        return by_day, unmapped
+
+    base_url = base_url or os.environ.get("JELLYFIN_URL", "")
+    api_key = api_key or os.environ.get("JELLYFIN_API_KEY", "")
+    if not base_url or not api_key:
+        raise ValueError("JELLYFIN_URL and JELLYFIN_API_KEY are required")
+
+    start_index = 0
+    while True:
+        payload = fetch_activity_page(base_url, api_key, start_index, PAGE_SIZE)
+        items = payload.get("Items") or []
+        if not items:
+            break
+        consume(items)
+        start_index += len(items)
+        if len(items) < PAGE_SIZE:
+            break
+    return by_day, unmapped
