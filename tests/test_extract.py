@@ -343,6 +343,55 @@ def test_mcp_api_partition_with_no_file_for_the_day_is_a_quiet_day_not_an_error(
     assert r.files_read == 0
 
 
+def test_mcp_api_partition_with_an_empty_directory_is_also_a_quiet_day(tmp_path):
+    """The case MCP_API_LOG_START exists for: the first day this source has ever
+    had, before the platform's nginx has written anything at all -- not one file
+    for a different day, but none whatsoever. Still not an error: reconciliation
+    must pass with zero lines and zero rows, the same as any other quiet day."""
+    r = extract_mcp_api_partition(str(tmp_path), date(2026, 9, 15), SALT, NO_GEO)
+    assert r.rows == [] and r.rejects == [] and r.stats.total == 0
+    assert reconciles(r)
+
+
+def test_mcp_api_partition_matches_the_platforms_own_sample_shape(tmp_path):
+    """host_source, and the raw client_address/query_string, exactly as the
+    platform's validated line would produce them -- with a documentation address
+    substituted for the real one that line carried (see test_mcp_api_log.py's
+    PLATFORM_SAMPLE for why), and every other field, including the
+    comma-separated upstream_status and the empty-string referer, untouched."""
+    line = json.dumps(
+        {
+            "time": "2026-09-14T22:08:27+00:00",
+            "remote_addr": "203.0.113.117",
+            "method": "POST",
+            "host": "127.0.0.1",
+            "request_uri": "/mcp?foo=bar",
+            "status": 502,
+            "body_bytes_sent": 157,
+            "request_length": 212,
+            "request_time": 0.002,
+            "upstream_status": "502, 502",
+            "upstream_response_time": "0.003, 0.000",
+            "user_agent": "test-agent/1.0",
+            "referer": "",
+        }
+    )
+    (tmp_path / "access-2026-09-14.log").write_text(line + "\n")
+    r = extract_mcp_api_partition(str(tmp_path), date(2026, 9, 14), SALT, NO_GEO)
+    assert len(r.rows) == 1
+    row = r.rows[0]
+    assert row["host_source"] == "mcp-api"
+    assert row["log_format"] == "mcp_api_json"
+    assert row["client_address"] == "203.0.113.117"
+    assert row["client_hash"]
+    assert row["path"] == "/mcp"
+    assert row["query_string"] == "foo=bar"
+    assert row["upstream_status"] == "502, 502"
+    assert row["status"] == 502
+    assert row["referer"] is None
+    assert reconciles(r)
+
+
 def test_mcp_api_rejects_are_recorded_like_any_other_source(tmp_path):
     (tmp_path / "access-2026-09-14.log").write_text(_mcp_api_line() + "not json\n")
     r = extract_mcp_api_partition(str(tmp_path), date(2026, 9, 14), SALT, NO_GEO)
