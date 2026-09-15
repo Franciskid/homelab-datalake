@@ -223,22 +223,6 @@ class LakeStorage(ConfigurableResource):
             # stopping the run for; the caller simply sees one less object's lines.
             return None
 
-    def write_bytes(self, key: str, data: bytes) -> int:
-        """Write raw bytes to one object. Returns bytes written.
-
-        Used by tests to build inbox fixtures without a real sync, and available to
-        anything else that needs to land a non-Parquet object in the lake.
-        """
-        if self.uses_s3:
-            self._client().put_object(Bucket=self.bucket, Key=key, Body=data)
-        else:
-            path = Path(self.local_root) / key
-            path.parent.mkdir(parents=True, exist_ok=True)
-            tmp = path.with_suffix(path.suffix + ".tmp")
-            tmp.write_bytes(data)
-            tmp.replace(path)
-        return len(data)
-
     def duckdb_scan_target(self, prefix: str) -> str:
         """A glob DuckDB can read every partition through."""
         if self.uses_s3:
