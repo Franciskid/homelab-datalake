@@ -82,17 +82,21 @@ container if the first form is rejected.)
 ## Installing on amblevilleserv
 
 ```bash
-# 2. Put the two credentials from step 1 in a root-only file:
-sudo install -d -m 700 /etc/amb-log-sync
-sudo tee /etc/amb-log-sync/credentials.env >/dev/null <<'EOF'
+# 2. Put the two credentials from step 1 in a file only this user can read.
+#    AMB_LOG_SYNC_CREDENTIALS_FILE overrides the default path, which is what
+#    the installed copy uses -- see "How it is actually installed" below.
+umask 077
+mkdir -p ~/amb-log-sync
+cat > ~/amb-log-sync/credentials.env <<'EOF'
 AMB_LOG_SYNC_ACCESS_KEY=<the-access-key>
 AMB_LOG_SYNC_SECRET_KEY=<the-secret-key>
 EOF
-sudo chmod 600 /etc/amb-log-sync/credentials.env
+chmod 600 ~/amb-log-sync/credentials.env
 
 # 3. Get this directory onto amblevilleserv (scp, a checkout, whatever is already
 #    used to deploy infra/npm/ there) and confirm one run works:
-bash infra/amb-log-sync/sync-amb-logs.sh
+AMB_LOG_SYNC_CREDENTIALS_FILE=~/amb-log-sync/credentials.env \
+  bash ~/amb-log-sync/sync-amb-logs.sh
 
 # 4. Cron, hourly, a few minutes past the hour so it never races NPM's own
 #    logrotate (which runs at :00 on this host -- see IMPLEMENTATION_PLAN.md):
@@ -102,8 +106,34 @@ crontab -e
 Cron line:
 
 ```
-7 * * * * /path/to/infra/amb-log-sync/sync-amb-logs.sh >>/var/log/amb-log-sync.log 2>&1
+7 * * * * AMB_LOG_SYNC_CREDENTIALS_FILE=/home/francois/amb-log-sync/credentials.env /home/francois/amb-log-sync/sync-amb-logs.sh >>/home/francois/amb-log-sync/sync.log 2>&1
 ```
+
+## How it is actually installed (2026-09-15)
+
+Two things about amblevilleserv that the procedure above has to bend around, both
+found while provisioning it for real rather than on paper.
+
+**There is no sudo on that host for this operator.** So nothing lives under
+`/etc` or `/var/log`: the credentials file, both scripts and the cron log all sit
+in `~/amb-log-sync/` (mode 600 on the credentials, which is what
+`sync-amb-logs.sh` checks for -- the script refuses a file that is not 600 or
+400, and refuses a missing one, rather than falling through to an anonymous
+`mc`). The cron entry is a user crontab, not a system one.
+
+**That host's Docker cannot pull `minio/mc` from Docker Hub** -- it answers
+`pull access denied for minio/mc` for that namespace, while `library/` images
+pull normally. The image was moved across from fraserv instead, which already
+had it:
+
+```bash
+ssh fraserv 'docker save minio/mc:latest' | ssh amblevilleserv 'docker load'
+```
+
+`docker run` only pulls when the image is absent locally, so the hourly job is
+fine as long as that image stays. **If it is ever pruned on amblevilleserv the
+cron starts failing with a pull error, and the fix is the line above, not a
+retry.** Worth knowing before reading `sync.log` and concluding the key broke.
 
 ## Verifying
 
