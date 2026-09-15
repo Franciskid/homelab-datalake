@@ -766,18 +766,50 @@ def _parse_playback_timestamp(value) -> datetime | None:
 
 
 def _parse_duration_seconds(value) -> int | None:
-    """`PlayDuration` as whole seconds.
+    """`PlayDuration` as whole seconds, or `None` when the value cannot be a duration.
 
     Verified alongside the timestamp above, on the same Amadeus session: an elapsed
     6,762 seconds by the activity log's own start and stop produced
     `PlayDuration = 6761`. Seconds, not the `H:MM:SS` string some Playback Reporting
     installs are known to emit for this column -- checked, not assumed, here too.
+
+    A negative value is not a duration and comes back as `None`. Measured against the
+    real server on 2026-09-15: `min(PlayDuration)` over the whole table is
+    `-2147483648` -- exactly INT32_MIN, an overflow or sentinel the plugin wrote, not
+    a length of time -- on exactly one row, a Swiftfin iOS session of an episode with
+    `DateCreated 2025-08-19 20:48:00.6152916`. Loaded as-is, that single row takes
+    about 68 years off any `SUM(play_duration_seconds)`, which is exactly what every
+    watch-time report computes.
+
+    Negative is the whole rule; there is deliberately no upper bound. The same table's
+    `max(PlayDuration)` is 175,460 seconds, about 48.7 hours -- a player left open on a
+    paused title, not corruption, since this column measures how long the player was
+    open rather than how long anyone watched. A ceiling would discard real rows on a
+    guess.
+
+    Why the *field* is nulled rather than the row dropped: the session genuinely
+    happened. Who played what, on which client, at what time are all intact and all
+    still answer questions -- sessions per user, what was started and when -- and
+    dropping the row would remove a real session from every one of those answers to
+    fix a problem confined to one column.
+
+    Why null rather than a clamp to 0: a 0 is a claim, that the player was open for no
+    time at all, and nothing in the data supports it; it would also bury the defect
+    inside a plausible-looking value. `None` says the duration is unknown, which is
+    true, and `SUM` and `median` skip it instead of being poisoned by it.
+
+    Never silent: `parse_playback_rows` counts every value that was present and came
+    back `None` from here, and both playback assets report that count.
     """
     if value is None:
         return None
     try:
-        return round(float(value))
-    except (TypeError, ValueError):
+        seconds = float(value)
+        if seconds < 0:
+            return None
+        return round(seconds)
+    except (TypeError, ValueError, OverflowError):
+        # ValueError covers "not a number" and round(nan); OverflowError, round(inf).
         return None
 
 
@@ -800,7 +832,18 @@ def parse_series_name(item_name: str | None, item_type: str | None) -> str | Non
     return match.group("series") if match else None
 
 
-def parse_playback_rows(payload: dict, users_by_id_map: dict[str, str]) -> list[dict]:
+@dataclass
+class PlaybackRows:
+    rows: list[dict] = field(default_factory=list)
+    # Sessions whose PlayDuration arrived but could not be a duration -- negative, or
+    # not a number at all -- and were kept with `play_duration_seconds` null. Surfaced
+    # on both playback assets' Output metadata, never raised: one unusable field from
+    # a third-party plugin is a fact about one session, not about the partition. See
+    # `_parse_duration_seconds` for the real row this exists for.
+    play_durations_nulled: int = 0
+
+
+def parse_playback_rows(payload: dict, users_by_id_map: dict[str, str]) -> PlaybackRows:
     """The plugin's `{colums, results, message}` shape, turned into named rows.
 
     `message` is non-empty on a genuine query failure, and also on the legitimate
@@ -811,8 +854,9 @@ def parse_playback_rows(payload: dict, users_by_id_map: dict[str, str]) -> list[
     results = payload.get("results") or []
     message = str(payload.get("message") or "")
 
+    out = PlaybackRows()
     if not results and message.lower().startswith("query executed, no data returned"):
-        return []
+        return out
     if message:
         raise ValueError(f"Playback Reporting query failed: {message}")
     if columns and columns != list(_PLAYBACK_COLUMNS):
@@ -822,12 +866,19 @@ def parse_playback_rows(payload: dict, users_by_id_map: dict[str, str]) -> list[
         )
 
     index = {name: i for i, name in enumerate(_PLAYBACK_COLUMNS)}
-    rows = []
     for result in results:
         user_id = result[index["UserId"]]
         item_name = result[index["ItemName"]]
         item_type = result[index["ItemType"]]
-        rows.append(
+        raw_duration = result[index["PlayDuration"]]
+        play_duration_seconds = _parse_duration_seconds(raw_duration)
+        if raw_duration not in (None, "") and play_duration_seconds is None:
+            # A value was sent and discarded. An absent one -- null, or the empty
+            # string `_parse_playback_timestamp` also treats as absent -- is not
+            # counted: that is the plugin having nothing to say, not this parser
+            # overruling it.
+            out.play_durations_nulled += 1
+        out.rows.append(
             {
                 "started_at": _parse_playback_timestamp(result[index["DateCreated"]]),
                 "user_id": user_id,
@@ -839,15 +890,15 @@ def parse_playback_rows(payload: dict, users_by_id_map: dict[str, str]) -> list[
                 "playback_method": result[index["PlaybackMethod"]],
                 "client_name": result[index["ClientName"]],
                 "device_name": result[index["DeviceName"]],
-                "play_duration_seconds": _parse_duration_seconds(result[index["PlayDuration"]]),
+                "play_duration_seconds": play_duration_seconds,
             }
         )
-    return rows
+    return out
 
 
 def playback_window(start: datetime, end: datetime, base_url: str | None = None,
                     api_key: str | None = None, users_by_id_map: dict[str, str] | None = None,
-                    payload: dict | None = None) -> list[dict]:
+                    payload: dict | None = None) -> PlaybackRows:
     """Every PlaybackActivity row in `[start, end)`. `payload` is injectable for tests."""
     if payload is None:
         base_url = base_url or os.environ.get("JELLYFIN_URL", "")
@@ -862,7 +913,7 @@ def playback_window(start: datetime, end: datetime, base_url: str | None = None,
 
 def playback_history(base_url: str | None = None, api_key: str | None = None,
                      users_by_id_map: dict[str, str] | None = None,
-                     payload: dict | None = None) -> list[dict]:
+                     payload: dict | None = None) -> PlaybackRows:
     """Every row `PlaybackActivity` holds, the whole table, in one request.
 
     Measured against the real server on 2026-09-15: 2,887 rows, `DateCreated` running

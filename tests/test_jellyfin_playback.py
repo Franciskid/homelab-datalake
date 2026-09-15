@@ -20,9 +20,11 @@ from homelab_datalake.assets.jellyfin import (
     _playback_key,
     _write_activity_history_day,
     jellyfin_playback_history_raw,
+    jellyfin_playback_raw,
 )
 from homelab_datalake.parsing.jellyfin import (
     _PLAYBACK_COLUMNS,
+    PlaybackRows,
     _parse_duration_seconds,
     _parse_playback_timestamp,
     _playback_history_query,
@@ -112,6 +114,37 @@ def test_play_duration_of_nothing_is_null_not_zero():
 
 def test_play_duration_garbage_is_null_not_a_crash():
     assert _parse_duration_seconds("not a number") is None
+    assert _parse_duration_seconds("nan") is None
+    assert _parse_duration_seconds("inf") is None
+
+
+# The one real bad row, measured on 2026-09-15: `min(PlayDuration)` over the whole
+# PlaybackActivity table is exactly INT32_MIN, and `max` is 175,460 -- a real, if long,
+# session. See `_parse_duration_seconds` for why null beats both a clamp and a drop.
+INT32_MIN = -2147483648
+LONGEST_REAL_PLAY_DURATION = 175460
+
+
+@pytest.mark.parametrize("value", [INT32_MIN, str(INT32_MIN)])
+def test_the_int32_min_sentinel_is_null_not_minus_68_years(value):
+    assert _parse_duration_seconds(value) is None
+
+
+@pytest.mark.parametrize("value", [-1, "-53", -0.6, "-6761"])
+def test_any_negative_play_duration_is_null(value):
+    assert _parse_duration_seconds(value) is None
+
+
+@pytest.mark.parametrize("value", [LONGEST_REAL_PLAY_DURATION, str(LONGEST_REAL_PLAY_DURATION)])
+def test_the_longest_real_session_survives_untouched(value):
+    """There is no upper bound: 48.7 hours is a player left open, not corruption."""
+    assert _parse_duration_seconds(value) == LONGEST_REAL_PLAY_DURATION
+
+
+def test_a_real_zero_is_zero_not_null():
+    """The rule is negative, not non-positive: a player closed at once is a real 0."""
+    assert _parse_duration_seconds(0) == 0
+    assert _parse_duration_seconds("0") == 0
 
 
 # --------------------------------------------------------------------------------
@@ -157,7 +190,7 @@ def _payload(rows, message="", columns=None):
 def test_the_misspelled_colums_key_is_read():
     row = ["2026-09-12 18:00:21.6180609", "u1", "item1", "Movie", "Amadeus",
            "Transcode (v:hevc a:aac)", "Jellyfin Web", "Chrome Android", "6761"]
-    rows = parse_playback_rows(_payload([row]), {"u1": "greg"})
+    rows = parse_playback_rows(_payload([row]), {"u1": "greg"}).rows
     assert len(rows) == 1
     assert rows[0]["user_name"] == "greg"
     assert rows[0]["play_duration_seconds"] == 6761
@@ -166,7 +199,7 @@ def test_the_misspelled_colums_key_is_read():
 
 def test_a_legitimately_empty_window_is_not_an_error():
     payload = _payload([], message="Query executed, no data returned", columns=[])
-    assert parse_playback_rows(payload, {}) == []
+    assert parse_playback_rows(payload, {}) == PlaybackRows(rows=[], play_durations_nulled=0)
 
 
 def test_a_real_query_failure_raises():
@@ -186,9 +219,66 @@ def test_a_reordered_or_renamed_column_set_raises_rather_than_silently_misreadin
 def test_an_unresolvable_user_id_leaves_the_name_null_rather_than_failing():
     row = ["2026-09-12 18:00:21.6180609", "deleted-account", "item1", "Movie",
            "Amadeus", "DirectPlay", "Jellyfin Web", "Chrome", "10"]
-    rows = parse_playback_rows(_payload([row]), {})
+    rows = parse_playback_rows(_payload([row]), {}).rows
     assert rows[0]["user_id"] == "deleted-account"
     assert rows[0]["user_name"] is None
+
+
+def _duration_row(duration, item_id="item1"):
+    return ["2025-08-19 20:48:00.6152916", "u1", item_id, "Episode",
+            "Some Show - s02e01 - Some Episode", "DirectPlay", "Swiftfin iOS",
+            "iPhone", duration]
+
+
+def test_the_sentinel_row_is_kept_with_only_its_duration_nulled():
+    """The session happened: everything but the duration still answers questions."""
+    out = parse_playback_rows(_payload([_duration_row(str(INT32_MIN))]), {"u1": "greg"})
+    assert len(out.rows) == 1
+    row = out.rows[0]
+    assert row["play_duration_seconds"] is None
+    assert row["started_at"] == datetime(2025, 8, 19, 20, 48, 0, 615291, tzinfo=UTC)
+    assert row["user_name"] == "greg"
+    assert row["client_name"] == "Swiftfin iOS"
+    assert row["series_name"] == "Some Show"
+    assert out.play_durations_nulled == 1
+
+
+def test_nulled_durations_are_counted_and_absent_ones_are_not():
+    """Negative or unparseable values the plugin *sent* are counted; a null or empty
+    PlayDuration is the plugin having nothing to say, and is not."""
+    out = parse_playback_rows(
+        _payload([
+            _duration_row(INT32_MIN, "sentinel"),
+            _duration_row("-1", "negative"),
+            _duration_row("not a number", "garbage"),
+            _duration_row("6761", "normal"),
+            _duration_row(LONGEST_REAL_PLAY_DURATION, "longest"),
+            _duration_row(None, "absent"),
+            _duration_row("", "empty"),
+            _duration_row("0", "zero"),
+        ]),
+        {},
+    )
+    durations = {row["item_id"]: row["play_duration_seconds"] for row in out.rows}
+    assert durations == {
+        "sentinel": None, "negative": None, "garbage": None, "normal": 6761,
+        "longest": LONGEST_REAL_PLAY_DURATION, "absent": None, "empty": None, "zero": 0,
+    }
+    assert out.play_durations_nulled == 3
+
+
+def test_a_clean_payload_reports_zero_nulled():
+    out = parse_playback_rows(_payload([_duration_row("6761")]), {})
+    assert out.play_durations_nulled == 0
+
+
+def test_both_injectable_paths_report_the_nulled_count():
+    payload = _payload([_duration_row(INT32_MIN), _duration_row("53", "item2")])
+    window = playback_window(datetime(2025, 8, 19, 20, tzinfo=UTC),
+                             datetime(2025, 8, 19, 21, tzinfo=UTC), payload=payload)
+    history = playback_history(payload=payload)
+    assert window.play_durations_nulled == 1
+    assert history.play_durations_nulled == 1
 
 
 # --------------------------------------------------------------------------------
@@ -543,7 +633,7 @@ def _session(date_created, user_id="u1", item_id="item1", duration="53"):
 
 def _rows(*sessions):
     """Parsed rows, through the real parser and the real injectable payload path."""
-    return playback_history(payload=_payload(list(sessions)))
+    return playback_history(payload=_payload(list(sessions))).rows
 
 
 def _hour_key(hour: datetime) -> str:
@@ -564,11 +654,15 @@ def _seed_hour(lake, hour, rows, extracted_at):
 
 def _run_history(lake, rows, monkeypatch):
     """Drive the asset itself. The bucketing, the refusals and the check all live in
-    the asset body, so a test of the helper alone would not reach any of them."""
+    the asset body, so a test of the helper alone would not reach any of them.
+
+    `rows` is either a plain list of parsed rows or a whole `PlaybackRows`, when a
+    test needs the parser's own counts to reach the asset too."""
+    parsed = rows if isinstance(rows, PlaybackRows) else PlaybackRows(rows=rows)
     monkeypatch.setenv("JELLYFIN_URL", "https://jf.example")
     monkeypatch.setenv("JELLYFIN_API_KEY", "key")
     monkeypatch.setattr(jellyfin_assets.jellyfin_source, "playback_history",
-                        lambda *a, **k: rows)
+                        lambda *a, **k: parsed)
     results = list(jellyfin_playback_history_raw(build_asset_context(), lake))
     output = next(r for r in results if isinstance(r, Output))
     check = next(r for r in results if isinstance(r, AssetCheckResult))
@@ -806,3 +900,118 @@ def test_the_check_counts_distinct_sessions_not_raw_rows(tmp_path, monkeypatch):
 
     assert check.passed is True
     assert lake.read_table(_hour_key(datetime(2026, 9, 12, 18, tzinfo=UTC))).num_rows == 1
+
+
+# -- the INT32_MIN duration: kept, nulled, counted and surfaced by both assets -----
+
+
+@pytest.fixture
+def dagster_warnings(monkeypatch):
+    """Warnings an asset logged through `context.log`. Dagster's log manager does not
+    hand direct-invocation records to pytest's log capture, so its `warning` is wrapped
+    instead -- on the class `build_asset_context` itself hands back, rather than on a
+    private import path."""
+    seen: list[str] = []
+    log_manager = type(build_asset_context().log)
+    original = log_manager.warning
+
+    def spy(self, msg, *args, **kwargs):
+        seen.append(msg % args if args else msg)
+        return original(self, msg, *args, **kwargs)
+
+    monkeypatch.setattr(log_manager, "warning", spy)
+    return seen
+
+
+def test_the_history_pass_surfaces_nulled_durations_without_failing(
+    tmp_path, monkeypatch, dagster_warnings
+):
+    """One bad field from a third-party plugin is visible, not a failed check -- and
+    the watch-time total is the real one, not 68 years short."""
+    lake = LakeStorage(local_root=str(tmp_path / "lake"))
+    parsed = playback_history(payload=_payload([
+        _session("2025-08-19 20:48:00.6152916", item_id="sentinel", duration=str(INT32_MIN)),
+        _session("2025-08-19 20:10:00.0000000", item_id="real", duration="6761"),
+    ]))
+
+    output, check = _run_history(lake, parsed, monkeypatch)
+
+    assert _meta(output, "play_durations_nulled") == 1
+    assert _meta(output, "watch_seconds") == 6761
+    assert check.passed is True
+    written = lake.read_table(_hour_key(datetime(2025, 8, 19, 20, tzinfo=UTC))).to_pylist()
+    durations = {r["item_id"]: r["play_duration_seconds"] for r in written}
+    assert durations == {"sentinel": None, "real": 6761}
+    assert any("1 sessions had a PlayDuration" in m for m in dagster_warnings)
+
+
+def test_the_history_pass_reports_zero_and_warns_about_nothing_when_clean(
+    tmp_path, monkeypatch, dagster_warnings
+):
+    lake = LakeStorage(local_root=str(tmp_path / "lake"))
+    parsed = playback_history(payload=_payload([_session("2026-09-12 18:00:21.6180609")]))
+    output, _check = _run_history(lake, parsed, monkeypatch)
+    assert _meta(output, "play_durations_nulled") == 0
+    assert not any("PlayDuration" in m for m in dagster_warnings)
+
+
+def _run_hourly(lake, payload, partition_key, monkeypatch):
+    """Drive jellyfin_playback_raw itself for one hour, through the real parser: the
+    fetch is the only thing replaced, by the injectable `payload` path."""
+    monkeypatch.setenv("JELLYFIN_URL", "https://jf.example")
+    monkeypatch.setenv("JELLYFIN_API_KEY", "key")
+    real_window = jellyfin_assets.jellyfin_source.playback_window
+    monkeypatch.setattr(
+        jellyfin_assets.jellyfin_source, "playback_window",
+        lambda start, end, *a, **k: real_window(start, end, payload=payload),
+    )
+    context = build_asset_context(partition_key=partition_key)
+    results = list(jellyfin_playback_raw(context, lake))
+    output = next(r for r in results if isinstance(r, Output))
+    check = next(r for r in results if isinstance(r, AssetCheckResult))
+    return output, check
+
+
+def test_the_hourly_asset_surfaces_nulled_durations_without_failing(
+    tmp_path, monkeypatch, dagster_warnings
+):
+    lake = LakeStorage(local_root=str(tmp_path / "lake"))
+    payload = _payload([
+        _session("2025-08-19 20:48:00.6152916", item_id="sentinel", duration=str(INT32_MIN)),
+        _session("2025-08-19 20:50:00.0000000", item_id="longest",
+                 duration=str(LONGEST_REAL_PLAY_DURATION)),
+    ])
+
+    output, check = _run_hourly(lake, payload, "2025-08-19-20:00", monkeypatch)
+
+    assert _meta(output, "play_durations_nulled") == 1
+    assert _meta(output, "watch_seconds") == LONGEST_REAL_PLAY_DURATION
+    assert check.passed is True
+    written = lake.read_table(_hour_key(datetime(2025, 8, 19, 20, tzinfo=UTC))).to_pylist()
+    durations = {r["item_id"]: r["play_duration_seconds"] for r in written}
+    assert durations == {"sentinel": None, "longest": LONGEST_REAL_PLAY_DURATION}
+    assert any("1 sessions had a PlayDuration" in m for m in dagster_warnings)
+
+
+def test_re_reading_an_hour_replaces_an_already_loaded_sentinel_with_null(
+    tmp_path, monkeypatch
+):
+    """The row is already in the lake with -2147483648. The merge keys on
+    (started_at, user_id, item_id) and the newer read wins, so re-materialising that
+    hour is what repairs it -- the negative value does not survive beside the null."""
+    lake = LakeStorage(local_root=str(tmp_path / "lake"))
+    hour = datetime(2025, 8, 19, 20, tzinfo=UTC)
+    loaded_before_the_fix = _rows(_session("2025-08-19 20:48:00.6152916", item_id="sentinel"))
+    loaded_before_the_fix[0]["play_duration_seconds"] = INT32_MIN
+    _seed_hour(lake, hour, loaded_before_the_fix, datetime(2026, 9, 15, 1, tzinfo=UTC))
+
+    payload = _payload([
+        _session("2025-08-19 20:48:00.6152916", item_id="sentinel", duration=str(INT32_MIN)),
+    ])
+    output, check = _run_hourly(lake, payload, "2025-08-19-20:00", monkeypatch)
+
+    written = lake.read_table(_hour_key(hour)).to_pylist()
+    assert len(written) == 1
+    assert written[0]["play_duration_seconds"] is None
+    assert _meta(output, "watch_seconds") == 0
+    assert check.passed is True

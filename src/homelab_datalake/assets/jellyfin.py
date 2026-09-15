@@ -644,7 +644,8 @@ def jellyfin_playback_raw(context: AssetExecutionContext, lake: LakeStorage):
     if not base_url or not api_key:
         raise ValueError("JELLYFIN_URL and JELLYFIN_API_KEY are required")
 
-    offered = jellyfin_source.playback_window(start, end, base_url, api_key)
+    parsed = jellyfin_source.playback_window(start, end, base_url, api_key)
+    offered = parsed.rows
     source_count = len(offered)
 
     extracted_at = datetime.now(UTC)
@@ -668,6 +669,13 @@ def jellyfin_playback_raw(context: AssetExecutionContext, lake: LakeStorage):
         "(was %d, %d kept that the plugin no longer offers)",
         start, end, source_count, len(merged), len(existing), retained,
     )
+    if parsed.play_durations_nulled:
+        # A warning and a metadata field, not a failed check -- see PlaybackRows.
+        context.log.warning(
+            "hour=%s..%s %d sessions had a PlayDuration that cannot be a duration "
+            "(negative or not a number) and were kept with play_duration_seconds null",
+            start, end, parsed.play_durations_nulled,
+        )
 
     yield Output(
         {"sessions": len(merged)},
@@ -676,6 +684,7 @@ def jellyfin_playback_raw(context: AssetExecutionContext, lake: LakeStorage):
             "sessions_offered_by_plugin": source_count,
             "sessions_before_merge": len(existing),
             "sessions_only_in_lake": retained,
+            "play_durations_nulled": parsed.play_durations_nulled,
             "watch_seconds": sum(r.get("play_duration_seconds") or 0 for r in merged),
             "bytes_written": written,
             "extracted_at": MetadataValue.text(str(extracted_at)),
@@ -800,7 +809,8 @@ def jellyfin_playback_history_raw(context: AssetExecutionContext, lake: LakeStor
     if not base_url or not api_key:
         raise ValueError("JELLYFIN_URL and JELLYFIN_API_KEY are required")
 
-    rows = jellyfin_source.playback_history(base_url, api_key)
+    parsed = jellyfin_source.playback_history(base_url, api_key)
+    rows = parsed.rows
     if not rows:
         raise ValueError(
             "The Playback Reporting plugin returned no sessions at all -- an "
@@ -866,6 +876,13 @@ def jellyfin_playback_history_raw(context: AssetExecutionContext, lake: LakeStor
         context.log.warning(
             "%d sessions had no parseable DateCreated and could not be bucketed", undateable
         )
+    if parsed.play_durations_nulled:
+        # A warning and a metadata field, not a failed check -- see PlaybackRows.
+        context.log.warning(
+            "%d sessions had a PlayDuration that cannot be a duration (negative or not "
+            "a number) and were kept with play_duration_seconds null",
+            parsed.play_durations_nulled,
+        )
 
     yield Output(
         {"sessions": collected, "hours": len(by_hour)},
@@ -875,6 +892,9 @@ def jellyfin_playback_history_raw(context: AssetExecutionContext, lake: LakeStor
             "sessions_returned_by_plugin": len(rows),
             "sessions_bucketed": collected,
             "sessions_without_a_timestamp": undateable,
+            # Kept, not dropped: these rows are in the counts above, with only their
+            # duration unknown. Counted over everything the plugin returned.
+            "play_durations_nulled": parsed.play_durations_nulled,
             # And these two describe the lake afterwards, which is legitimately larger
             # than what this pass offered -- see the check's description.
             "sessions_in_lake": total_in_lake,

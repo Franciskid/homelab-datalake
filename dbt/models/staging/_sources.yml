@@ -691,7 +691,9 @@ sources:
             description: >
               How long the player was open, in whole seconds -- verified against a
               real session's own start and stop in the activity log, not assumed.
-              This is not proof a title was watched to completion.
+              This is not proof a title was watched to completion. Null when the
+              plugin recorded a negative value (INT32_MIN on one real row) -- see
+              _parse_duration_seconds.
 
       - name: jellyfin_activity
         description: >
