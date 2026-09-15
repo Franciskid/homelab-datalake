@@ -13,7 +13,9 @@
 #      every overwrite and every delete, so recovering one is immediate and needs no
 #      backup at all. That is the first of the three layers protecting the lake; the
 #      others are the nightly mirror (lake_backup) and scripts/restore-lake.sh.
-#   3. Add the lifecycle rule that stops those old versions accumulating for ever.
+#   3. Add the lifecycle rules that stop those old versions accumulating for ever: 30
+#      days for everything, 1 day under raw/infrastructure/prometheus/, whose minute
+#      parts are deleted by compaction within a day of being written.
 #
 # NOBODY NEEDS TO KNOW THE ROOT PASSWORD
 #
@@ -127,6 +129,17 @@ RULE = {
     "Filter": {"Prefix": ""},
     "NoncurrentVersionExpiration": {"NoncurrentDays": 30},
 }
+# The Prometheus stream writes an object a minute and compaction deletes them hourly and
+# daily. Under the 30-day rule every deleted part would stay as a non-current version for
+# a month -- [volume withheld] of objects that were only ever a staging step for a merged file that
+# is itself versioned. One day is enough to recover from a compaction that went wrong.
+STREAM_RULE = {
+    "ID": "expire-noncurrent-prometheus-parts",
+    "Status": "Enabled",
+    "Filter": {"Prefix": "raw/infrastructure/prometheus/"},
+    "NoncurrentVersionExpiration": {"NoncurrentDays": 1},
+}
+RULES = [RULE, STREAM_RULE]
 
 plans = {}
 for name in BUCKETS:
@@ -137,7 +150,7 @@ for name in BUCKETS:
     # Existing rules are kept. put_bucket_lifecycle_configuration replaces rather
     # than merges, so writing only ours would silently drop one somebody added for
     # another reason.
-    merged = [r for r in existing if r.get("ID") != RULE["ID"]] + [RULE]
+    merged = [r for r in existing if r.get("ID") not in {r["ID"] for r in RULES}] + RULES
     for rule in merged:
         if "Expiration" in rule:
             raise SystemExit(
@@ -153,7 +166,8 @@ for name in BUCKETS:
     if name in missing:
         print(f"    create bucket   {name}")
     print(f"    versioning      {name}: Enabled")
-    print(f"    lifecycle       {name}: {json.dumps(RULE)}")
+    for rule in RULES:
+        print(f"    lifecycle       {name}: {json.dumps(rule)}")
 
 if os.environ.get("VERSIONING_MODE") != "apply":
     print("\nplan only. Re-run with --apply.")
@@ -178,8 +192,9 @@ for name in BUCKETS:
     rules = root.get_bucket_lifecycle_configuration(Bucket=name)["Rules"]
     if status != "Enabled":
         raise SystemExit(f"FAIL versioning on {name} is {status!r} after the change")
-    if not any(r.get("ID") == RULE["ID"] for r in rules):
-        raise SystemExit(f"FAIL the lifecycle rule is not on {name} after the change")
+    for wanted in RULES:
+        if not any(r.get("ID") == wanted["ID"] for r in rules):
+            raise SystemExit(f"FAIL lifecycle rule {wanted['ID']} is not on {name} after the change")
     print(f"OK    {name}: versioning Enabled, {len(rules)} lifecycle rule(s)")
 
 ordinary = lake._client()
