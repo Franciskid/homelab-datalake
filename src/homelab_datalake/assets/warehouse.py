@@ -73,6 +73,7 @@ from homelab_datalake.assets.npm_access import (
 from homelab_datalake.assets.npm_access import _SCHEMA as ACCESS_SCHEMA
 from homelab_datalake.assets.tmdb import _SCHEMA as _TMDB_SCHEMA
 from homelab_datalake.assets.tmdb import TMDB_PREFIX, tmdb_titles_raw
+from homelab_datalake.assets.warehouse_added_sources import ADDED_SOURCES
 from homelab_datalake.mcp import semantic
 from homelab_datalake.resources import LakeStorage
 
@@ -136,7 +137,15 @@ _DUCKDB_TYPES = {
     pa.float64(): "DOUBLE",
     pa.bool_(): "BOOLEAN",
     pa.timestamp("us", tz="UTC"): "TIMESTAMP WITH TIME ZONE",
+    pa.timestamp("ms", tz="UTC"): "TIMESTAMP WITH TIME ZONE",
+    pa.timestamp("s", tz="UTC"): "TIMESTAMP WITH TIME ZONE",
 }
+
+
+# The sources added on 2026-09-15 live in their own module and are appended here, so
+# other branches adding to the tuple above merge cleanly. Lake-only datasets are
+# deliberately absent -- see test_warehouse_tables.py.
+_SOURCES = (*_SOURCES, *ADDED_SOURCES)
 
 
 def empty_table_ddl(table: str, schema: pa.Schema) -> str:
