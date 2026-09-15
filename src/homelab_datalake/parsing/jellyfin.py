@@ -678,15 +678,38 @@ _PLAYBACK_COLUMNS = (
 _RESULT_COLUMNS_KEY = "colums"  # the plugin's own spelling, not a typo here
 
 
+# The one `SELECT ... FROM` both queries below issue, named once so the column list
+# cannot drift between them. `parse_playback_rows` reads every result by position and
+# refuses a `colums` list that is not exactly `_PLAYBACK_COLUMNS`, so a second query
+# that named its own set -- or the same set in another order -- would not read the
+# wrong field, it would fail at runtime, on the real server, for a difference that had
+# no reason to exist. There is only one column list here, so there is nothing to drift.
+_PLAYBACK_SELECT = f"SELECT {', '.join(_PLAYBACK_COLUMNS)} FROM PlaybackActivity"  # noqa: S608
+
+
 def _playback_query(start: datetime, end: datetime) -> str:
-    """SQL text for one half-open `[start, end)` window over `PlaybackActivity`."""
-    columns = ", ".join(_PLAYBACK_COLUMNS)
+    """SQL text for one half-open `[start, end)` window over `PlaybackActivity`.
+
+    The only values interpolated here come out of `_sqlite_literal`, which accepts a
+    `datetime` and nothing else -- see its own docstring for why that is where the
+    safety lives on an endpoint whose request body *is* the query.
+    """
     return (
-        f"SELECT {columns} FROM PlaybackActivity "  # noqa: S608 - see _sqlite_literal
+        f"{_PLAYBACK_SELECT} "
         f"WHERE datetime(DateCreated) >= datetime('{_sqlite_literal(start)}') "
         f"AND datetime(DateCreated) < datetime('{_sqlite_literal(end)}') "
         "ORDER BY DateCreated"
     )
+
+
+def _playback_history_query() -> str:
+    """SQL text for the whole of `PlaybackActivity` -- no `WHERE`, no bounds.
+
+    Nothing is interpolated into this one at all: no window means no `_sqlite_literal`
+    call, which means there is no value of any kind, from any caller, reaching this
+    query text.
+    """
+    return f"{_PLAYBACK_SELECT} ORDER BY DateCreated"
 
 
 def fetch_playback_query(base_url: str, api_key: str, query: str) -> dict:
@@ -834,6 +857,43 @@ def playback_window(start: datetime, end: datetime, base_url: str | None = None,
         if users_by_id_map is None:
             users_by_id_map = users_by_id(fetch_users(base_url, api_key))
         payload = fetch_playback_query(base_url, api_key, _playback_query(start, end))
+    return parse_playback_rows(payload, users_by_id_map or {})
+
+
+def playback_history(base_url: str | None = None, api_key: str | None = None,
+                     users_by_id_map: dict[str, str] | None = None,
+                     payload: dict | None = None) -> list[dict]:
+    """Every row `PlaybackActivity` holds, the whole table, in one request.
+
+    Measured against the real server on 2026-09-15: [count withheld] rows, `DateCreated` running
+    from 2025-02-14 22:03:38 to 2026-09-12 20:35:46, across 16 accounts.
+
+    The reason one pass is cheap here is *not* the reason `activity_history` gives for
+    the activity log, and the two should not be read as the same argument. There is no
+    pagination to amortise on this endpoint at all: `submit_custom_query` runs one SQL
+    statement against the plugin's own SQLite database and answers with the entire
+    result set, so the whole table costs exactly one request -- the same single request
+    any one hour costs. The saving is on the other side of the call. `playback_window`
+    is asked for one hour at a time because `jellyfin_playback_raw` is partitioned
+    hourly from 2025-02-14, so covering that range through the partitioned asset would
+    mean roughly [count withheld] hourly runs -- [count withheld] requests, [count withheld] Dagster runs and [count withheld]
+    parquet objects -- to move [count withheld] rows, most of those hours containing nothing at
+    all. This reads them all at once instead and lets the caller sort them into hours.
+
+    Identical row shape to `playback_window`: same column list, same
+    `parse_playback_rows`, so a row loaded by this path and the same row loaded by the
+    hourly asset are the same row, which is what lets the two write into one prefix.
+    `payload` is injectable -- the plugin's own `{colums, results, message}` response --
+    so tests need no server, exactly as `playback_window` does it.
+    """
+    if payload is None:
+        base_url = base_url or os.environ.get("JELLYFIN_URL", "")
+        api_key = api_key or os.environ.get("JELLYFIN_API_KEY", "")
+        if not base_url or not api_key:
+            raise ValueError("JELLYFIN_URL and JELLYFIN_API_KEY are required")
+        if users_by_id_map is None:
+            users_by_id_map = users_by_id(fetch_users(base_url, api_key))
+        payload = fetch_playback_query(base_url, api_key, _playback_history_query())
     return parse_playback_rows(payload, users_by_id_map or {})
 
 
