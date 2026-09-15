@@ -208,6 +208,7 @@ jellyfin_daily_job = define_asset_job(
             jellyfin.jellyfin_playback_raw, jellyfin.jellyfin_activity_raw,
             jellyfin.jellyfin_users_raw, jellyfin.jellyfin_library_items_raw,
             jellyfin.jellyfin_activity_history_raw,
+            jellyfin.jellyfin_playback_history_raw,
         )
     ),
     partitions_def=jellyfin.library_partitions,
@@ -229,6 +230,18 @@ jellyfin_activity_history_job = define_asset_job(
     name="jellyfin_activity_history",
     selection=AssetSelection.assets(jellyfin.jellyfin_activity_history_raw),
     description="One-time, one-pass load of the full activity log history.",
+)
+
+# Unpartitioned and deliberately without a schedule, for the same reason as the
+# activity history job above: a one-time load, run once by hand. See PLAYBACK_START's
+# own comment in assets/jellyfin.py for why the plugin's back catalogue arrives this
+# way rather than through [count withheld] partitions of jellyfin_playback_job below -- or
+# through one range run over them, which would write every one of those sessions into
+# a single hour's object.
+jellyfin_playback_history_job = define_asset_job(
+    name="jellyfin_playback_history",
+    selection=AssetSelection.assets(jellyfin.jellyfin_playback_history_raw),
+    description="One-time, one-pass load of the full Playback Reporting history.",
 )
 
 jellyfin_playback_job = define_asset_job(
@@ -546,7 +559,8 @@ defs = Definitions(
     jobs=[npm_daily_job, npm_backfill_job, mcp_api_daily_job, litellm_daily_job,
           ai_platform_snapshot_job, ai_platform_window_job, ai_platform_coverage_job,
           jellyfin_daily_job, jellyfin_library_items_job, jellyfin_playback_job,
-          jellyfin_activity_job, jellyfin_activity_history_job, jellyfin_users_job,
+          jellyfin_playback_history_job, jellyfin_activity_job,
+          jellyfin_activity_history_job, jellyfin_users_job,
           camera_daily_job, camera_zones_job, analytics_job],
     schedules=[npm_daily_schedule, mcp_api_daily_schedule, litellm_daily_schedule,
                ai_platform_snapshot_schedule, ai_platform_window_schedule,

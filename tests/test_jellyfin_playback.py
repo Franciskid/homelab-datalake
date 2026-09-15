@@ -7,27 +7,37 @@ for the worked evidence these tests encode as fixtures.
 
 from datetime import UTC, date, datetime
 
+import pyarrow as pa
 import pytest
+from dagster import AssetCheckResult, Output, build_asset_context
 
+from homelab_datalake.assets import jellyfin as jellyfin_assets
 from homelab_datalake.assets.jellyfin import (
     _PLAYBACK_SCHEMA,
     ACTIVITY_PREFIX,
+    PLAYBACK_PREFIX,
     _merge_playback,
     _playback_key,
     _write_activity_history_day,
+    jellyfin_playback_history_raw,
 )
 from homelab_datalake.parsing.jellyfin import (
     _PLAYBACK_COLUMNS,
     _parse_duration_seconds,
     _parse_playback_timestamp,
+    _playback_history_query,
+    _playback_query,
     _sqlite_literal,
     activity_history,
     activity_window,
     parse_playback_rows,
     parse_series_name,
+    playback_history,
+    playback_window,
     user_rows,
     users_by_id,
 )
+from homelab_datalake.projection import project
 from homelab_datalake.resources import LakeStorage
 
 # --------------------------------------------------------------------------------
@@ -516,3 +526,283 @@ def test_a_repeated_write_of_the_same_day_is_byte_for_byte_the_same_shape(tmp_pa
 
     table = lake.read_table(f"{ACTIVITY_PREFIX}/dt={day.isoformat()}/data.parquet")
     assert table.num_rows == 2
+
+
+# --------------------------------------------------------------------------------
+# the one-pass playback history: the whole PlaybackActivity table in one request,
+# bucketed by each row's own hour and *merged* into the hours jellyfin_playback_raw
+# owns -- never replacing them, unlike the activity history's per-day writes.
+# --------------------------------------------------------------------------------
+
+
+def _session(date_created, user_id="u1", item_id="item1", duration="53"):
+    """One PlaybackActivity row, positional, in _PLAYBACK_COLUMNS order."""
+    return [date_created, user_id, item_id, "Movie", "Example Movie",
+            "DirectPlay", "Jellyfin Web", "Chrome", duration]
+
+
+def _rows(*sessions):
+    """Parsed rows, through the real parser and the real injectable payload path."""
+    return playback_history(payload=_payload(list(sessions)))
+
+
+def _hour_key(hour: datetime) -> str:
+    return f"{PLAYBACK_PREFIX}/partition_hour={hour:%Y-%m-%dT%H:00:00}/data.parquet"
+
+
+def _seed_hour(lake, hour, rows, extracted_at):
+    """What jellyfin_playback_raw leaves behind for one hour, written here directly
+    rather than through the helper under test: schema-projected rows at the hour's own
+    prefix. The merge cases below have to start from an hour the *hourly* asset wrote,
+    not one this pass wrote, or they would only be testing the helper against itself.
+    """
+    stamped = [{**row, "partition_hour": hour, "dt": row["started_at"].date(),
+                "_extracted_at": extracted_at} for row in rows]
+    projected, _ = project(stamped, _PLAYBACK_SCHEMA)
+    lake.write_table(_hour_key(hour), pa.Table.from_pylist(projected, schema=_PLAYBACK_SCHEMA))
+
+
+def _run_history(lake, rows, monkeypatch):
+    """Drive the asset itself. The bucketing, the refusals and the check all live in
+    the asset body, so a test of the helper alone would not reach any of them."""
+    monkeypatch.setenv("JELLYFIN_URL", "https://jf.example")
+    monkeypatch.setenv("JELLYFIN_API_KEY", "key")
+    monkeypatch.setattr(jellyfin_assets.jellyfin_source, "playback_history",
+                        lambda *a, **k: rows)
+    results = list(jellyfin_playback_history_raw(build_asset_context(), lake))
+    output = next(r for r in results if isinstance(r, Output))
+    check = next(r for r in results if isinstance(r, AssetCheckResult))
+    return output, check
+
+
+def _meta(result, key):
+    """Dagster wraps every metadata value, even on a direct invocation like this one."""
+    return result.metadata[key].value
+
+
+# -- the query: one statement, whole table, and a column list that cannot drift ----
+
+
+def test_the_history_query_asks_for_the_whole_table_with_no_window():
+    """No WHERE at all is the point: the plugin runs one SQL statement and answers
+    with the entire result set, so the whole table costs a single request."""
+    assert "WHERE" not in _playback_history_query().upper()
+
+
+def test_both_queries_name_exactly_the_same_columns_in_the_same_order():
+    """parse_playback_rows reads results by position and rejects a `colums` list that
+    is not _PLAYBACK_COLUMNS, so a column list that drifted between the two queries
+    would fail on the real server rather than here."""
+    head = f"SELECT {', '.join(_PLAYBACK_COLUMNS)} FROM PlaybackActivity"  # noqa: S608
+    window = _playback_query(datetime(2026, 9, 12, 18, tzinfo=UTC),
+                             datetime(2026, 9, 12, 19, tzinfo=UTC))
+    assert _playback_history_query().startswith(head)
+    assert window.startswith(head)
+
+
+def test_the_history_path_produces_the_same_row_shape_as_a_window():
+    """The two paths write into one prefix, so their rows have to be the same rows."""
+    payload = _payload([_session("2026-09-12 18:00:21.6180609")])
+    assert playback_history(payload=payload) == playback_window(
+        datetime(2026, 9, 12, 18, tzinfo=UTC), datetime(2026, 9, 12, 19, tzinfo=UTC),
+        payload=payload,
+    )
+
+
+def test_playback_history_with_no_payload_and_no_url_refuses_rather_than_hang():
+    with pytest.raises(ValueError, match="JELLYFIN_URL"):
+        playback_history()
+
+
+# -- bucketing: by the row's own hour, never by a requested window -----------------
+
+
+def test_the_pass_buckets_two_sessions_either_side_of_an_hour_boundary(tmp_path, monkeypatch):
+    """The whole reason this asset buckets per row rather than writing one object:
+    two sessions twenty seconds apart across the top of an hour belong to two
+    different hourly partitions, and a range run of jellyfin_playback_raw would have
+    put both under the range's first hour instead."""
+    lake = LakeStorage(local_root=str(tmp_path / "lake"))
+    rows = _rows(
+        _session("2026-09-12 18:59:59.0000000", item_id="item1"),
+        _session("2026-09-12 19:00:19.0000000", item_id="item2"),
+    )
+
+    output, check = _run_history(lake, rows, monkeypatch)
+
+    assert _meta(output, "hours") == 2
+    assert check.passed is True
+    first = lake.read_table(_hour_key(datetime(2026, 9, 12, 18, tzinfo=UTC)))
+    second = lake.read_table(_hour_key(datetime(2026, 9, 12, 19, tzinfo=UTC)))
+    assert [r["item_id"] for r in first.to_pylist()] == ["item1"]
+    assert [r["item_id"] for r in second.to_pylist()] == ["item2"]
+
+
+def test_each_hours_rows_carry_that_hour_and_that_rows_date(tmp_path, monkeypatch):
+    """partition_hour is the row's own floor and dt is the row's own date -- exactly
+    what jellyfin_playback_raw writes, so a reader globbing the prefix cannot tell
+    which asset produced a row."""
+    lake = LakeStorage(local_root=str(tmp_path / "lake"))
+    rows = _rows(_session("2025-02-14 22:03:38.7652082"))
+
+    _run_history(lake, rows, monkeypatch)
+
+    written = lake.read_table(_hour_key(datetime(2025, 2, 14, 22, tzinfo=UTC))).to_pylist()
+    assert written[0]["partition_hour"] == datetime(2025, 2, 14, 22, tzinfo=UTC)
+    assert written[0]["dt"] == date(2025, 2, 14)
+
+
+def test_the_earliest_session_the_plugin_holds_is_loaded_not_dropped(tmp_path, monkeypatch):
+    """Measured on the real server on 2026-09-15: the oldest row is
+    2025-02-14 22:03:38. There is no floor in this query to drop it against."""
+    lake = LakeStorage(local_root=str(tmp_path / "lake"))
+    output, _ = _run_history(lake, _rows(_session("2025-02-14 22:03:38.7652082")), monkeypatch)
+    assert _meta(output, "first_hour") == "2025-02-14T22:00:00"
+
+
+# -- merge, not replace: an hour the hourly asset already wrote keeps its rows -----
+
+
+def test_an_hour_already_written_keeps_rows_the_plugin_no_longer_offers(tmp_path, monkeypatch):
+    """The case that makes replacing wrong here. The lake holds a session the plugin's
+    table no longer returns; replacing the hour would delete it, which would mean this
+    pass destroyed history while loading it."""
+    lake = LakeStorage(local_root=str(tmp_path / "lake"))
+    hour = datetime(2026, 9, 12, 18, tzinfo=UTC)
+    already_in_the_lake = _rows(
+        _session("2026-09-12 18:00:21.6180609", item_id="kept"),
+        _session("2026-09-12 18:30:00.0000000", item_id="still-offered"),
+    )
+    _seed_hour(lake, hour, already_in_the_lake, datetime(2026, 9, 12, 18, 5, tzinfo=UTC))
+
+    still_offered = _rows(_session("2026-09-12 18:30:00.0000000", item_id="still-offered"))
+    output, check = _run_history(lake, still_offered, monkeypatch)
+
+    written = lake.read_table(_hour_key(hour)).to_pylist()
+    assert sorted(r["item_id"] for r in written) == ["kept", "still-offered"]
+    assert _meta(output, "sessions_only_in_lake") == 1
+    # And the check still passes: more rows than this pass offered is legitimate here,
+    # which is exactly why the invariant is not equality with the written count.
+    assert check.passed is True
+
+
+def test_a_longer_duration_from_this_pass_wins_over_the_hourly_assets_partial_read(
+    tmp_path, monkeypatch
+):
+    """Same session, seen mid-flight by an hourly run and complete by this pass: the
+    merge keys on (started_at, user_id, item_id), so it is one row, the newer one."""
+    lake = LakeStorage(local_root=str(tmp_path / "lake"))
+    hour = datetime(2026, 9, 12, 18, tzinfo=UTC)
+    _seed_hour(lake, hour, _rows(_session("2026-09-12 18:00:21.6180609", duration="53")),
+               datetime(2026, 9, 12, 18, 5, tzinfo=UTC))
+
+    _run_history(lake, _rows(_session("2026-09-12 18:00:21.6180609", duration="6761")),
+                 monkeypatch)
+
+    written = lake.read_table(_hour_key(hour)).to_pylist()
+    assert len(written) == 1
+    assert written[0]["play_duration_seconds"] == 6761
+
+
+def test_re_running_the_whole_pass_leaves_one_copy_of_each_session(tmp_path, monkeypatch):
+    """Idempotence, the property that makes a one-off load safe to repeat after a
+    partial failure: the second pass's rows carry the keys the first pass's rows have
+    and win on recency rather than landing beside them."""
+    lake = LakeStorage(local_root=str(tmp_path / "lake"))
+    hour = datetime(2026, 9, 12, 18, tzinfo=UTC)
+    rows = _rows(
+        _session("2026-09-12 18:00:21.6180609", item_id="item1"),
+        _session("2026-09-12 18:30:00.0000000", item_id="item2"),
+    )
+
+    _run_history(lake, rows, monkeypatch)
+    output, check = _run_history(lake, rows, monkeypatch)
+
+    assert lake.read_table(_hour_key(hour)).num_rows == 2
+    assert _meta(output, "sessions_only_in_lake") == 0
+    assert check.passed is True
+
+
+# -- a session with no timestamp, and the refusal to write nothing -----------------
+
+
+def test_a_session_with_no_timestamp_is_counted_rather_than_silently_dropped(
+    tmp_path, monkeypatch
+):
+    """There is no hour to write it to and no merge key to write it under, so it
+    cannot land -- but a non-zero count here means DateCreated stopped parsing, which
+    has to be visible rather than inferred from a short row count."""
+    lake = LakeStorage(local_root=str(tmp_path / "lake"))
+    rows = _rows(
+        _session(None, item_id="undateable"),
+        _session("2026-09-12 18:00:21.6180609", item_id="item1"),
+    )
+
+    output, check = _run_history(lake, rows, monkeypatch)
+
+    assert _meta(output, "sessions_without_a_timestamp") == 1
+    # Everything the plugin returned is accounted for: 2 back, 1 written, 1 named.
+    assert _meta(output, "sessions_returned_by_plugin") == 2
+    assert _meta(output, "sessions_bucketed") == 1
+    written = lake.read_table(_hour_key(datetime(2026, 9, 12, 18, tzinfo=UTC)))
+    assert [r["item_id"] for r in written.to_pylist()] == ["item1"]
+    assert check.passed is True
+
+
+def test_the_pass_refuses_to_write_nothing_when_the_plugin_returns_no_rows(
+    tmp_path, monkeypatch
+):
+    """An empty answer from a table with [count withheld] rows in it means an unreachable server
+    or a disabled plugin, not an empty history."""
+    lake = LakeStorage(local_root=str(tmp_path / "lake"))
+    with pytest.raises(ValueError, match="refusing to write nothing"):
+        _run_history(lake, [], monkeypatch)
+
+
+def test_the_pass_refuses_when_no_session_at_all_can_be_bucketed(tmp_path, monkeypatch):
+    """Rows came back but not one of them has a usable DateCreated: nothing can be
+    written, so this refuses rather than reporting a successful load of zero hours."""
+    lake = LakeStorage(local_root=str(tmp_path / "lake"))
+    with pytest.raises(ValueError, match="unparseable DateCreated"):
+        _run_history(lake, _rows(_session(None), _session("")), monkeypatch)
+
+
+# -- the reconciliation check: what it is, and that it would catch a lost row ------
+
+
+def test_the_check_fails_when_a_session_never_reaches_the_object(tmp_path, monkeypatch):
+    """The check has to be more than decoration. With a deliberately lossy write --
+    one row short of what the pass collected for the hour -- the invariant
+    `written - retained == distinct collected` must break."""
+    lake = LakeStorage(local_root=str(tmp_path / "lake"))
+    real_write = jellyfin_assets._write_playback_history_hour
+
+    def drops_one(lake_, hour, rows, extracted_at):
+        return real_write(lake_, hour, rows[:-1], extracted_at)
+
+    monkeypatch.setattr(jellyfin_assets, "_write_playback_history_hour", drops_one)
+    rows = _rows(
+        _session("2026-09-12 18:00:21.6180609", item_id="item1"),
+        _session("2026-09-12 18:30:00.0000000", item_id="item2"),
+    )
+
+    _output, check = _run_history(lake, rows, monkeypatch)
+
+    assert check.passed is False
+    assert "2026-09-12T18:00:00" in _meta(check, "mismatched_hours")
+
+
+def test_the_check_counts_distinct_sessions_not_raw_rows(tmp_path, monkeypatch):
+    """Two identical rows are one session to the merge, which keys on
+    (started_at, user_id, item_id). Counting raw rows instead would report a dropped
+    row every time the plugin's table held an exact duplicate."""
+    lake = LakeStorage(local_root=str(tmp_path / "lake"))
+    duplicated = _rows(
+        _session("2026-09-12 18:00:21.6180609"),
+        _session("2026-09-12 18:00:21.6180609"),
+    )
+
+    _output, check = _run_history(lake, duplicated, monkeypatch)
+
+    assert check.passed is True
+    assert lake.read_table(_hour_key(datetime(2026, 9, 12, 18, tzinfo=UTC))).num_rows == 1

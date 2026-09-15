@@ -502,8 +502,20 @@ def jellyfin_library_items_raw(context: AssetExecutionContext, lake: LakeStorage
 # --------------------------------------------------------------------------------
 #
 # Hourly, not daily, so a question asked Sunday evening about Sunday gets an answer
-# rather than waiting for a job that runs after midnight. Full history is
-# backfillable from 2025-02-14, the earliest row the plugin holds on this server.
+# rather than waiting for a job that runs after midnight. The start date is the
+# earliest row the plugin holds on this server, 2025-02-14 22:03:38 UTC.
+#
+# The history behind that date is not meant to arrive through this partitioned asset,
+# though, and two ways of making it do so are both wrong. A partition-by-partition
+# backfill would be roughly [count withheld] hourly runs to move the [count withheld] rows the plugin holds,
+# most of those hours empty. A single `--partition-range` run would be worse than slow:
+# the prefix below is keyed off `start`, the window's *first* hour, so one run over a
+# range would pile eighteen months of sessions into one hour's object, and every later
+# hourly run of any of those hours would then merge its own rows in beside them.
+# `jellyfin_playback_history_raw`, below, reads the plugin's table exactly once and
+# buckets every row by its own hour instead -- see `playback_history` in
+# parsing.jellyfin. Run that once, by hand; the schedules below still only ever ask
+# for recent hours, exactly as they always have.
 #
 # end_offset=1 makes the current hour a valid partition for the same reason camera's
 # does: `jellyfin_playback_late_arrival_schedule` in definitions.py re-triggers the
@@ -675,6 +687,220 @@ def jellyfin_playback_raw(context: AssetExecutionContext, lake: LakeStorage):
         passed=len(merged) == source_count,
         severity=AssetCheckSeverity.ERROR,
         metadata={"warehouse_rows": len(merged), "plugin_count": source_count},
+    )
+
+
+CHECK_PLAYBACK_HISTORY_RECONCILED = "playback_history_matches_what_was_read"
+
+
+def _playback_hour(started_at: datetime) -> datetime:
+    """The UTC hour a session falls in -- the partition it belongs to, from the row
+    itself rather than from any window that was requested."""
+    return started_at.astimezone(UTC).replace(minute=0, second=0, microsecond=0)
+
+
+def _write_playback_history_hour(
+    lake: LakeStorage, hour: datetime, rows: list[dict], extracted_at: datetime
+) -> tuple[int, int, int]:
+    """One hour of the history pass, written exactly the way jellyfin_playback_raw
+    writes a partition: same prefix, same _PLAYBACK_SCHEMA, same project(), and the
+    same read-merge-delete-write sequence. Not a call into that asset's function --
+    there is no per-partition run context to give it here -- but the same primitives,
+    so the bytes on disk cannot tell the two paths apart.
+
+    This merges where `_write_activity_history_day` replaces, and the difference is in
+    the sources, not in a preference. An activity entry is immutable once logged, so
+    the log's answer for a day is the whole truth about that day and replacing it loses
+    nothing. An hour of PlaybackActivity is not: jellyfin_playback_raw merges rather
+    than replaces precisely because the plugin's answer for one hour changes between
+    reads -- a session still open reads back with a partial PlayDuration that a later
+    read corrects -- and its own `sessions_only_in_lake` metric counts the other
+    direction, rows the lake holds that a later read no longer offers at all. Replacing
+    an hour here would delete exactly those rows, which would make this pass destroy
+    history in the act of loading it. Merging keeps both sides.
+
+    Merging is also what makes the pass re-runnable. `_merge_playback` dedupes on
+    `_playback_key`, so a second run's rows carry the keys the first run's rows already
+    have and simply win on the newer `_extracted_at`: the object afterwards holds the
+    same sessions it held before, not two copies of each.
+
+    `extracted_at` is passed in rather than taken here, unlike the activity day helper
+    that stamps its own: every row of this pass came out of one query at one instant,
+    and `_merge_playback` resolves ties by that timestamp, so it is a fact about the
+    read and not a per-hour detail.
+
+    Returns (bytes written, rows in the object afterwards, rows retained that this
+    pass did not offer).
+    """
+    stamped = [
+        {
+            **row,
+            "partition_hour": hour,
+            # The row's own date, the same rule jellyfin_playback_raw applies per row.
+            # Bucketing by the row's hour makes this the hour's date too; it is written
+            # from the row anyway so the two paths compute `dt` identically.
+            "dt": row["started_at"].date(),
+            "_extracted_at": extracted_at,
+        }
+        for row in rows
+    ]
+    projected, _unmapped = project(stamped, _PLAYBACK_SCHEMA)
+
+    prefix = f"{PLAYBACK_PREFIX}/partition_hour={hour:%Y-%m-%dT%H:00:00}"
+    key = f"{prefix}/data.parquet"
+    existing = _read_raw_rows(lake, key, _PLAYBACK_SCHEMA)
+    merged, retained = _merge_playback(existing, projected, _PLAYBACK_SCHEMA)
+
+    lake.delete_prefix(prefix)
+    written = lake.write_table(key, pa.Table.from_pylist(merged, schema=_PLAYBACK_SCHEMA))
+    return written, len(merged), retained
+
+
+# Deliberately not partitioned, not scheduled, and not touching jellyfin_playback_raw
+# above at all -- see PLAYBACK_START's comment for why one pass replaces a
+# [count withheld]-partition backfill, and why the `--partition-range` shortcut past that
+# backfill would corrupt an hour rather than fill it. It writes into exactly the
+# partitions jellyfin_playback_raw writes -- same prefix, same _PLAYBACK_SCHEMA, same
+# project(), same merge -- so an hour this asset writes and an hour the hourly asset
+# writes are indistinguishable, and the two can write the same hour in either order.
+@asset(
+    group_name="jellyfin",
+    compute_kind="python",
+    retry_policy=RetryPolicy(max_retries=2, delay=30),
+    check_specs=[
+        AssetCheckSpec(
+            name=CHECK_PLAYBACK_HISTORY_RECONCILED,
+            asset="jellyfin_playback_history_raw",
+            description=(
+                "Fails when an hour's object does not contain every session this pass "
+                "read for that hour. The invariant is `rows written - rows retained "
+                "== distinct sessions collected for that hour`, not equality with the "
+                "written count: these hours are merged, not replaced, so an hour a "
+                "previous run already wrote legitimately ends up with more rows than "
+                "this pass offered -- the ones the plugin no longer returns. Taking "
+                "those retained rows back out leaves exactly the sessions this pass "
+                "did offer, so a row dropped anywhere between reading and writing "
+                "makes the two sides differ by that row. Distinct, because "
+                "_merge_playback keys on (started_at, user_id, item_id) and two "
+                "identical rows in the plugin's table are one session to the lake."
+            ),
+        ),
+    ],
+    description=(
+        "A one-time, one-pass load of the plugin's entire PlaybackActivity table: "
+        "every session it holds, bucketed by its own UTC hour and merged into the "
+        "same partitions jellyfin_playback_raw uses. Not partitioned and not "
+        "scheduled -- materialise it once, by hand; the hourly schedules cover "
+        "everything from then on."
+    ),
+)
+def jellyfin_playback_history_raw(context: AssetExecutionContext, lake: LakeStorage):
+    base_url = os.environ.get("JELLYFIN_URL", "")
+    api_key = os.environ.get("JELLYFIN_API_KEY", "")
+    if not base_url or not api_key:
+        raise ValueError("JELLYFIN_URL and JELLYFIN_API_KEY are required")
+
+    rows = jellyfin_source.playback_history(base_url, api_key)
+    if not rows:
+        raise ValueError(
+            "The Playback Reporting plugin returned no sessions at all -- an "
+            "unreachable server, a disabled plugin or a wrong URL, not a real state "
+            "-- refusing to write nothing."
+        )
+
+    # One timestamp for the whole pass: every row below came out of a single query at
+    # a single instant, and `_merge_playback` settles a key against the lake's copy by
+    # this value.
+    extracted_at = datetime.now(UTC)
+
+    by_hour: dict[datetime, list[dict]] = {}
+    undateable = 0
+    for row in rows:
+        started_at = row.get("started_at")
+        if started_at is None:
+            # There is no hour to put this row in and no key to merge it under --
+            # `_playback_key` is (started_at, user_id, item_id) and returns None
+            # without one -- so it cannot be written. Counted and surfaced rather than
+            # dropped quietly: a non-zero count here means DateCreated stopped parsing.
+            undateable += 1
+            continue
+        by_hour.setdefault(_playback_hour(started_at), []).append(row)
+
+    if not by_hour:
+        raise ValueError(
+            f"All {undateable} sessions the plugin returned have an unparseable "
+            "DateCreated -- there is no hour to write any of them to -- refusing to "
+            "write nothing."
+        )
+
+    total_written = 0
+    total_in_lake = 0
+    total_retained = 0
+    collected = 0
+    mismatched: list[str] = []
+    for hour in sorted(by_hour):
+        hour_rows = by_hour[hour]
+        # Distinct by the merge's own key: the invariant has to be stated in the terms
+        # the merge works in, or an exact duplicate in the plugin's table would read as
+        # a dropped row.
+        offered_here = len({_playback_key(row) for row in hour_rows})
+        collected += len(hour_rows)
+
+        written, in_lake, retained = _write_playback_history_hour(
+            lake, hour, hour_rows, extracted_at
+        )
+        total_written += written
+        total_in_lake += in_lake
+        total_retained += retained
+        if in_lake - retained != offered_here:
+            mismatched.append(f"{hour:%Y-%m-%dT%H:00:00}")
+
+    first_hour, last_hour = min(by_hour), max(by_hour)
+    context.log.info(
+        "history pass: %d sessions across %d hours (%s .. %s), %d in the lake "
+        "afterwards (%d kept that this pass did not offer), %d bytes written",
+        collected, len(by_hour), first_hour, last_hour, total_in_lake,
+        total_retained, total_written,
+    )
+    if undateable:
+        context.log.warning(
+            "%d sessions had no parseable DateCreated and could not be bucketed", undateable
+        )
+
+    yield Output(
+        {"sessions": collected, "hours": len(by_hour)},
+        metadata={
+            # These three reconcile by construction: returned == bucketed + the ones
+            # with no timestamp to bucket them by.
+            "sessions_returned_by_plugin": len(rows),
+            "sessions_bucketed": collected,
+            "sessions_without_a_timestamp": undateable,
+            # And these two describe the lake afterwards, which is legitimately larger
+            # than what this pass offered -- see the check's description.
+            "sessions_in_lake": total_in_lake,
+            "sessions_only_in_lake": total_retained,
+            "hours": len(by_hour),
+            "first_hour": MetadataValue.text(f"{first_hour:%Y-%m-%dT%H:00:00}"),
+            "last_hour": MetadataValue.text(f"{last_hour:%Y-%m-%dT%H:00:00}"),
+            "watch_seconds": sum(
+                row.get("play_duration_seconds") or 0
+                for hour_rows in by_hour.values()
+                for row in hour_rows
+            ),
+            "bytes_written": total_written,
+            "extracted_at": MetadataValue.text(str(extracted_at)),
+        },
+    )
+
+    yield AssetCheckResult(
+        check_name=CHECK_PLAYBACK_HISTORY_RECONCILED,
+        passed=not mismatched,
+        severity=AssetCheckSeverity.ERROR,
+        metadata={
+            "mismatched_hours": MetadataValue.text(", ".join(mismatched) or "none"),
+            "sessions_bucketed": collected,
+            "sessions_in_lake": total_in_lake,
+        },
     )
 
 
