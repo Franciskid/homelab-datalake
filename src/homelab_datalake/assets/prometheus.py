@@ -37,6 +37,7 @@ import os
 import re
 import tempfile
 import time
+from array import array
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
@@ -198,30 +199,64 @@ def stream_position(lake: LakeStorage, now_ms: int) -> int | None:
 # the stream
 # --------------------------------------------------------------------------------
 
-# Series already written for an hour by this process. The sensor runs in a long-lived
-# code server, so this usually saves writing [count withheld] label sets every minute; when the
-# process restarts it is empty, a few label sets are written twice, and compaction
-# removes the duplicates. Correctness never depends on it.
+# Series ids already written for an hour, so a tick writes only the label sets that are
+# new. Kept in memory *and* in a small file: sensor evaluations do not share a process
+# reliably -- measured on primary on 2026-09-15, every tick rewrote all [count withheld] label sets,
+# half a megabyte a minute of objects compaction then threw away. The file is [volume withheld] of
+# int64 ids per hour in the daemon container's /tmp. Losing it only means one tick writes
+# every label set again, which compaction removes; correctness never depends on it.
 _EMITTED_SERIES: dict[int, set[int]] = {}
+STREAM_STATE_DIR = Path(os.environ.get(
+    "PROMETHEUS_STREAM_STATE_DIR", str(Path(tempfile.gettempdir()) / "prometheus-stream")))
+
+
+def _seen_path(state_dir: Path, hour: int) -> Path:
+    return state_dir / f"series-{hour}.bin"
+
+
+def _load_seen(state_dir: Path | None, hour: int) -> set[int]:
+    if state_dir is None or not _seen_path(state_dir, hour).exists():
+        return set()
+    ids = array("q")
+    ids.frombytes(_seen_path(state_dir, hour).read_bytes())
+    return set(ids)
+
+
+def _save_seen(state_dir: Path | None, hour: int, seen: set[int]) -> None:
+    if state_dir is None:
+        return
+    state_dir.mkdir(parents=True, exist_ok=True)
+    path = _seen_path(state_dir, hour)
+    temporary = path.with_suffix(".tmp")
+    temporary.write_bytes(array("q", sorted(seen)).tobytes())
+    temporary.replace(path)
 
 
 def write_parts(lake: LakeStorage, batch: prom.Batch, start_ms: int, end_ms: int,
-                emitted: dict[int, set[int]]) -> tuple[int, int]:
+                emitted: dict[int, set[int]], state_dir: Path | None = None) -> tuple[int, int]:
     """One part per hour the batch touches. Returns (objects, series written)."""
     objects = series_written = 0
     for hour, sub in sorted(batch.split_by_hour().items()):
         part_start, part_end = max(start_ms, hour), min(end_ms, hour + prom.HOUR_MS)
         lake.write_table(part_key(SAMPLES_PREFIX, part_start, part_end), sub.samples_table())
         objects += 1
-        seen = emitted.setdefault(hour, set())
+        seen = emitted.get(hour)
+        if seen is None:
+            seen = emitted[hour] = _load_seen(state_dir, hour)
         new = set(sub.series) - seen
         if new:
             lake.write_table(part_key(SERIES_PREFIX, part_start, part_end), sub.series_table(new))
             seen |= new
+            _save_seen(state_dir, hour, seen)
             series_written += len(new)
             objects += 1
-    for hour in [h for h in emitted if h < prom.hour_floor(end_ms) - prom.HOUR_MS]:
+    oldest_kept = prom.hour_floor(end_ms) - prom.HOUR_MS
+    for hour in [h for h in emitted if h < oldest_kept]:
         del emitted[hour]
+    if state_dir is not None and state_dir.exists():
+        for path in state_dir.glob("series-*.bin"):
+            if int(path.stem.split("-")[1]) < oldest_kept:
+                path.unlink(missing_ok=True)
     return objects, series_written
 
 
@@ -253,9 +288,10 @@ def parse_cursor(cursor: str | None) -> tuple[int | None, list[int]]:
 
 
 def stream_tick(lake: LakeStorage, client, cursor: str | None, now_ms: int,
-                emitted: dict[int, set[int]] | None = None) -> Tick:
+                emitted: dict[int, set[int]] | None = None, state_dir: Path | None = None) -> Tick:
     """Read `(cursor, now - lag]` from Prometheus and write it as parts."""
-    emitted = _EMITTED_SERIES if emitted is None else emitted
+    if emitted is None:
+        emitted, state_dir = _EMITTED_SERIES, state_dir or STREAM_STATE_DIR
     end = now_ms - LAG_MS
     end -= end % 1000
     start, pending = parse_cursor(cursor)
@@ -283,7 +319,7 @@ def stream_tick(lake: LakeStorage, client, cursor: str | None, now_ms: int,
     batch = prom.Batch()
     for job in client.jobs(start, end):
         batch.extend(client.pull(job, start, end, window_ms=MAX_TICK_MS))
-    tick.objects, tick.series = write_parts(lake, batch, start, end, emitted)
+    tick.objects, tick.series = write_parts(lake, batch, start, end, emitted, state_dir)
     tick.samples = len(batch)
     tick.message = (
         f"wrote {tick.samples:,} samples and {tick.series:,} new series in "
