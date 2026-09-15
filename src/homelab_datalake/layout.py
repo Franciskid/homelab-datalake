@@ -36,8 +36,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from homelab_datalake.parsing import media_pipeline as _media_pipeline
 from homelab_datalake.parsing import ai_platform_registry as _ai_platform
+from homelab_datalake.parsing import media_pipeline as _media_pipeline
 
 LAYER_RAW = "raw"
 LAYER_CURATED = "curated"
