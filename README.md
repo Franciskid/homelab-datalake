@@ -19,7 +19,7 @@ which runs the data pipelines, also hosts the AI platform's automation jobs.
 | Nginx Proxy Manager | Requests from the mounted reverse-proxy logs. | Traffic by application, response status, visitors, and patterns over time. |
 | LiteLLM | Model-call and spend records. | Which models and callers consume tokens, what requests cost, and how long they take. |
 | Homelab Camera | Structured camera events, analysis, and related activity records from its export API. | Camera activity, passage counts, state changes, and observation coverage. |
-| Jellyfin | Library snapshots, playback sessions from the Playback Reporting plugin, the server activity log, and the account list. | What is in the library and how its composition changes, and who watched what, when, and for how long. |
+| Jellyfin | Snapshots of the whole library -- movies, series, seasons, episodes, box sets and other videos -- playback sessions from the Playback Reporting plugin, the server activity log, and the account list. | What is in the library and how its composition changes, who watched what, when, and for how long, and how an episode played relates to its series and season. |
 | TMDB and MaxMind, when configured | Additional film metadata and network/geographic enrichment. | Extra context for media and traffic analysis. |
 
 The datalake works with records and metadata. Camera recordings stay with the
