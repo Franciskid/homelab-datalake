@@ -1,6 +1,6 @@
 """Jellyfin extraction tests. Items are injected, so no server is needed."""
 
-from datetime import date
+from datetime import UTC, date, datetime, timedelta, timezone
 
 import pytest
 
@@ -94,6 +94,75 @@ def test_seven_digit_fractional_seconds_are_parsed():
     assert parsed is not None
     assert (parsed.year, parsed.month, parsed.day, parsed.hour) == (2023, 12, 1, 20)
     assert parsed.tzinfo is not None
+
+
+# .NET writes seven fractional digits but trims trailing zeros, so the activity log
+# sends fractions of every length from one to seven. These three are verbatim from the
+# 291 real entries the old parser rejected, measured on 2026-09-15.
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("2023-11-22T15:22:08.16003Z", datetime(2023, 11, 22, 15, 22, 8, 160030, tzinfo=UTC)),
+        ("2023-11-23T09:35:10.01098Z", datetime(2023, 11, 23, 9, 35, 10, 10980, tzinfo=UTC)),
+        ("2023-11-23T19:35:53.47435Z", datetime(2023, 11, 23, 19, 35, 53, 474350, tzinfo=UTC)),
+    ],
+)
+def test_real_five_digit_fractions_from_the_activity_log_parse(value, expected):
+    assert _parse_timestamp(value) == expected
+
+
+@pytest.mark.parametrize(
+    ("fraction", "microsecond"),
+    [
+        ("1", 100000),
+        ("12", 120000),
+        ("123", 123000),
+        ("1234", 123400),
+        ("12345", 123450),
+        ("123456", 123456),
+        ("1234567", 123456),  # seven digits: truncated, not rounded
+    ],
+)
+def test_every_fraction_length_from_one_to_seven_digits_parses(fraction, microsecond):
+    parsed = _parse_timestamp(f"2023-12-01T20:14:25.{fraction}Z")
+    assert parsed == datetime(2023, 12, 1, 20, 14, 25, microsecond, tzinfo=UTC)
+
+
+def test_no_fraction_at_all_parses():
+    assert _parse_timestamp("2023-12-01T20:14:25Z") == datetime(2023, 12, 1, 20, 14, 25, tzinfo=UTC)
+
+
+@pytest.mark.parametrize("fraction", ["1", "16003", "160031", "1600312"])
+def test_an_explicit_positive_offset_is_kept_whatever_the_fraction_length(fraction):
+    """The old parser ate an offset's digits into a short fraction: `.1+02:00` came
+    back as a valid instant two hours off, rather than failing."""
+    parsed = _parse_timestamp(f"2023-11-22T17:22:08.{fraction}+02:00")
+    assert parsed.utcoffset() == timedelta(hours=2)
+    assert parsed.astimezone(UTC).replace(microsecond=0) == datetime(
+        2023, 11, 22, 15, 22, 8, tzinfo=UTC
+    )
+
+
+@pytest.mark.parametrize("fraction", ["1", "16003", "1600312"])
+def test_an_explicit_negative_offset_is_kept_whatever_the_fraction_length(fraction):
+    parsed = _parse_timestamp(f"2023-11-22T10:22:08.{fraction}-05:00")
+    assert parsed.tzinfo == timezone(timedelta(hours=-5))
+    assert parsed.astimezone(UTC).replace(microsecond=0) == datetime(
+        2023, 11, 22, 15, 22, 8, tzinfo=UTC
+    )
+
+
+@pytest.mark.parametrize("value", ["2023-11-22T15:22:08.16003", "2023-11-22T15:22:08"])
+def test_no_offset_is_read_as_utc(value):
+    parsed = _parse_timestamp(value)
+    assert parsed.tzinfo == UTC
+    assert parsed.replace(microsecond=0) == datetime(2023, 11, 22, 15, 22, 8, tzinfo=UTC)
+
+
+@pytest.mark.parametrize("value", [None, "", "not a date", "2023-11-22T15:22:08.Z",
+                                   "2023-11-22T15:22:08.+00:00"])
+def test_a_timestamp_that_cannot_be_read_is_none(value):
+    assert _parse_timestamp(value) is None
 
 
 def test_runtime_ticks_become_minutes():

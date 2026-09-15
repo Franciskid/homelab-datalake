@@ -19,6 +19,9 @@ from homelab_datalake.assets.jellyfin import (
     _merge_playback,
     _playback_key,
     _write_activity_history_day,
+    activity_history_reconciles,
+    jellyfin_activity_history_raw,
+    jellyfin_activity_raw,
     jellyfin_playback_history_raw,
     jellyfin_playback_raw,
 )
@@ -27,6 +30,7 @@ from homelab_datalake.parsing.jellyfin import (
     PlaybackRows,
     _parse_duration_seconds,
     _parse_playback_timestamp,
+    _parse_timestamp,
     _playback_history_query,
     _playback_query,
     _sqlite_literal,
@@ -466,14 +470,14 @@ def test_activity_window_keeps_only_entries_inside_the_day():
         _entry(Id=1, Date="2026-09-11T23:00:00.0000000Z"),  # too old -- previous day
     ]]
 
-    rows, _ = activity_window(day, pages=pages)
+    rows = activity_window(day, pages=pages).rows
 
     assert [r["id"] for r in rows] == [3]
 
 
 def test_activity_window_reports_a_field_the_schema_does_not_name():
     pages = [[_entry(Id=1, SomethingNew="x")]]
-    _, unmapped = activity_window(date(2026, 9, 12), pages=pages)
+    unmapped = activity_window(date(2026, 9, 12), pages=pages).unmapped
     assert "SomethingNew" in unmapped
 
 
@@ -490,7 +494,7 @@ def test_activity_window_reads_multiple_pages():
         [_entry(Id=n, Date="2026-09-12T20:00:00.0000000Z") for n in range(200, 190, -1)],
         [_entry(Id=n, Date="2026-09-12T08:00:00.0000000Z") for n in range(10, 0, -1)],
     ]
-    rows, _ = activity_window(day, pages=pages)
+    rows = activity_window(day, pages=pages).rows
     assert len(rows) == 20
 
 
@@ -507,7 +511,7 @@ def test_activity_history_pages_all_the_way_to_the_end():
         [_entry(Id=n, Date="2026-09-12T20:00:00.0000000Z") for n in range(200, 190, -1)],
         [_entry(Id=n, Date="2023-11-21T16:15:05.0000000Z") for n in range(10, 0, -1)],
     ]
-    by_day, _ = activity_history(pages=pages)
+    by_day = activity_history(pages=pages).by_day
     assert sum(len(rows) for rows in by_day.values()) == 20
 
 
@@ -519,7 +523,7 @@ def test_activity_history_buckets_across_a_utc_midnight():
         _entry(Id=1, Date="2026-09-12T23:59:59.0000000Z"),
         _entry(Id=2, Date="2026-09-13T00:00:19.0000000Z"),
     ]]
-    by_day, _ = activity_history(pages=pages)
+    by_day = activity_history(pages=pages).by_day
     assert set(by_day) == {date(2026, 9, 12), date(2026, 9, 13)}
     assert [r["id"] for r in by_day[date(2026, 9, 12)]] == [1]
     assert [r["id"] for r in by_day[date(2026, 9, 13)]] == [2]
@@ -529,17 +533,20 @@ def test_activity_history_reaches_the_logs_first_day():
     """Verified against the real server on 2026-09-15: the earliest entry is
     2023-11-21T16:15:05Z. A fixture at that instant must bucket to that day, not be
     dropped as somehow out of range -- there is no floor here to drop it against."""
-    by_day, _ = activity_history(pages=[[_entry(Id=1, Date="2023-11-21T16:15:05.0000000Z")]])
+    by_day = activity_history(pages=[[_entry(Id=1, Date="2023-11-21T16:15:05.0000000Z")]]).by_day
     assert date(2023, 11, 21) in by_day
 
 
-def test_activity_history_skips_an_entry_with_no_parseable_date():
-    by_day, _ = activity_history(pages=[[_entry(Id=1, Date=None)]])
-    assert by_day == {}
+def test_activity_history_counts_an_entry_with_no_parseable_date_rather_than_hiding_it():
+    """There is no day to write it to, so it cannot land -- but it must be counted:
+    silently skipping these is how 291 real entries went missing."""
+    read = activity_history(pages=[[_entry(Id=1, Date=None), _entry(Id=2, Date="garbage")]])
+    assert read.by_day == {}
+    assert read.unparseable_dates == 2
 
 
 def test_activity_history_reports_a_field_the_schema_does_not_name():
-    _, unmapped = activity_history(pages=[[_entry(Id=1, SomethingNew="x")]])
+    unmapped = activity_history(pages=[[_entry(Id=1, SomethingNew="x")]]).unmapped
     assert "SomethingNew" in unmapped
 
 
@@ -585,15 +592,15 @@ def test_writing_a_history_day_twice_replaces_rather_than_accumulates(tmp_path):
     lake = LakeStorage(local_root=str(tmp_path / "lake"))
     day = date(2023, 11, 21)
 
-    first, _ = activity_history(
+    first = activity_history(
         pages=[[_entry(Id=n, Date="2023-11-21T16:15:05.0000000Z") for n in (1, 2, 3)]]
-    )
+    ).by_day
     _, count, _ = _write_activity_history_day(lake, day, first[day])
     assert count == 3
 
-    second, _ = activity_history(
+    second = activity_history(
         pages=[[_entry(Id=9, Date="2023-11-21T16:15:05.0000000Z")]]
-    )
+    ).by_day
     _, count, _ = _write_activity_history_day(lake, day, second[day])
     assert count == 1
 
@@ -607,9 +614,9 @@ def test_a_repeated_write_of_the_same_day_is_byte_for_byte_the_same_shape(tmp_pa
     having run it once -- same row count, same content, not doubled."""
     lake = LakeStorage(local_root=str(tmp_path / "lake"))
     day = date(2023, 11, 21)
-    by_day, _ = activity_history(
+    by_day = activity_history(
         pages=[[_entry(Id=n, Date="2023-11-21T16:15:05.0000000Z") for n in (1, 2)]]
-    )
+    ).by_day
 
     _write_activity_history_day(lake, day, by_day[day])
     _write_activity_history_day(lake, day, by_day[day])
@@ -1015,3 +1022,236 @@ def test_re_reading_an_hour_replaces_an_already_loaded_sentinel_with_null(
     assert written[0]["play_duration_seconds"] is None
     assert _meta(output, "watch_seconds") == 0
     assert check.passed is True
+
+
+# --------------------------------------------------------------------------------
+# activity log timestamps with short fractions, and the walk that lost them silently
+# --------------------------------------------------------------------------------
+#
+# Measured on 2026-09-15: the server's log held 33,001 entries and the one-pass history
+# load had written 32,708. 291 of the 293 missing failed `_parse_timestamp` -- .NET
+# trims trailing zeros off a seven-digit fraction -- and both readers skipped them
+# without a word. These three dates are verbatim from that missing set.
+REAL_SHORT_FRACTION_DATES = (
+    "2023-11-22T15:22:08.16003Z",
+    "2023-11-23T09:35:10.01098Z",
+    "2023-11-23T19:35:53.47435Z",
+)
+
+
+class _FakeActivityLog:
+    """Stands in for `fetch_activity_page` with the endpoint's real behaviour: newest
+    first (Id stands in for DateCreated, which rises with it), `startIndex`/`limit`
+    pages, an optional `minDate` floor, and `TotalRecordCount` counted over the log as
+    it stands at the moment of each request. `before_request(log, n)` runs ahead of
+    request n, so a test can grow or shrink the log mid-walk."""
+
+    def __init__(self, entries, before_request=None):
+        self.entries = list(entries)
+        self.before_request = before_request
+        self.requests = 0
+
+    def __call__(self, base_url, api_key, start_index, limit, min_date=None):
+        if self.before_request:
+            self.before_request(self, self.requests)
+        self.requests += 1
+        ordered = sorted(self.entries, key=lambda e: e["Id"], reverse=True)
+        if min_date is not None:
+            # An undateable entry is kept past the floor, so the reader sees it.
+            ordered = [e for e in ordered
+                       if (_parse_timestamp(e["Date"]) or min_date) >= min_date]
+        return {"Items": ordered[start_index:start_index + limit],
+                "TotalRecordCount": len(ordered), "StartIndex": start_index}
+
+
+def _serve(monkeypatch, log, page_size):
+    source = jellyfin_assets.jellyfin_source
+    monkeypatch.setenv("JELLYFIN_URL", "https://jf.example")
+    monkeypatch.setenv("JELLYFIN_API_KEY", "key")
+    monkeypatch.setattr(source, "fetch_activity_page", log)
+    monkeypatch.setattr(source, "PAGE_SIZE", page_size)
+    monkeypatch.setattr(source, "ACTIVITY_PAGE_SIZE", page_size)
+
+
+def _dated(n, date_text="2023-11-22T15:22:08.1600312Z"):
+    return _entry(Id=n, Date=date_text)
+
+
+def test_the_real_short_fraction_entries_land_on_their_days_not_nowhere():
+    read = activity_history(pages=[[_entry(Id=n, Date=d)
+                                    for n, d in enumerate(REAL_SHORT_FRACTION_DATES, 1)]])
+    assert read.unparseable_dates == 0
+    assert [r["id"] for r in read.by_day[date(2023, 11, 22)]] == [1]
+    assert sorted(r["id"] for r in read.by_day[date(2023, 11, 23)]) == [2, 3]
+
+
+def test_activity_window_keeps_a_real_short_fraction_entry_and_counts_a_bad_one():
+    pages = [[_entry(Id=2, Date=REAL_SHORT_FRACTION_DATES[0]), _entry(Id=1, Date="garbage")]]
+    read = activity_window(date(2023, 11, 22), pages=pages)
+    assert [r["id"] for r in read.rows] == [2]
+    assert read.unparseable_dates == 1
+
+
+def test_an_entry_seen_twice_is_written_once():
+    read = activity_history(pages=[[_dated(2), _dated(1)], [_dated(1)]])
+    assert sorted(r["id"] for r in read.by_day[date(2023, 11, 22)]) == [1, 2]
+    assert read.duplicates_skipped == 1
+
+
+def test_activity_history_reads_the_servers_count_on_the_first_and_last_page(monkeypatch):
+    _serve(monkeypatch, _FakeActivityLog([_dated(n) for n in range(1, 8)]), page_size=3)
+    read = activity_history()
+    assert read.total_at_start == 7
+    assert read.total_at_end == 7
+    assert sum(len(rows) for rows in read.by_day.values()) == 7
+
+
+def test_a_log_growing_mid_walk_re_reads_entries_and_never_skips_one(monkeypatch):
+    """The paging question, answered by simulation. Newest first by startIndex: two
+    entries logged before each of the next two requests push everything older down
+    two places, so each of those pages starts with two entries already read. Nothing
+    is skipped, the new entries are never reached, and de-duplication on Id is what
+    stops the re-reads being written twice."""
+
+    def grow(log, request):
+        if request in (1, 2):
+            top = max(e["Id"] for e in log.entries)
+            log.entries += [_dated(top + 1), _dated(top + 2)]
+
+    _serve(monkeypatch, _FakeActivityLog([_dated(n) for n in range(1, 11)], grow), page_size=3)
+
+    read = activity_history()
+
+    ids = sorted(r["id"] for rows in read.by_day.values() for r in rows)
+    assert ids == list(range(1, 11))
+    assert read.duplicates_skipped == 4
+    assert (read.total_at_start, read.total_at_end) == (10, 14)
+    assert activity_history_reconciles(len(ids), read.total_at_start, read.total_at_end)
+
+
+def test_a_deletion_mid_walk_skips_an_entry_and_the_counts_say_so(monkeypatch):
+    """The failure the walk cannot avoid: removing an entry it already passed shifts
+    everything older up one place, so one entry slides behind the cursor unread."""
+
+    def delete_newest_after_first_page(log, request):
+        if request == 1:
+            log.entries = [e for e in log.entries if e["Id"] != 10]
+
+    _serve(monkeypatch, _FakeActivityLog([_dated(n) for n in range(1, 11)],
+                                         delete_newest_after_first_page), page_size=3)
+
+    read = activity_history()
+
+    ids = sorted(r["id"] for rows in read.by_day.values() for r in rows)
+    assert 7 not in ids
+    assert not activity_history_reconciles(len(ids), read.total_at_start, read.total_at_end)
+
+
+# -- the invariant, on the real numbers ---------------------------------------------
+
+
+def test_the_server_check_fails_on_the_real_2026_09_15_numbers():
+    """32,708 written. The server holds 33,001 now; two of those are newer than the
+    run, so its first page counted 32,999. Either way, 291 short."""
+    assert not activity_history_reconciles(32_708, 32_999, 32_999)
+    assert not activity_history_reconciles(32_708, 32_999, 33_001)
+    assert not activity_history_reconciles(32_708, 33_001, 33_001)
+
+
+def test_the_server_check_passes_when_every_counted_entry_was_written():
+    assert activity_history_reconciles(32_999, 32_999, 33_001)
+    # One entry logged between the first page's count query and its item query.
+    assert activity_history_reconciles(33_000, 32_999, 33_001)
+
+
+def test_the_server_check_fails_on_more_entries_than_ever_existed():
+    assert not activity_history_reconciles(33_002, 32_999, 33_001)
+
+
+def test_the_server_check_fails_when_the_server_gave_no_count():
+    assert not activity_history_reconciles(10, None, None)
+
+
+# -- both assets, driven against the fake server -------------------------------------
+
+
+def _run_activity_history(lake):
+    results = list(jellyfin_activity_history_raw(build_asset_context(), lake))
+    output = next(r for r in results if isinstance(r, Output))
+    checks = {r.check_name: r for r in results if isinstance(r, AssetCheckResult)}
+    return output, checks
+
+
+def test_the_history_pass_fails_the_server_check_when_dates_do_not_parse(
+    tmp_path, monkeypatch, dagster_warnings
+):
+    """Tonight's shape in miniature: entries on the server that never reach the lake.
+    The per-day check still passes -- it compares written with collected, and these
+    were never collected -- which is exactly why it could not see the loss."""
+    lake = LakeStorage(local_root=str(tmp_path / "lake"))
+    entries = [_dated(n) for n in range(1, 8)] + [_entry(Id=8, Date="garbage"),
+                                                  _entry(Id=9, Date=None)]
+    _serve(monkeypatch, _FakeActivityLog(entries), page_size=4)
+
+    output, checks = _run_activity_history(lake)
+
+    assert _meta(output, "entries_with_unparseable_date") == 2
+    assert _meta(output, "distinct_ids_written") == 7
+    assert _meta(output, "server_total_at_start") == 9
+    assert checks["activity_history_matches_what_was_read"].passed is True
+    server_check = checks["activity_history_matches_the_servers_count"]
+    assert server_check.passed is False
+    assert server_check.severity.value == "ERROR"
+    assert any("2 activity log entries had a Date that did not parse" in m
+               for m in dagster_warnings)
+
+
+def test_the_history_pass_passes_the_server_check_on_a_log_that_grows_mid_walk(
+    tmp_path, monkeypatch
+):
+    lake = LakeStorage(local_root=str(tmp_path / "lake"))
+    entries = [_entry(Id=n, Date=d) for n, d in enumerate(REAL_SHORT_FRACTION_DATES, 1)]
+    entries += [_dated(n) for n in range(4, 11)]
+
+    def grow(log, request):
+        if request == 1:
+            log.entries.append(_dated(11, "2026-09-15T21:00:00.12Z"))
+
+    _serve(monkeypatch, _FakeActivityLog(entries, grow), page_size=3)
+
+    output, checks = _run_activity_history(lake)
+
+    assert checks["activity_history_matches_the_servers_count"].passed is True
+    assert _meta(output, "distinct_ids_written") == 10
+    assert _meta(output, "duplicate_entries_skipped") == 1
+    assert _meta(output, "entries_with_unparseable_date") == 0
+    day = lake.read_table(f"{ACTIVITY_PREFIX}/dt=2023-11-23/data.parquet").to_pylist()
+    assert sorted(r["id"] for r in day) == [2, 3]
+
+
+def test_the_daily_activity_asset_surfaces_unparseable_dates_and_writes_no_duplicates(
+    tmp_path, monkeypatch, dagster_warnings
+):
+    lake = LakeStorage(local_root=str(tmp_path / "lake"))
+    entries = [
+        _entry(Id=1, Date=REAL_SHORT_FRACTION_DATES[0]),
+        _entry(Id=2, Date="2023-11-22T18:00:00.5Z"),
+        _entry(Id=3, Date="garbage"),
+        _entry(Id=4, Date="2023-11-22T20:00:00.1234567Z"),
+    ]
+
+    def grow(log, request):
+        if request == 1:
+            log.entries.append(_entry(Id=5, Date="2023-11-23T09:00:00Z"))
+
+    _serve(monkeypatch, _FakeActivityLog(entries, grow), page_size=2)
+
+    results = list(jellyfin_activity_raw(build_asset_context(partition_key="2023-11-22"), lake))
+    output = next(r for r in results if isinstance(r, Output))
+
+    written = lake.read_table(f"{ACTIVITY_PREFIX}/dt=2023-11-22/data.parquet").to_pylist()
+    assert sorted(r["id"] for r in written) == [1, 2, 4]
+    assert _meta(output, "entries_with_unparseable_date") == 1
+    assert _meta(output, "duplicate_entries_skipped") == 1
+    assert any("1 activity log entries had a Date that did not parse" in m
+               for m in dagster_warnings)
