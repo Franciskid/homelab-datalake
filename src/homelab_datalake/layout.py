@@ -34,7 +34,6 @@ and the new one.
 
 from __future__ import annotations
 
-import dataclasses
 from dataclasses import dataclass
 
 from homelab_datalake.parsing import ai_platform_registry as _ai_platform
@@ -78,10 +77,10 @@ class Dataset:
     # Non-empty names the reason this dataset should not be rebuilt into the nightly
     # DuckDB warehouse the way every other raw table is -- unbounded growth that
     # would make `warehouse_tables`' full-history `read_parquet` rescan slower and
-    # larger every night, forever, with no ceiling. Set here as a decision to flag
-    # to whoever wires up the enforcement -- see the note beside
-    # `platform_usage_events` below in this file for the one dataset that carries it
-    # today and why full nightly materialisation is the wrong default for it.
+    # larger every night, forever, with no ceiling. No dataset carries this today:
+    # `platform_usage_events` looked like a candidate and was measured instead of
+    # assumed -- see the note beside `_AI_PLATFORM_RAW` below -- and the real number
+    # did not support it. Left in place for the next table that actually earns it.
     lake_only: str = ""
 
     @property
@@ -181,32 +180,16 @@ _AI_PLATFORM_RAW: tuple[Dataset, ...] = tuple(
     for spec in _ai_platform.REGISTRY
 )
 
-# platform_usage_events carries full prompt and response text on every one of
-# [count withheld]+ rows ([volume withheld] measured 2026-09-14, though most of that figure was the
-# base64 camera frames, which never reach this table -- they are decoded into lake
-# objects at ingestion; see ai_platform.py). What lands here is free text with no
-# ceiling, growing every day forever, and `warehouse_tables` rebuilds every raw
-# table from its *entire* history on every run -- fine for a bounded config table,
-# wrong for the one table in this registry that will not stop growing.
-#
-# Flagged `lake_only` rather than silently left to grow the nightly rebuild: this
-# says a table needs bounded or on-demand loading instead of "read everything,
-# every night, forever". No enforcement lives in this branch yet -- see the field's
-# own docstring on Dataset -- so today this dataset is still loaded in full by
-# `warehouse_tables`, same as before the flag existed; it is set here as the
-# decision for whoever wires up the enforcement to act on.
-_AI_PLATFORM_RAW = tuple(
-    dataclasses.replace(
-        dataset,
-        lake_only=(
-            "unbounded prompt/response text, growing forever; see the note above "
-            "_AI_PLATFORM_RAW in this file"
-        ),
-    )
-    if dataset.table == "platform_usage_events" else dataset
-    for dataset in _AI_PLATFORM_RAW
-)
-
+# platform_usage_events carries full prompt and response text on every row. It
+# looked like the one table in this registry that could grow past a nightly
+# rebuild's reach -- [volume withheld] was measured against the whole table on 2026-09-14 -- but
+# that figure was almost entirely the base64 camera frames, and those never reach
+# this table at all: they are decoded to lake objects at ingestion, before the row
+# is built (see ai_platform.py). Measured directly instead of assumed: across all
+# [count withheld] rows, prompt + response together are [volume withheld], averaging 764 bytes a row, and
+# the four most recent days ran 344-[volume withheld] each. That is not a rebuild `raw.
+# platform_usage_events` will ever notice, so it is loaded in full by
+# `warehouse_tables` like every other table in the registry -- no `lake_only`.
 RAW_DATASETS = RAW_DATASETS + _AI_PLATFORM_RAW
 
 # --------------------------------------------------------------------------------
@@ -253,12 +236,9 @@ CURATED_DATASETS: tuple[Dataset, ...] = (
     _curated("stg_tmdb_titles", DOMAIN_MEDIA, "tmdb", "titles",
              "TMDB enrichment, typed, with the revenue-to-budget ratio derived.",
              None),
-    # stg_ai_platform_usage_events is deliberately absent from this list, for the
-    # same reason fct_ai_gateway_call is absent from MART_DATASETS below: it carries
-    # the same unbounded prompt/response text as platform_usage_events, and this
-    # list is what lake_curated republishes to Parquet in full, every night. It is
-    # still built by dbt and queryable in the warehouse; it is not given a second,
-    # ever-growing copy in the lake on a schedule that never stops adding to it.
+    _curated("stg_ai_platform_usage_events", DOMAIN_AI, "ai_platform", "usage_events",
+             "Every api.ai gateway call, typed, full prompt and response included.",
+             "partition_date"),
     _curated("stg_ai_platform_applications", DOMAIN_AI, "ai_platform", "applications",
              "The application registry, deduped to the newest snapshot per id.", None),
     _curated("stg_ai_platform_api_keys", DOMAIN_AI, "ai_platform", "api_keys",
@@ -322,17 +302,10 @@ MART_DATASETS: tuple[Dataset, ...] = (
     _mart("dim_genre", DOMAIN_MEDIA, "dim_genre", "The genre lookup.", None),
     _mart("bridge_title_genre", DOMAIN_MEDIA, "bridge_title_genre",
           "The many-to-many between titles and genres.", "snapshot_date"),
-    # fct_ai_gateway_call is deliberately NOT registered here. It carries the same
-    # unbounded, ever-growing prompt/response text as platform_usage_events (see the
-    # lake_only note above _AI_PLATFORM_RAW), and this list is what the lake_marts
-    # asset republishes to Parquet *in full, every night, forever* -- doubling that
-    # growth into a second copy for no reader this table does not already have: dbt
-    # still builds it as a real table in the warehouse and the serving file picks it
-    # up automatically (serving.publish copies every *_marts table unconditionally,
-    # with no dependency on this registry), so it stays fully queryable through the
-    # SQL console, the semantic layer and the MCP tools. What it does not get is a
-    # second full copy dumped to lake Parquet on a schedule that never stops adding
-    # to it.
+    _mart("fct_ai_gateway_call", DOMAIN_AI, "fct_ai_gateway_call",
+          "One row per api.ai gateway call: application, key, person, requested "
+          "and actual model, full prompt and response, tokens, cost, latency.",
+          "partition_date"),
     _mart("fct_agent_run", DOMAIN_AI, "fct_agent_run",
           "One row per agent run, whether or not it called the gateway.",
           "partition_date"),

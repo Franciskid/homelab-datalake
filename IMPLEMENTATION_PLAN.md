@@ -811,16 +811,21 @@ models, and the MCP semantic layer exposes six matching datasets, so a model rea
 told, in the dataset description itself, that a streamed call can report zero tokens and that
 a camera frame is a file referenced by a key rather than a value in the row.
 
-`fct_ai_gateway_call` and its staging model are deliberately absent from the lake's
-curated/marts Parquet republish (`layout.CURATED_DATASETS` / `MART_DATASETS`): they carry the
-same unbounded, ever-growing prompt/response text as `usage_events` itself, and that
-republish rewrites its *entire* history to Parquet every night. Both are still built by dbt
-and served through the warehouse and the semantic layer regardless — what they don't get is a
-second copy dumped to the lake on a schedule that never stops adding to it. `Dataset.lake_only`
-(added to `layout.py` on `platform_usage_events` alongside this work, on the same axis but one
-step earlier in the pipeline — whether a raw table is rebuilt into the nightly DuckDB
-warehouse at all) is the flag for the raw side of the same problem; no enforcement for it
-ships in this change, so `platform_usage_events` is still loaded in full today, same as before
-the flag existed. It is set as the decision for whoever wires the enforcement up.
+`fct_ai_gateway_call` and its staging model were nearly left out of the lake's curated/marts
+Parquet republish (`layout.CURATED_DATASETS` / `MART_DATASETS`) on the assumption that they
+carried the same unbounded growth as `usage_events`' [volume withheld]. Measured instead of assumed: across
+all [count withheld] rows, `prompt` + `response` together are [volume withheld], averaging 764 bytes a row, and the
+most recent four days ran 344–[volume withheld] each — the [volume withheld] was almost entirely the base64 camera
+frames, and those never reach this table at all; they are decoded to lake objects at ingestion,
+before the row is built. That is not a republish `lake_curated`/`lake_marts` will ever notice,
+so both are registered like every other staging model and mart in this registry, and
+`fct_ai_gateway_call` is fully available through the datasets the same as the other five —
+which is the point of this whole workstream, and api.ai calls are the headline case: who
+called, which application, what it cost, and now the prompt and the answer.
+
+The same correction applies to the raw side one step earlier in the pipeline.
+`platform_usage_events` is loaded into the nightly DuckDB warehouse rebuild in full, like every
+other table in the registry — no `Dataset.lake_only`. The field stays in `layout.py` for the
+next table that genuinely earns it; this one, measured, did not.
 
 > Public history note: private identifiers, measurements, and operational details were redacted. Code examples use placeholder infrastructure.
