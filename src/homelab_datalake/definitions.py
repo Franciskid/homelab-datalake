@@ -93,11 +93,42 @@ def litellm_daily_schedule(context: ScheduleEvaluationContext):
     yield RunRequest(run_key=f"litellm-{day.isoformat()}", partition_key=day.isoformat())
 
 
+# Playback, the activity log and the account list are excluded and get their own jobs
+# below: each has its own partitions definition -- hourly for playback, its own start
+# date for the other two -- and everything in one asset job has to share one, the same
+# reason camera_zones_raw is split out of camera_daily_job.
 jellyfin_daily_job = define_asset_job(
     name="jellyfin_daily",
-    selection=AssetSelection.groups("jellyfin"),
+    selection=(
+        AssetSelection.groups("jellyfin")
+        - AssetSelection.assets(
+            jellyfin.jellyfin_playback_raw, jellyfin.jellyfin_activity_raw,
+            jellyfin.jellyfin_users_raw,
+        )
+    ),
     partitions_def=jellyfin.library_partitions,
     description="Snapshot the media library.",
+)
+
+jellyfin_playback_job = define_asset_job(
+    name="jellyfin_playback",
+    selection=AssetSelection.assets(jellyfin.jellyfin_playback_raw),
+    partitions_def=jellyfin.playback_partitions,
+    description="Land one hour of Playback Reporting plugin rows.",
+)
+
+jellyfin_activity_job = define_asset_job(
+    name="jellyfin_activity",
+    selection=AssetSelection.assets(jellyfin.jellyfin_activity_raw),
+    partitions_def=jellyfin.activity_partitions,
+    description="Land one day of the server activity log.",
+)
+
+jellyfin_users_job = define_asset_job(
+    name="jellyfin_users",
+    selection=AssetSelection.assets(jellyfin.jellyfin_users_raw),
+    partitions_def=jellyfin.users_partitions,
+    description="Snapshot today's account list.",
 )
 
 
@@ -113,6 +144,59 @@ jellyfin_daily_job = define_asset_job(
 def jellyfin_daily_schedule(context: ScheduleEvaluationContext):
     day = context.scheduled_execution_time.date()
     yield RunRequest(run_key=f"jellyfin-{day.isoformat()}", partition_key=day.isoformat())
+
+
+@schedule(
+    job=jellyfin_playback_job,
+    cron_schedule="5 * * * *",
+    default_status=DefaultScheduleStatus.STOPPED,
+    description=(
+        "Every hour at five past, re-materialising the current hour plus the three "
+        "before it -- one combined schedule rather than camera's two, because "
+        "playback's own partition grain is already hourly, so the same tick that lands "
+        "a fresh hour can also be the late-arrival re-read. Four hours because the "
+        "plugin does not expose whether a session is still open: the longest measured "
+        "on this server is Example Movie at [duration withheld] (1h52m), and this doubles that "
+        "with room to spare. Idempotent by construction -- jellyfin_playback_raw "
+        "merges into a partition rather than replacing it."
+    ),
+)
+def jellyfin_playback_hourly_schedule(context: ScheduleEvaluationContext):
+    current_hour = context.scheduled_execution_time.replace(
+        minute=0, second=0, microsecond=0
+    )
+    for back in range(4):
+        hour = current_hour - datetime.timedelta(hours=back)
+        yield RunRequest(
+            run_key=f"jellyfin-playback-{hour:%Y-%m-%d-%H}-{context.scheduled_execution_time:%Y%m%d%H%M}",
+            partition_key=hour.strftime("%Y-%m-%d-%H:%M"),
+        )
+
+
+@schedule(
+    job=jellyfin_activity_job,
+    cron_schedule="35 3 * * *",
+    default_status=DefaultScheduleStatus.STOPPED,
+    description="Yesterday's activity log at 03:35 UTC -- a log day has to be over first.",
+)
+def jellyfin_activity_schedule(context: ScheduleEvaluationContext):
+    day = context.scheduled_execution_time.date() - datetime.timedelta(days=1)
+    yield RunRequest(run_key=f"jellyfin-activity-{day.isoformat()}", partition_key=day.isoformat())
+
+
+@schedule(
+    job=jellyfin_users_job,
+    cron_schedule="38 3 * * *",
+    default_status=DefaultScheduleStatus.STOPPED,
+    description=(
+        "Today's account list at 03:38 UTC. Today's, not yesterday's: an account list "
+        "has no history at the API, so the only date this snapshot can honestly carry "
+        "is the one it was taken on."
+    ),
+)
+def jellyfin_users_schedule(context: ScheduleEvaluationContext):
+    day = context.scheduled_execution_time.date()
+    yield RunRequest(run_key=f"jellyfin-users-{day.isoformat()}", partition_key=day.isoformat())
 
 
 # Zones are excluded and get their own job below. Everything in a partitioned job has
@@ -310,9 +394,11 @@ def notify_on_failure(context):
 defs = Definitions(
     assets=all_assets,
     jobs=[npm_daily_job, npm_backfill_job, litellm_daily_job, jellyfin_daily_job,
+          jellyfin_playback_job, jellyfin_activity_job, jellyfin_users_job,
           camera_daily_job, camera_zones_job, analytics_job],
     schedules=[npm_daily_schedule, litellm_daily_schedule, jellyfin_daily_schedule,
-               camera_daily_schedule, camera_late_arrival_schedule,
+               jellyfin_playback_hourly_schedule, jellyfin_activity_schedule,
+               jellyfin_users_schedule, camera_daily_schedule, camera_late_arrival_schedule,
                camera_zones_schedule, analytics_daily_schedule],
     sensors=[notify_on_failure],
     resources={
