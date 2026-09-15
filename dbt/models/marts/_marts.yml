@@ -599,11 +599,43 @@ models:
           appeared in a sample. The first version was built from two months of observed
           data and duly failed on `unchanged_state`, which is rarer than that window --
           an enumeration read off the data is a sample, and a sample is not a contract.
+
+          Unlike `rule_type` above, there is no single RULE_TYPES-style constant to read
+          this off of; the values below were collected by reading every place the app's
+          source sets `dismissalReason`. Seven come from the running pipeline itself:
+          `semantic_no_event` and `semantic_state_unchanged` from the semantic analysis
+          outcome, `human_correction` from a person dismissing an event by hand,
+          `recording_unavailable` and `recording_failed` when the video window a
+          decision depended on could not be read, `unchanged_state` when a state rule
+          fired on no real movement, `analysis_failed` when the analysis pipeline itself
+          errored, and `superseded_reanalysis` when a later reanalysis replaced an
+          earlier one.
+
+          The rest are markers a one-off maintenance script under the app's `scripts/`
+          wrote directly into its event store -- not a path the running app takes on its
+          own, but real, because the script actually ran against real data: `duplicate`
+          from the 25 Aug 2026 backlog repair (`repair_portal_backlog_20260825.js`);
+          `stable_state` and `ambiguous_legacy_state` from
+          `reclassify_attention_history.py`, which replays legacy state claims against
+          calibrated reference images; and `pixel_replay_no_crossing` from
+          `apply_attention_replay_report.js`'s saved-clip crossing replay.
+          `semantic_fallback` stays accepted too, though today's source only uses that
+          name for a count-reconciliation decision, not a `dismissalReason` it writes --
+          real curated data already holds it, and nothing here explains where from.
+
+          `duplicate_late_confirmation` is the same kind of marker, and the one that
+          froze this build: `repair_portal_cycles_20260911.js` and
+          `repair_portal_afternoon_20260911.js` used it on 11 Sep 2026 to dismiss a
+          second, late confirmation of a portal cycle whose closing an earlier event had
+          already recorded correctly -- two rows, two separate incidents that day,
+          neither one the app doing this by itself.
         tests:
           - accepted_values:
               values: ['semantic_no_event', 'semantic_state_unchanged', 'semantic_fallback',
                        'human_correction', 'recording_unavailable', 'recording_failed',
-                       'unchanged_state', 'analysis_failed', 'duplicate']
+                       'unchanged_state', 'analysis_failed', 'superseded_reanalysis',
+                       'duplicate', 'duplicate_late_confirmation', 'stable_state',
+                       'ambiguous_legacy_state', 'pixel_replay_no_crossing']
       - name: direction
         description: '{{ doc("cam_direction") }}'
         tests:
