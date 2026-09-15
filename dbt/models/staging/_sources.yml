@@ -1177,7 +1177,7 @@ sources:
           requested and actual model, full prompt and response, tokens, cost,
           latency, status, and any camera frames attached. By the owner's
           2026-09-14 decision, prompt and response are landed in full -- see
-          PLAN.md. `dt` is the UTC day of `created_at`; a row is re-extractable
+          IMPLEMENTATION_PLAN.md section 15. `dt` is the UTC day of `created_at`; a row is re-extractable
           for WINDOW_DAYS after that, so a call whose gateway is still finishing
           up can still be corrected the same day it lands.
         columns:
@@ -1440,7 +1440,7 @@ sources:
       - name: platform_messages
         description: >
           Every message in every conversation, full text, by the owner's
-          2026-09-14 decision -- see PLAN.md. `dt` is the UTC day of `created_at`.
+          2026-09-14 decision -- see IMPLEMENTATION_PLAN.md section 15. `dt` is the UTC day of `created_at`.
         columns:
           - name: dt
             description: Partition date -- the UTC day `created_at` falls on.

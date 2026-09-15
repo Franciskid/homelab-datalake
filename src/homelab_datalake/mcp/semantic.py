@@ -854,7 +854,7 @@ CONVERSATIONS = Dataset(
     date_column="partition_date",
     description=(
         "One row per message in every conversation, full text, by the owner's "
-        "2026-09-14 decision -- see PLAN.md. The conversation's title and agent "
+        "2026-09-14 decision -- see IMPLEMENTATION_PLAN.md section 15. The conversation's title and agent "
         "travel with each message so a listing reads like a transcript rather than "
         "a bag of rows keyed by ids nobody recognises."
     ),
