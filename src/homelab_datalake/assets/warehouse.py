@@ -52,15 +52,24 @@ from homelab_datalake.assets.camera import (
 )
 from homelab_datalake.assets.dbt_marts import dbt_marts
 from homelab_datalake.assets.jellyfin import (
+    _ACTIVITY_SCHEMA,
     _GENRE_SCHEMA,
     _PEOPLE_SCHEMA,
+    _PLAYBACK_SCHEMA,
     _STREAM_SCHEMA,
     _TITLE_SCHEMA,
+    _USERS_SCHEMA,
+    ACTIVITY_PREFIX,
     GENRE_PREFIX,
     PEOPLE_PREFIX,
+    PLAYBACK_PREFIX,
     STREAM_PREFIX,
     TITLE_PREFIX,
+    USERS_PREFIX,
+    jellyfin_activity_raw,
     jellyfin_library_raw,
+    jellyfin_playback_raw,
+    jellyfin_users_raw,
 )
 from homelab_datalake.assets.litellm_spend import _SCHEMA as SPEND_SCHEMA
 from homelab_datalake.assets.litellm_spend import SPEND_PREFIX, litellm_spend_raw
@@ -106,6 +115,14 @@ _SOURCES = (
      "One row per media stream: every audio, video and subtitle track."),
     ("jellyfin_title_people", PEOPLE_PREFIX, _PEOPLE_SCHEMA, jellyfin_library_raw,
      "Cast and crew credits. Public film metadata, not library users."),
+    ("jellyfin_playback", PLAYBACK_PREFIX, _PLAYBACK_SCHEMA, jellyfin_playback_raw,
+     "Every Playback Reporting plugin row: who watched what, for how long the "
+     "player was open."),
+    ("jellyfin_activity", ACTIVITY_PREFIX, _ACTIVITY_SCHEMA, jellyfin_activity_raw,
+     "The server activity log: sign-ins, playback starts and stops, library and "
+     "account changes."),
+    ("jellyfin_users", USERS_PREFIX, _USERS_SCHEMA, jellyfin_users_raw,
+     "Daily snapshot of the account list, name and two flags only."),
     ("camera_events", EVENT_PREFIX, _EVENT_SCHEMA, camera_events_raw,
      "Attention events. Not final when first written: vision analysis lands later."),
     ("camera_clips", CLIP_PREFIX, _CLIP_SCHEMA, camera_events_raw,
