@@ -301,7 +301,7 @@ def _user(**overrides):
 
 
 def test_user_rows_keeps_only_name_and_two_flags():
-    rows, unmapped = user_rows([_user()], date(2026, 9, 14))
+    rows, _unmapped = user_rows([_user()], date(2026, 9, 14))
     assert rows[0] == {
         "dt": date(2026, 9, 14), "id": "u1", "name": "guest",
         "is_administrator": False, "is_disabled": False,
