@@ -199,4 +199,19 @@ on the GitHub profile and in conversations.
 Scaffold Stage 1: Dagster project with the daily-partitioned log assets, dbt skeleton,
 synthetic seed generator, CI workflow, README. Start from something that runs.
 
+---
+
+## 10. A fourth source, and a reversal (added later)
+
+The three sources above were the whole plan when this was written. A fourth arrived once the
+warehouse existed and had somewhere private to put things: the owner's own AI platform
+database — every gateway call, agent run, conversation, automation. §7's exclusion of camera
+`summary` text from anything published stands unchanged; what changed, on 2026-09-14, is
+whether the *private* warehouse itself may hold full conversation content, which this plan
+never actually took a position on one way or the other. It had been excluded anyway, in the
+implementation notes rather than here, on a portfolio-piece instinct that stopped fitting once
+this lake was already the private home for camera footage descriptions and every visitor's
+traffic. IMPLEMENTATION_PLAN.md section 15 is the decision, the reasoning, and what did not
+move with it — credentials are not content, and nothing about this reversal touches them.
+
 > Public history note: private identifiers, measurements, and operational details were redacted. Code examples use placeholder infrastructure.

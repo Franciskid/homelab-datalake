@@ -1311,7 +1311,7 @@ models:
         description: >
           The full prompt sent to the model. By the owner's 2026-09-14 decision this
           is landed and queryable, reversing the earlier "prompts are personal, not
-          stored" line -- see PLAN.md.
+          stored" line -- see IMPLEMENTATION_PLAN.md section 15.
       - name: response
         description: The model's full response, same landing decision as prompt.
       - name: results
@@ -1443,7 +1443,7 @@ models:
   - name: fct_conversation_message
     description: >
       One row per message in every conversation, full text, by the owner's
-      2026-09-14 decision -- see PLAN.md. The conversation's title and agent travel
+      2026-09-14 decision -- see IMPLEMENTATION_PLAN.md section 15. The conversation's title and agent travel
       with each message so a listing reads like a transcript.
     columns:
       - name: message_key
