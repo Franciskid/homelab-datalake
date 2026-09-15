@@ -14,8 +14,10 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 
+# systemd for journalctl only: host_logs_raw reads primary's journal files from a
+# read-only mount. Nothing here runs systemd.
 RUN apt-get update \
- && apt-get install -y --no-install-recommends git \
+ && apt-get install -y --no-install-recommends git systemd \
  && rm -rf /var/lib/apt/lists/*
 
 COPY pyproject.toml README.md ./

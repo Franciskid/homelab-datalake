@@ -33,8 +33,14 @@ for tree in src dbt/models dbt/tests tests; do
         "$tree/" "$FRA:$DIR/$tree/"
   echo "  OK    $tree"
 done
-rsync -a --no-perms --no-owner --no-group docker-compose.yml Dockerfile pyproject.toml "$FRA:$DIR/"
-echo "  OK    docker-compose.yml, Dockerfile, pyproject.toml"
+rsync -a --no-perms --no-owner --no-group docker-compose.yml Dockerfile pyproject.toml \
+      dagster.yaml workspace.yaml "$FRA:$DIR/"
+echo "  OK    docker-compose.yml, Dockerfile, pyproject.toml, dagster.yaml, workspace.yaml"
+# The two Dagster files are bind-mounted rather than baked in, so a change to them never
+# reached the host before: dagster.yaml's sensor retention was the first to need it.
+# infra/ holds SQL an operator runs on the host (the Keycloak grants), same reason as scripts/.
+rsync -a --no-perms --no-owner --no-group infra/ "$FRA:$DIR/infra/"
+echo "  OK    infra"
 # Operator scripts. Some of them have to run ON the server -- the Keycloak ones
 # exec into a container that only exists there -- so a script that never leaves
 # this laptop is a script nobody can run. This was the gap: four scripts existed

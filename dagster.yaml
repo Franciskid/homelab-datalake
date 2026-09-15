@@ -88,3 +88,14 @@ schedule_storage:
         env: DAGSTER_PG_DB
       port:
         env: DAGSTER_PG_PORT
+
+# The prometheus_stream sensor ticks every minute -- [count withheld] ticks a day, each recorded in
+# Postgres. A tick that writes parts and launches no run is recorded as skipped, and its
+# message ("wrote [count withheld] samples ... lag 71 s") is only useful while it is recent. Failed
+# ticks are kept a month, because they are what explains a gap.
+retention:
+  sensor:
+    purge_after_days:
+      skipped: 3
+      failure: 30
+      success: 30
