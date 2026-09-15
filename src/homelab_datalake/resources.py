@@ -76,14 +76,18 @@ class LakeStorage(ConfigurableResource):
         return len(payload)
 
     def write_bytes(self, key: str, data: bytes, content_type: str = "application/octet-stream") -> int:
-        """Write one opaque object -- a decoded camera frame, a generated file's
-        bytes -- as opposed to `write_table`, which always writes Parquet.
+        """Write one opaque object, as opposed to `write_table`, which always writes
+        Parquet. Two callers share this, deliberately, rather than each keeping its
+        own copy: a decoded camera frame or a generated file's bytes -- referenced
+        *by* a Parquet row (an `object_key` or an entry in `frame_keys`) rather than
+        a dataset in its own right, so there is no `layout.Dataset` for these, see
+        `homelab_datalake.parsing.ai_platform` -- and an inbox fixture or any other
+        non-Parquet object that a caller lands without one. `content_type` defaults
+        to opaque octet-stream, so a caller that has no opinion on it need not pass
+        one.
 
         Same atomicity story as `write_table`: one PUT on S3, a write-to-temp-then-
-        rename on disk. Used for objects referenced *by* a Parquet row (an
-        `object_key` or an entry in `frame_keys`) rather than for a dataset in its
-        own right, so there is no `layout.Dataset` for these -- see
-        `homelab_datalake.parsing.ai_platform`.
+        rename on disk.
         """
         if self.uses_s3:
             self._client().put_object(
