@@ -19,7 +19,7 @@
 
 set -euo pipefail
 
-AMB=ssh-secondary.example.test
+SECONDARY=ssh-secondary.example.test
 FRA=ssh.example.test
 CAMERA_DIR=/srv/projects/camera/camera-app
 DATALAKE_DIR=/srv/projects/homelab-datalake
@@ -29,7 +29,7 @@ say() { printf '\n\033[1m== %s\033[0m\n' "$*"; }
 # --------------------------------------------------------------------------------
 say "1/5  Camera app: mount the export routes again, and restore the jose dependency"
 # --------------------------------------------------------------------------------
-ssh "$AMB" "cat > /tmp/remount-camera-export.py" <<'PYEOF'
+ssh "$SECONDARY" "cat > /tmp/remount-camera-export.py" <<'PYEOF'
 #!/usr/bin/env python3
 """Mount the datalake export routes again in the camera app.
 
@@ -157,14 +157,14 @@ changed |= patch(
 if changed:
     print(f"  backup: {BACKUP}")
 PYEOF
-ssh "$AMB" 'python3 /tmp/remount-camera-export.py'
+ssh "$SECONDARY" 'python3 /tmp/remount-camera-export.py'
 
 # --------------------------------------------------------------------------------
 say "2/5  Camera app: the identity salt"
 # --------------------------------------------------------------------------------
 # Added only when it is absent. The salt pseudonymises `createdBy` on clips. Writing a
 # new one over an old one would silently change every hash in the warehouse.
-ssh "$AMB" "cd $CAMERA_DIR && \
+ssh "$SECONDARY" "cd $CAMERA_DIR && \
   if grep -q '^EXPORT_IDENTITY_SALT=' .env; then \
     echo '  SKIP  EXPORT_IDENTITY_SALT already set'; \
   else \
@@ -175,7 +175,7 @@ ssh "$AMB" "cd $CAMERA_DIR && \
 # --------------------------------------------------------------------------------
 say "3/5  Camera app: build and start"
 # --------------------------------------------------------------------------------
-ssh "$AMB" "cd $CAMERA_DIR && docker compose up -d --build"
+ssh "$SECONDARY" "cd $CAMERA_DIR && docker compose up -d --build"
 
 # --------------------------------------------------------------------------------
 say "4/5  Datalake: build and start"

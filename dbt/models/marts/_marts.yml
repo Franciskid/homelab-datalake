@@ -1248,7 +1248,7 @@ models:
           from the file it was found in.
       - name: camera_id
         description: >
-          Which camera. `outdoor-camera` is Entrance, `indoor-camera` is Ferme.
+          Which camera. `outdoor-camera` watches the gate, `indoor-camera` is indoors.
       - name: extracted_at
         description: >
           When this pipeline read the row. What lets a merge pick the newest version of a
@@ -1384,7 +1384,7 @@ models:
           from the file it was found in.
       - name: camera_id
         description: >
-          Which camera. `outdoor-camera` is Entrance, `indoor-camera` is Ferme.
+          Which camera. `outdoor-camera` watches the gate, `indoor-camera` is indoors.
       - name: extracted_at
         description: >
           When this pipeline read the row. What lets a merge pick the newest version of a
@@ -1471,7 +1471,7 @@ models:
           zone with no rules, which still appears rather than vanishing.
       - name: camera_id
         description: >
-          Which camera. `outdoor-camera` is Entrance, `indoor-camera` is Ferme.
+          Which camera. `outdoor-camera` watches the gate, `indoor-camera` is indoors.
       - name: zone_name
         description: >
           The zone's display name.

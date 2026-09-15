@@ -977,7 +977,7 @@ models:
           record the source has since changed.
       - name: camera_id
         description: >
-          Which camera. `outdoor-camera` is Entrance, `indoor-camera` is Ferme.
+          Which camera. `outdoor-camera` watches the gate, `indoor-camera` is indoors.
       - name: unmapped_json
         description: >
           JSON, or null. Any field the export sent that the raw schema does not name, kept
@@ -1064,7 +1064,7 @@ models:
           record the source has since changed.
       - name: camera_id
         description: >
-          Which camera. `outdoor-camera` is Entrance, `indoor-camera` is Ferme.
+          Which camera. `outdoor-camera` watches the gate, `indoor-camera` is indoors.
       - name: unmapped_json
         description: >
           JSON, or null. Any field the export sent that the raw schema does not name, kept
@@ -1122,7 +1122,7 @@ models:
         tests: [not_null]
       - name: camera_id
         description: >
-          Which camera. `outdoor-camera` is Entrance, `indoor-camera` is Ferme.
+          Which camera. `outdoor-camera` watches the gate, `indoor-camera` is indoors.
       - name: zone_name
         description: >
           The zone's display name -- Portail, Animaux.
@@ -1272,7 +1272,7 @@ models:
           record the source has since changed.
       - name: camera_id
         description: >
-          Which camera. `outdoor-camera` is Entrance, `indoor-camera` is Ferme.
+          Which camera. `outdoor-camera` watches the gate, `indoor-camera` is indoors.
       - name: unmapped_json
         description: >
           JSON, or null. Any field the export sent that the raw schema does not name, kept
@@ -1331,7 +1331,7 @@ models:
           record the source has since changed.
       - name: camera_id
         description: >
-          Which camera. `outdoor-camera` is Entrance, `indoor-camera` is Ferme.
+          Which camera. `outdoor-camera` watches the gate, `indoor-camera` is indoors.
       - name: unmapped_json
         description: >
           JSON, or null. Any field the export sent that the raw schema does not name, kept
