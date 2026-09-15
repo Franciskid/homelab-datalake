@@ -66,7 +66,7 @@ facts and summaries prepared for analysis.
 
 | Source | Records collected | An example question |
 | --- | --- | --- |
-| Nginx Proxy Manager | Requests, response codes, paths, and pseudonymous visitor identifiers | Which application had the most errors? |
+| Nginx Proxy Manager, and the MCP gateway's own log | The same requests from both proxy instances -- one mounted, one mirrored hourly because it runs on another machine -- plus the gateway's own access log | Which application had the most errors? |
 | LiteLLM | Model calls, costs, token counts, timing, and workload metadata | Where did AI spending go? |
 | Homelab Camera | Events, clip metadata, zone states, annotations, and observation coverage | When was activity highest, and was the camera observing then? |
 | Jellyfin | Library snapshots, titles, genres, people, and stream metadata | How has the library changed? |

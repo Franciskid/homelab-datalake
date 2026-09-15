@@ -244,9 +244,16 @@ WEB_TRAFFIC = Dataset(
     kind="event",
     date_column="partition_date",
     description=(
-        "One row per HTTP request through Nginx Proxy Manager. Client addresses never "
-        "reach this table: they are hashed at ingestion, after geo and network are "
-        "derived, so location and network questions work but no visitor is identifiable."
+        "One row per HTTP request: both Nginx Proxy Manager instances, plus "
+        "mcp.ai.example.test's own access log (npm_instance='mcp-api') from 2026-09-14. "
+        "Client addresses are hashed at ingestion, after geo and network are derived, "
+        "so location and network questions work without needing an identifiable "
+        "visitor. Since 2026-09-14 the raw address and the raw query string are also "
+        "kept, in client_address and query_string -- read those instead of the hash "
+        "only for a reason that needs the real value, such as looking up one request "
+        "by the address that made it. Both are null before that date, and null for any "
+        "older row whose source line had already rotated off NPM's disk (roughly a "
+        "five-week window) by the day this shipped."
     ),
     dimensions=(
         Dimension("npm_instance", "npm_instance", "Which proxy instance served it."),
@@ -309,9 +316,19 @@ WEB_TRAFFIC = Dataset(
         # is what path_group exists for. As a field in a listing it is the thing you
         # actually wanted to read.
         Attribute("path", "path", "The exact path requested, query string excluded."),
+        # query_string and client_address are Attributes for the same reason path is
+        # and not a Dimension: a raw query string and a raw address are close to
+        # unique per request, so a GROUP BY on either would not group anything. Both
+        # are raw and private-warehouse-only, added 2026-09-14 -- see the dataset
+        # description and homelab_datalake.privacy.
+        Attribute("query_string", "query_string", "The raw query string, without the leading '?'."),
         Attribute("upstream_target", "upstream_target", "Which backend served it."),
         Attribute("bytes_sent", "bytes_sent", "Response size."),
         Attribute("user_agent", "user_agent", "The client's user agent string."),
+        Attribute("client_address", "client_address",
+                  "The client address, raw. client_hash below is the pseudonym most "
+                  "questions should use; this is for looking one request up by the "
+                  "address that made it."),
         Attribute("client_hash", "client_hash",
                   "Pseudonym of the client address. The address itself is discarded at "
                   "ingestion, after geo and network are derived from it."),

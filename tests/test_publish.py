@@ -14,6 +14,18 @@ from homelab_datalake import layout
 from homelab_datalake.assets import publish
 from homelab_datalake.resources import LakeStorage
 
+# --- export-path guard: raw.npm_access never gets published --------------------
+#
+# raw.npm_access (and raw.npm_access_rejects) hold client_address unredacted --
+# see homelab_datalake.privacy for why that is fine there. It stops being fine the
+# moment either reaches a wider audience than the raw layer already has, so this
+# is asserted on the code path itself, not left as a comment: publish.py only ever
+# walks layout.LAYER_CURATED and layout.LAYER_MARTS (see _specs/_publish below and
+# in that module), and neither "npm_access" nor "npm_access_rejects" -- the two
+# RAW table names -- may appear among the datasets those layers register. Their
+# *derived* counterparts, int_npm_requests and fct_http_request, do appear there
+# on purpose (WS-41.E2 part A); this guard is about the raw table names only.
+
 
 @pytest.fixture
 def warehouse(tmp_path):
@@ -102,6 +114,45 @@ def test_every_registered_dataset_has_a_dbt_model_upstream():
     for dataset in layout.datasets_in(layout.LAYER_CURATED) + layout.datasets_in(layout.LAYER_MARTS):
         key = publish.dbt_asset_key(dataset.table)
         assert key.path[0] in ("staging", "intermediate", "marts")
+
+
+def test_the_raw_npm_tables_are_never_among_what_gets_published():
+    """The export-path guard for client_address/query_string, in code.
+
+    layout.RAW_DATASETS is where npm_access and npm_access_rejects live, and
+    nothing in this test loop -- publish._specs, which is exactly what backs the
+    lake_curated and lake_marts assets -- may ever schedule them for a write.
+    """
+    published_tables = {
+        dataset.table
+        for layer in (layout.LAYER_CURATED, layout.LAYER_MARTS)
+        for dataset in layout.datasets_in(layer)
+    }
+    assert "npm_access" not in published_tables
+    assert "npm_access_rejects" not in published_tables
+
+    published_keys = {
+        spec.key
+        for layer in (layout.LAYER_CURATED, layout.LAYER_MARTS)
+        for spec in publish._specs(layer)
+    }
+    from dagster import AssetKey
+
+    assert AssetKey(["lake", layout.LAYER_RAW, "npm_access"]) not in published_keys
+    assert AssetKey(["lake", layout.LAYER_RAW, "npm_access_rejects"]) not in published_keys
+
+
+def test_raw_datasets_are_a_disjoint_set_from_curated_and_marts():
+    """layout.py's own partition of the registry, checked rather than assumed.
+
+    If a future edit ever registered npm_access itself under CURATED_DATASETS or
+    MART_DATASETS -- pointing lake_curated/lake_marts at the raw table by mistake
+    -- this is what would catch it; the test above only checks the *names* used
+    today.
+    """
+    raw_tables = {d.table for d in layout.RAW_DATASETS}
+    curated_and_mart_tables = {d.table for d in layout.CURATED_DATASETS + layout.MART_DATASETS}
+    assert raw_tables.isdisjoint(curated_and_mart_tables)
 
 
 def test_publishing_does_not_take_the_write_lock(marts_db, lake, tmp_path):

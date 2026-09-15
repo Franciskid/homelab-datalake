@@ -55,9 +55,14 @@ all_assets = load_assets_from_modules(
      backup]
 )
 
+# mcp_api_access_raw is excluded and gets its own job below, the same way
+# camera_zones_raw is excluded from camera_daily_job: it shares the "npm" group
+# because it lands in the same raw.npm_access table, but it has its own partitions
+# definition (its own start date -- see npm_access.MCP_API_LOG_START), and a job
+# cannot mix two partitions definitions under one `partitions_def=`.
 npm_daily_job = define_asset_job(
     name="npm_daily",
-    selection=AssetSelection.groups("npm"),
+    selection=AssetSelection.groups("npm") - AssetSelection.keys("mcp_api_access_raw"),
     partitions_def=npm_partitions,
     description="Land one day of NPM logs for one host.",
 )
@@ -71,6 +76,13 @@ npm_backfill_job = define_asset_job(
         "Raw landing only. Used for backfills: rebuilding the warehouse once at the "
         "end is far cheaper than once per day, and the result is identical."
     ),
+)
+
+mcp_api_daily_job = define_asset_job(
+    name="mcp_api_daily",
+    selection=AssetSelection.assets(npm_access.mcp_api_access_raw),
+    partitions_def=npm_access.mcp_api_partitions,
+    description="Land one day of mcp.ai.example.test's own access log.",
 )
 
 
@@ -197,6 +209,17 @@ def npm_daily_schedule(context: ScheduleEvaluationContext):
         yield RunRequest(run_key=f"npm-{host}-{day.isoformat()}", partition_key=key)
 
 
+@schedule(
+    job=mcp_api_daily_job,
+    cron_schedule="10 3 * * *",
+    default_status=DefaultScheduleStatus.STOPPED,
+    description="Yesterday's mcp.ai access log at 03:10 UTC, ahead of the NPM partitions.",
+)
+def mcp_api_daily_schedule(context: ScheduleEvaluationContext):
+    day = context.scheduled_execution_time.date() - datetime.timedelta(days=1)
+    yield RunRequest(run_key=f"mcp-api-{day.isoformat()}", partition_key=day.isoformat())
+
+
 # Everything downstream of the raw partitions: load the lake into DuckDB, build and
 # test the dbt models, then publish the serving copy. One job rather than three, so
 # there is no window in which the marts are newer than the warehouse or the serving
@@ -309,10 +332,10 @@ def notify_on_failure(context):
 
 defs = Definitions(
     assets=all_assets,
-    jobs=[npm_daily_job, npm_backfill_job, litellm_daily_job, jellyfin_daily_job,
-          camera_daily_job, camera_zones_job, analytics_job],
-    schedules=[npm_daily_schedule, litellm_daily_schedule, jellyfin_daily_schedule,
-               camera_daily_schedule, camera_late_arrival_schedule,
+    jobs=[npm_daily_job, npm_backfill_job, mcp_api_daily_job, litellm_daily_job,
+          jellyfin_daily_job, camera_daily_job, camera_zones_job, analytics_job],
+    schedules=[npm_daily_schedule, mcp_api_daily_schedule, litellm_daily_schedule,
+               jellyfin_daily_schedule, camera_daily_schedule, camera_late_arrival_schedule,
                camera_zones_schedule, analytics_daily_schedule],
     sensors=[notify_on_failure],
     resources={

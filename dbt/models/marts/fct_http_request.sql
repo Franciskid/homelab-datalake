@@ -3,6 +3,10 @@
 -- Kept at full grain rather than pre-aggregated: at ~[volume withheld]/day this is small enough
 -- that a rollup would buy nothing and would foreclose questions nobody has asked yet.
 -- The daily aggregate below is built from this, not instead of it.
+--
+-- `client_address` and `query_string` carry through from staging unchanged: raw,
+-- private-warehouse-only, alongside the request_key/client_hash/client_network they
+-- sit beside. See homelab_datalake.privacy for the 2026-09-14 decision.
 
 select
     md5(
@@ -19,6 +23,7 @@ select
     request_host,
     path,
     path_group,
+    query_string,
     method,
     scheme,
     status,
@@ -28,6 +33,7 @@ select
     bytes_sent,
     user_agent,
 
+    client_address,
     client_hash,
     client_network,
     client_trust,

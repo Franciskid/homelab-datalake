@@ -57,6 +57,7 @@ SELECT
     CASE WHEN i % 4 = 0 THEN 'tv.example.org' ELSE 'data.example.org' END AS request_host,
     '/api/v1/item/' || i AS path,
     '/api' AS path_group, 'GET' AS method, 'https' AS scheme,
+    CASE WHEN i % 9 = 0 THEN 'tab=' || i ELSE NULL END AS query_string,
     CASE WHEN i % 23 = 0 THEN 500 ELSE 200 END AS status,
     CASE WHEN i % 23 = 0 THEN 'server_error' ELSE 'success' END AS status_class,
     CASE WHEN i % 23 = 0 THEN 502 ELSE 200 END AS upstream_status,
@@ -65,6 +66,8 @@ SELECT
     CASE WHEN i % 5 = 0 THEN 'cdn_edge' ELSE 'resolved' END AS client_trust,
     4 AS client_ip_version, false AS is_internal, (i % 6 = 0) AS is_automated,
     'Mozilla/5.0 (test ' || (i % 3) || ')' AS user_agent,
+    -- RFC 5737 documentation range -- see tests/test_no_real_addresses_in_fixtures.py.
+    '203.0.113.' || (i % 40) AS client_address,
     'h' || (i % 40) AS client_hash, 'n' || (i % 12) AS client_network,
     'FR' AS geo_country_code, 'France' AS geo_country_name, 'Paris' AS geo_city,
     64500 + (i % 3) AS geo_asn,

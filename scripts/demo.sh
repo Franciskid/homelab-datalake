@@ -6,6 +6,12 @@ mkdir -p "$DAGSTER_HOME" .demo/warehouse
 printf 'telemetry:\n  enabled: false\n' > "$DAGSTER_HOME/dagster.yaml"
 (cd dbt && dbt deps && dbt parse)
 python scripts/generate_seed.py --out .demo/seed --days 3
+# The second instance is mirrored, not mounted: its host is not reachable from the one
+# running this, so infra/secondary-log-sync/ copies its logs into inbox/npm/secondary/
+# every hour. The demo makes the same copy once, so both paths land identical rows.
+mkdir -p "$DATALAKE_LOCAL_ROOT/inbox/npm/secondary"
+cp "$NPM_LOG_DIR_SECONDARY"/* "$DATALAKE_LOCAL_ROOT/inbox/npm/secondary/"
+
 for day in 2026-08-25 2026-08-26 2026-08-27; do
   for host in primary secondary; do
     dagster asset materialize --select npm_access_raw \

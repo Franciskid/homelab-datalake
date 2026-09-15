@@ -68,6 +68,7 @@ from homelab_datalake.assets.npm_access import (
     _REJECT_SCHEMA,
     RAW_PREFIX,
     REJECT_PREFIX,
+    mcp_api_access_raw,
     npm_access_raw,
 )
 from homelab_datalake.assets.npm_access import _SCHEMA as ACCESS_SCHEMA
@@ -91,10 +92,17 @@ os.environ["DUCKDB_PATH"] = DUCKDB_PATH
 # The asset key for a dbt source is ["raw", <table>], so these keys are what connect
 # the two graphs. Change one and the dbt models silently detach from what feeds them,
 # which is why the names live in one list rather than being spelled out twice.
+#
+# `upstream` is a tuple here for the two npm_access entries because two assets now
+# write into that one lake prefix: npm_access_raw (primary, secondary) and
+# mcp_api_access_raw (mcp-api, its own partitions -- see that module's docstring).
+# Both must be deps, or the asset graph would show raw.npm_access depending on only
+# one of the two things that actually feed it.
 _SOURCES = (
-    ("npm_access", RAW_PREFIX, ACCESS_SCHEMA, npm_access_raw,
-     "One row per HTTP request seen by an Nginx Proxy Manager instance."),
-    ("npm_access_rejects", REJECT_PREFIX, _REJECT_SCHEMA, npm_access_raw,
+    ("npm_access", RAW_PREFIX, ACCESS_SCHEMA, (npm_access_raw, mcp_api_access_raw),
+     ("One row per HTTP request seen by an Nginx Proxy Manager instance, or by "
+      "mcp.ai.example.test's own access log under host_source='mcp-api'.")),
+    ("npm_access_rejects", REJECT_PREFIX, _REJECT_SCHEMA, (npm_access_raw, mcp_api_access_raw),
      ("Lines no log format matched, kept with their text. The reject rate is a "
       "data-quality signal, so these are never dropped.")),
     ("litellm_spend", SPEND_PREFIX, SPEND_SCHEMA, litellm_spend_raw,
@@ -197,7 +205,7 @@ def connect() -> duckdb.DuckDBPyConnection:
     specs=[
         AssetSpec(
             key=AssetKey(["raw", name]),
-            deps=[upstream],
+            deps=list(upstream) if isinstance(upstream, tuple) else [upstream],
             group_name="warehouse",
             description=description,
             kinds={"duckdb"},
