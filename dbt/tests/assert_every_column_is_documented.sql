@@ -12,8 +12,9 @@
 --
 -- The `depends_on` lines are what make it run last. A singular test with no refs is
 -- scheduled in the first batch, where it would inspect whatever the previous build left
--- behind. Naming the six leaf models pulls in all fifteen, because every model in this
--- project is upstream of one of them.
+-- behind. Naming a leaf model pulls in everything upstream of it; nine leaves are named
+-- because the Jellyfin playback/activity/account branch, added 2026-09-14, is not
+-- upstream of any of the original six.
 --
 -- Sources are checked too. They are the layer with the most columns and the least
 -- natural pressure to document -- nobody writes a source column, so nobody notices one
@@ -25,6 +26,9 @@
 -- depends_on: {{ ref('bridge_title_genre') }}
 -- depends_on: {{ ref('dim_title_scd2') }}
 -- depends_on: {{ ref('dim_genre') }}
+-- depends_on: {{ ref('fct_jellyfin_playback') }}
+-- depends_on: {{ ref('fct_jellyfin_activity') }}
+-- depends_on: {{ ref('dim_jellyfin_user') }}
 
 {%- set undocumented = [] -%}
 

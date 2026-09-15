@@ -555,8 +555,13 @@ MEDIA_LIBRARY = Dataset(
     kind="snapshot",
     date_column="snapshot_date",
     description=(
-        "The film library as it stood on a given day: one row per title per snapshot. "
-        "No file paths, no playback history, no per-user data. Because it is a snapshot "
+        "The **movie** library as it stood on a given day: one row per film per "
+        "snapshot. No file paths, and no playback or per-user data here specifically "
+        "-- for who watched what and for how long, ask media_playback instead. "
+        "Movies only: series, seasons, episodes, box sets and other videos are a "
+        "separate, much larger catalogue (roughly [count withheld] items against [count withheld] movies) "
+        "landed in the warehouse's fct_library_item as a plain daily snapshot, not "
+        "yet exposed through this semantic layer. Because this dataset is a snapshot "
         "rather than a stream of events, a query returns a single day -- the latest "
         "snapshot on or before the end of the range."
     ),
@@ -659,8 +664,178 @@ MEDIA_LIBRARY = Dataset(
 )
 
 
+# --- Media playback ------------------------------------------------------------
+# Added 2026-09-14, the day the owner reversed the decision that had kept this out of
+# the warehouse -- see the docstring at the top of parsing/jellyfin.py for why.
+
+MEDIA_PLAYBACK = Dataset(
+    name="media_playback",
+    table="marts.fct_jellyfin_playback",
+    kind="event",
+    date_column="partition_date",
+    description=(
+        "One row per playback session from the Playback Reporting plugin: who "
+        "played what, on what client and device, for how long the player was open. "
+        "That last point is not a technicality -- the plugin records how long the "
+        "player stayed open, which is not proof anything was watched to completion. "
+        "A paused film left open overnight and a film actually finished both "
+        "accumulate seconds the same way. An episode's series is resolved by id "
+        "against the library's series/season/episode catalogue where that reaches "
+        "it; series_resolved_by_id says whether a given row used that or fell back "
+        "to a name parsed from the title (measured 2026-09-15: [rate withheld] of episode "
+        "rows). genre is the title's single primary genre rather than the full "
+        "list, to avoid multiplying watch time by how many genres a film carries, "
+        "and is only ever populated for a Movie -- the catalogue that resolves "
+        "series and season does not carry genres per episode."
+    ),
+    dimensions=(
+        Dimension("person", "user_name", "Who played it, by account name. Null for "
+                  "a session whose account no longer appears in the current "
+                  "snapshot -- see user_id in the row-level fields for the raw id."),
+        Dimension("title", "title", "The title as the plugin recorded it."),
+        Dimension("series", "series_name",
+                  "The show a played episode belongs to -- resolved by id against "
+                  "the library where that reaches it, parsed from the episode's own "
+                  "title otherwise. Null for anything that is not an episode. See "
+                  "series_resolved_by_id for which source supplied a given row."),
+        Dimension("media_type", "item_type",
+                  "Movie, Episode, Video (a home recording outside the library's "
+                  "scope) or TvChannel."),
+        Dimension("genre", "genre",
+                  "The title's primary genre. Only ever populated for a Movie -- "
+                  "the library never catalogues a genre for a series or an episode."),
+        Dimension("series_resolved_by_id", "series_resolved_by_id",
+                  "True when series/season/episode came from an id join against the "
+                  "library catalogue; false when they fell back to a name parsed "
+                  "from the title, or when the session is not an episode at all."),
+        Dimension("client", "client_name", "The Jellyfin client used to play it."),
+        Dimension("device", "device_name", "The physical device or browser."),
+        Dimension("playback_method", "playback_method",
+                  "DirectPlay, DirectStream, or a Transcode naming the codec path."),
+        Dimension("weekday", "started_weekday", "Day of week the session started, in UTC."),
+        Dimension("hour_of_day", "started_hour_of_day",
+                  "Hour of day the session started, 0 to 23, in UTC."),
+        Dimension("is_weekend", "is_weekend", "True for Saturday and Sunday, in UTC."),
+        Dimension("is_in_library", "is_in_library",
+                  "True when the item resolves against the current movie library. "
+                  "Always false for an episode, a home video or a TV channel."),
+        Dimension("is_episode", "is_episode", "True when item_type is Episode."),
+    ),
+    measures=(
+        Measure("plays", "count(*)", "Number of playback sessions.", "sessions"),
+        Measure("watch_hours", "round((sum(play_duration_seconds) / 3600.0)::numeric, 2)",
+                "Total time the player was open, in hours. Not a finished-viewing "
+                "count -- see the dataset description.", "hours"),
+        Measure("watch_minutes", "round((sum(play_duration_seconds) / 60.0)::numeric, 1)",
+                "Total time the player was open, in minutes.", "minutes"),
+        Measure("active_viewers", "count(DISTINCT user_id)",
+                "Distinct accounts that played something.", "people"),
+        Measure("distinct_titles", "count(DISTINCT item_id)",
+                "Distinct items played.", "titles"),
+        Measure("median_session_minutes",
+                "round((median(play_duration_seconds) / 60.0)::numeric, 1)",
+                "Median session length. Median rather than mean: a film left open "
+                "overnight drags an average far past what a normal session looks "
+                "like.", "minutes"),
+    ),
+    default_measures=("plays", "watch_hours", "active_viewers"),
+    attributes=(
+        Attribute("playback_key", "playback_key", "The session's stable id."),
+        Attribute("partition_date", "partition_date", "The UTC day the session started."),
+        Attribute("partition_hour", "partition_hour",
+                  "The start of the hourly partition this session was read for, in UTC."),
+        Attribute("extracted_at", "extracted_at", "When the lake read this session."),
+        Attribute("started_at", "started_at",
+                  "When the session started, to the microsecond, in UTC."),
+        Attribute("started_hour", "started_hour", "started_at truncated to the hour."),
+        Attribute("user_id", "user_id", "The account's raw Jellyfin id."),
+        Attribute("item_id", "item_id", "The item's raw Jellyfin id."),
+        Attribute("series_id", "series_id",
+                  "The series' raw Jellyfin id, when series_resolved_by_id is true. "
+                  "Null on the name-parse fallback -- there is no id to fall back to."),
+        Attribute("season_number", "season_number",
+                  "The season number, when the id join resolves. No parsed "
+                  "fallback exists for this -- a title alone does not carry it."),
+        Attribute("episode_number", "episode_number",
+                  "The episode number, when the id join resolves. No parsed "
+                  "fallback exists for this either."),
+        Attribute("play_duration_seconds", "play_duration_seconds",
+                  "How long the player was open, in seconds."),
+        Attribute("library_community_rating", "library_community_rating",
+                  "TMDB's vote average for the title, when it resolves against the "
+                  "movie library. Null otherwise."),
+    ),
+    default_fields=(
+        "started_at", "person", "title", "series", "media_type", "play_duration_seconds",
+        "client", "device", "playback_key",
+    ),
+    record_order="started_at",
+)
+
+
+# --- Server activity -------------------------------------------------------------
+
+MEDIA_SERVER_ACTIVITY = Dataset(
+    name="media_server_activity",
+    table="marts.fct_jellyfin_activity",
+    kind="event",
+    date_column="partition_date",
+    description=(
+        "One row per Jellyfin server activity log entry: sign-ins, playback starts "
+        "and stops, library scans, account changes -- whatever Jellyfin itself "
+        "decided to log, with its own free-text description. person is null for a "
+        "large share of rows on purpose: many entries are not about an account at "
+        "all, and among the ones that are, some name an account that has since been "
+        "removed and no longer appears in the current snapshot."
+    ),
+    dimensions=(
+        Dimension("activity_type", "activity_type",
+                  "The kind of entry -- VideoPlayback, SessionStarted, "
+                  "AuthenticationSucceeded, and so on."),
+        Dimension("severity", "severity", "Information, Warning, or Error."),
+        Dimension("person", "user_name",
+                  "The account the entry concerns, by name, when it concerns one "
+                  "and that account still appears in the current snapshot."),
+        Dimension("weekday", "happened_weekday", "Day of week the entry was logged, in UTC."),
+        Dimension("hour_of_day", "happened_hour_of_day",
+                  "Hour of day the entry was logged, 0 to 23, in UTC."),
+        Dimension("is_weekend", "is_weekend", "True for Saturday and Sunday, in UTC."),
+    ),
+    measures=(
+        Measure("entries", "count(*)", "Number of activity log entries.", "entries"),
+        Measure("distinct_users", "count(DISTINCT user_id)",
+                "Distinct accounts named across the entries.", "people"),
+        Measure("errors", "count(*) FILTER (WHERE is_error)", "Entries logged at Error severity.", "entries"),
+        Measure("warnings", "count(*) FILTER (WHERE is_warning)", "Entries logged at Warning severity.", "entries"),
+    ),
+    default_measures=("entries", "errors", "warnings"),
+    attributes=(
+        Attribute("activity_id", "activity_id", "The activity log's own stable id."),
+        Attribute("partition_date", "partition_date", "The UTC day the entry was logged."),
+        Attribute("extracted_at", "extracted_at", "When the lake read this entry."),
+        Attribute("happened_at", "happened_at", "When it was logged, to the second, in UTC."),
+        Attribute("happened_hour", "happened_hour", "happened_at truncated to the hour."),
+        Attribute("name", "name", "Jellyfin's own free-text description of the entry."),
+        Attribute("overview", "overview", "A longer free-text note, when there is one."),
+        Attribute("short_overview", "short_overview", "A short free-text note, when there is one."),
+        Attribute("user_id", "user_id", "The account's raw Jellyfin id, when the entry names one."),
+        Attribute("item_id", "item_id", "The item's raw Jellyfin id, when the entry names one."),
+        Attribute("unmapped_json", "unmapped_json",
+                  "JSON, or null. Any field the activity log sent that the raw schema "
+                  "does not name."),
+    ),
+    default_fields=(
+        "happened_at", "activity_type", "name", "severity", "person", "activity_id",
+    ),
+    record_order="happened_at",
+)
+
+
 DATASETS: dict[str, Dataset] = {
-    d.name: d for d in (LLM_SPEND, WEB_TRAFFIC, CAMERA_ACTIVITY, MEDIA_LIBRARY)
+    d.name: d for d in (
+        LLM_SPEND, WEB_TRAFFIC, CAMERA_ACTIVITY, MEDIA_LIBRARY, MEDIA_PLAYBACK,
+        MEDIA_SERVER_ACTIVITY,
+    )
 }
 
 

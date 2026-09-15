@@ -51,6 +51,30 @@ Data stays on the server. See §4.
 Use library **metadata**, not playback history — metadata is safe to publish as a seed,
 playback history is personal and adds nothing to the demonstration.
 
+**Reversed 2026-09-14.** Asked for "this weekend's Jellyfin usage" with a per-user watch-time
+graph, the platform's Datalake Analyst correctly refused: the warehouse held the library
+catalogue and nothing else. At the same moment the household's daily recap email was already
+reading the same watch time live from the Jellyfin Playback Reporting plugin — a warehouse
+that cannot answer a question its own household already gets answered elsewhere is a gap, not
+a boundary. The rule is now: land everything the Jellyfin API and its plugins offer, playback
+history and the server activity log and account list included. See
+`src/homelab_datalake/parsing/jellyfin.py` for the extraction (three more APIs: the plugin's
+own SQL endpoint, the standard activity log, the standard user list) and
+`src/homelab_datalake/assets/jellyfin.py` for the three raw assets this added
+(`jellyfin_playback_raw` hourly, `jellyfin_activity_raw` and `jellyfin_users_raw` daily).
+
+**Extended again, 2026-09-15.** The movie-only library snapshot was itself found to be
+a gap under the same 2026-09-14 rule: the server holds Movie [count withheld], Series 325, Season
+[count withheld], Episode [count withheld], BoxSet 186, Video 417, and only the movies had ever landed.
+`jellyfin_library_items_raw` now snapshots the other five types daily (`People` is
+deliberately not requested -- measured at thirty times the cost of everything else
+combined, see `parsing/jellyfin.py`), into `fct_library_item`, a plain snapshot fact
+kept separate from `dim_title_scd2` on purpose -- five very different item grains do
+not share one SCD2 model, see `fct_library_item.sql`. `fct_jellyfin_playback` now
+resolves an episode's series by id against it, with the item-name parse kept only as
+the documented fallback for the rows the id join does not reach ([rate withheld] of distinct
+episodes played, [rate withheld] of episode playback rows, measured 2026-09-15).
+
 **Together:** volume + semi-structured + external API enrichment. Covers most of what the job
 actually involves.
 

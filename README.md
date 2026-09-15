@@ -69,7 +69,7 @@ facts and summaries prepared for analysis.
 | Nginx Proxy Manager, and the MCP gateway's own log | The same requests from both proxy instances -- one mounted, one mirrored hourly because it runs on another machine -- plus the gateway's own access log | Which application had the most errors? |
 | LiteLLM | Model calls, costs, token counts, timing, and workload metadata | Where did AI spending go? |
 | Homelab Camera | Events, clip metadata, zone states, annotations, and observation coverage | When was activity highest, and was the camera observing then? |
-| Jellyfin | Library snapshots, titles, genres, people, and stream metadata | How has the library changed? |
+| Jellyfin | The whole library -- movies, series, seasons, episodes, box sets and other videos -- with playback sessions, the activity log, and accounts | Who watched what, and how has the library changed? |
 | TMDB and MaxMind, optional | Film information and coarse geographic/network context | How do titles or traffic compare by region? |
 | Prometheus | Every raw sample it scrapes, streamed a minute behind: host, containers, GPU, the LLM gateway, and the status page's view of the other machines | What were the machines doing while that job ran? |
 | Radarr, Sonarr, Jellyseerr | Requests, grabs, imports, and the files they produced, keeping every version of each row | How long does a request take to become watchable? |

@@ -616,6 +616,237 @@ models:
         description: '{{ doc("lib_genre") }}'
         tests: [not_null]
 
+  - name: stg_jellyfin_playback
+    description: >
+      Playback sessions, typed. `started_at` and `play_duration_seconds` are already
+      correct here, not derived -- the raw asset converted the plugin's naive SQLite
+      timestamp to UTC and its PlayDuration to whole seconds at ingest, both verified
+      against real sessions on this server rather than assumed.
+    columns:
+      - name: partition_date
+        description: '{{ doc("pb_partition_date") }}'
+        tests: [not_null]
+      - name: partition_hour
+        description: '{{ doc("pb_partition_hour") }}'
+        tests: [not_null]
+      - name: extracted_at
+        description: '{{ doc("pb_extracted_at") }}'
+        tests: [not_null]
+      - name: started_at
+        description: '{{ doc("pb_started_at") }}'
+        tests: [not_null]
+      - name: user_id
+        description: '{{ doc("pb_user_id") }}'
+      - name: user_name
+        description: '{{ doc("pb_user_name") }}'
+      - name: item_id
+        description: '{{ doc("pb_item_id") }}'
+        tests: [not_null]
+      - name: item_type
+        description: '{{ doc("pb_item_type") }}'
+      - name: item_name
+        description: '{{ doc("pb_item_name") }}'
+      - name: series_name
+        description: '{{ doc("pb_series_name") }}'
+      - name: playback_method
+        description: '{{ doc("pb_playback_method") }}'
+      - name: client_name
+        description: '{{ doc("pb_client_name") }}'
+      - name: device_name
+        description: '{{ doc("pb_device_name") }}'
+      - name: play_duration_seconds
+        description: '{{ doc("pb_play_duration_seconds") }}'
+      - name: is_episode
+        description: '{{ doc("pb_is_episode") }}'
+
+  - name: stg_jellyfin_activity
+    description: >
+      Server activity log entries, typed. One row per sign-in, playback start or
+      stop, and library or account change -- whatever Jellyfin itself decided to log.
+    columns:
+      - name: partition_date
+        description: '{{ doc("act_partition_date") }}'
+        tests: [not_null]
+      - name: extracted_at
+        description: '{{ doc("act_extracted_at") }}'
+        tests: [not_null]
+      - name: activity_id
+        description: '{{ doc("act_activity_id") }}'
+        tests: [not_null, unique]
+      - name: happened_at
+        description: '{{ doc("act_happened_at") }}'
+        tests: [not_null]
+      - name: activity_type
+        description: '{{ doc("act_activity_type") }}'
+      - name: name
+        description: '{{ doc("act_name") }}'
+      - name: overview
+        description: '{{ doc("act_overview") }}'
+      - name: short_overview
+        description: '{{ doc("act_short_overview") }}'
+      - name: user_id
+        description: '{{ doc("act_user_id") }}'
+      - name: item_id
+        description: '{{ doc("act_item_id") }}'
+      - name: severity
+        description: '{{ doc("act_severity") }}'
+      - name: unmapped_json
+        description: >
+          JSON, or null. Any field the activity log sent that this schema does not
+          name, kept rather than dropped.
+      - name: happened_hour
+        description: '{{ doc("act_happened_hour") }}'
+      - name: is_error
+        description: '{{ doc("act_is_error") }}'
+      - name: is_warning
+        description: '{{ doc("act_is_warning") }}'
+
+  - name: stg_jellyfin_users
+    description: >
+      Account snapshots, typed. Name and two flags -- nothing from configuration or
+      password policy beyond those, by the owner's own instruction.
+    columns:
+      - name: snapshot_date
+        description: The day this reading of the account list was taken.
+        tests: [not_null]
+      - name: user_id
+        description: '{{ doc("usr_user_id") }}'
+        tests: [not_null]
+      - name: user_name
+        description: '{{ doc("usr_user_name") }}'
+      - name: is_administrator
+        description: '{{ doc("usr_is_administrator") }}'
+      - name: is_disabled
+        description: '{{ doc("usr_is_disabled") }}'
+      - name: last_login
+        description: '{{ doc("usr_last_login") }}'
+      - name: last_activity
+        description: '{{ doc("usr_last_activity") }}'
+      - name: unmapped_json
+        description: >
+          JSON, or null. Any top-level field `/Users` sent that is neither read from
+          nor deliberately dropped -- see `_USER_NOT_STORED` in `parsing/jellyfin.py`
+          for the configuration and password-policy fields dropped on purpose, which
+          therefore never show up here.
+
+  - name: stg_jellyfin_library_items
+    description: >
+      Series, seasons, episodes, box sets and other videos, typed. Everything the
+      movie-only stg_jellyfin_titles does not cover; see fct_library_item.sql for why
+      they are not the same table.
+    columns:
+      - name: snapshot_date
+        description: '{{ doc("lib_snapshot_date") }}'
+        tests: [not_null]
+      - name: item_id
+        description: '{{ doc("lit_item_id") }}'
+        tests: [not_null]
+      - name: item_type
+        description: '{{ doc("lit_item_type") }}'
+        tests:
+          - accepted_values: {values: ['Series', 'Season', 'Episode', 'BoxSet', 'Video']}
+      - name: title
+        description: '{{ doc("lit_title") }}'
+      - name: original_title
+        description: '{{ doc("lib_original_title") }}'
+      - name: production_year
+        description: '{{ doc("lib_production_year") }}'
+      - name: premiere_date
+        description: '{{ doc("lib_premiere_date") }}'
+      - name: end_date
+        description: '{{ doc("lit_end_date") }}'
+      - name: status
+        description: '{{ doc("lit_status") }}'
+      - name: added_at
+        description: '{{ doc("lib_added_at") }}'
+      - name: community_rating
+        description: '{{ doc("lib_community_rating") }}'
+      - name: critic_rating
+        description: '{{ doc("lib_critic_rating") }}'
+      - name: official_rating
+        description: '{{ doc("lib_official_rating") }}'
+      - name: runtime_minutes
+        description: '{{ doc("lit_runtime_minutes") }}'
+      - name: container
+        description: '{{ doc("lib_container") }}'
+      - name: video_codec
+        description: '{{ doc("lib_video_codec") }}'
+      - name: video_height
+        description: '{{ doc("lib_video_height") }}'
+      - name: video_width
+        description: '{{ doc("lib_video_width") }}'
+      - name: resolution_class
+        description: '{{ doc("lib_resolution_class") }}'
+      - name: audio_codec
+        description: '{{ doc("lib_audio_codec") }}'
+      - name: audio_channels
+        description: '{{ doc("lib_audio_channels") }}'
+      - name: tmdb_id
+        description: '{{ doc("lib_tmdb_id") }}'
+      - name: imdb_id
+        description: '{{ doc("lib_imdb_id") }}'
+      - name: tvdb_id
+        description: TVDB identifier, where Jellyfin matched one -- more common here than in the movie library.
+      - name: studio
+        description: '{{ doc("lib_studio") }}'
+      - name: studios
+        description: Every studio credited, in the order the API gave them.
+      - name: production_country
+        description: '{{ doc("lib_production_country") }}'
+      - name: production_countries
+        description: Every production country, primary first.
+      - name: genres
+        description: '{{ doc("lit_genres") }}'
+      - name: sort_name
+        description: The name the library sorts by.
+      - name: overview
+        description: The item's synopsis, where Jellyfin has one.
+      - name: tagline
+        description: The item's marketing line, first one only.
+      - name: taglines
+        description: Every tagline the library holds for the item.
+      - name: tags
+        description: Free-form tags applied to the item.
+      - name: parent_id
+        description: '{{ doc("lit_parent_id") }}'
+      - name: series_id
+        description: '{{ doc("lit_series_id") }}'
+      - name: series_name
+        description: '{{ doc("lit_series_name") }}'
+      - name: season_id
+        description: '{{ doc("lit_season_id") }}'
+      - name: season_name
+        description: '{{ doc("lit_season_name") }}'
+      - name: index_number
+        description: >
+          Raw as Jellyfin sends it: a season's own number on a Season row, an
+          episode's own number on an Episode row. season_number/episode_number below
+          resolve the ambiguity.
+      - name: parent_index_number
+        description: The season number, carried directly on an Episode row. Null elsewhere.
+      - name: stream_count
+        description: How many media streams the item has, where it has any.
+      - name: remote_trailer_count
+        description: How many trailers the library knows about for the item.
+      - name: external_urls
+        description: The item's pages on public databases, as name and url pairs.
+      - name: file_size_bytes
+        description: Size of the primary media file, for an Episode or a Video.
+      - name: file_bitrate
+        description: Overall bitrate of the primary media file.
+      - name: media_source_count
+        description: How many media sources the item has.
+      - name: unmapped_json
+        description: '{{ doc("lit_unmapped_json") }}'
+      - name: season_number
+        description: '{{ doc("lit_season_number") }}'
+      - name: episode_number
+        description: '{{ doc("lit_episode_number") }}'
+      - name: is_episode
+        description: '{{ doc("lit_is_episode") }}'
+      - name: is_series
+        description: '{{ doc("lit_is_series") }}'
+
   - name: stg_tmdb_titles
     description: >
       The few TMDB figures Jellyfin has no field for, one row per id. Optional: empty
