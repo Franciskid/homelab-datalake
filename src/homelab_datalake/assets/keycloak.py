@@ -39,7 +39,9 @@ from homelab_datalake.parsing import ledger
 from homelab_datalake.resources import LakeStorage
 
 KEYCLOAK_EVENTS_START = "2026-09-15"
-keycloak_partitions = DailyPartitionsDefinition(start_date=KEYCLOAK_EVENTS_START, timezone="UTC")
+# end_offset=1: the schedule re-reads today every hour, and without it today is not a
+# partition until midnight, so every tick fails on an unknown key.
+keycloak_partitions = DailyPartitionsDefinition(start_date=KEYCLOAK_EVENTS_START, timezone="UTC", end_offset=1)
 
 EVENT_COLUMNS = ("id", "event_time", "type", "realm_id", "client_id", "user_id", "session_id",
                  "ip_address", "error", "details_json", "details_json_long_value")
