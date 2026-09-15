@@ -76,6 +76,19 @@ services:
       # proxy's logs is a pipeline able to take every service on the box offline.
       - ${FRASERV_LOG_DIR:-/home/docker/npm/data/logs}:/logs/fraserv:ro
       - geoip:/geoip:ro
+      # Sources added 2026-09-15, every one read-only (docs/METRICS_STREAMING_PLAN.md).
+      # /var/log for the journal and auth.log. Radarr's and Sonarr's whole config
+      # directories, because SQLite keeps -wal and -shm files beside the database and
+      # they must be copied with it; config.xml in there holds an API key the pipeline
+      # never opens. Jellyseerr's db/ directory only. The status page's data volume.
+      - ${HOST_LOG_MOUNT:-/var/log}:/host/log:ro
+      - ${RADARR_CONFIG_DIR:-/home/francois/dev/Docker/fraserv TV/Radarr/config}:/sources/radarr:ro
+      - ${SONARR_CONFIG_DIR:-/home/francois/dev/Docker/fraserv TV/Sonarr/config}:/sources/sonarr:ro
+      - ${JELLYSEERR_DB_DIR:-/home/francois/dev/Docker/fraserv TV/Jellyseer/config/db}:/sources/jellyseerr:ro
+      - status-page-data:/sources/status-page:ro
+    environment:
+      # Prometheus's published port, reached from this container over the LAN address.
+      PROMETHEUS_URL: ${PROMETHEUS_URL:-http://192.168.1.26:9090}
 
   # Keycloak SSO in front of the Dagster UI.
   #
@@ -234,6 +247,19 @@ services:
       - ./workspace.yaml:/app/workspace.yaml:ro
       - ${FRASERV_LOG_DIR:-/home/docker/npm/data/logs}:/logs/fraserv:ro
       - geoip:/geoip:ro
+      # Sources added 2026-09-15, every one read-only (docs/METRICS_STREAMING_PLAN.md).
+      # /var/log for the journal and auth.log. Radarr's and Sonarr's whole config
+      # directories, because SQLite keeps -wal and -shm files beside the database and
+      # they must be copied with it; config.xml in there holds an API key the pipeline
+      # never opens. Jellyseerr's db/ directory only. The status page's data volume.
+      - ${HOST_LOG_MOUNT:-/var/log}:/host/log:ro
+      - ${RADARR_CONFIG_DIR:-/home/francois/dev/Docker/fraserv TV/Radarr/config}:/sources/radarr:ro
+      - ${SONARR_CONFIG_DIR:-/home/francois/dev/Docker/fraserv TV/Sonarr/config}:/sources/sonarr:ro
+      - ${JELLYSEERR_DB_DIR:-/home/francois/dev/Docker/fraserv TV/Jellyseer/config/db}:/sources/jellyseerr:ro
+      - status-page-data:/sources/status-page:ro
+    environment:
+      # Prometheus's published port, reached from this container over the LAN address.
+      PROMETHEUS_URL: ${PROMETHEUS_URL:-http://192.168.1.26:9090}
 
 volumes:
   dagster_home:
@@ -241,6 +267,11 @@ volumes:
   geoip:
   exports:
   audit:
+  # The status page's own data volume, created by its compose project
+  # (Sites perso/status-page). Mounted read-only; this project never owns it.
+  status-page-data:
+    external: true
+    name: status-page_status-page-data
 
 # An explicit subnet, because Docker's default address pools are fully allocated on
 # this host: all fifteen 172.17-172.31/16 blocks and all fifteen 192.168.x/20 blocks
