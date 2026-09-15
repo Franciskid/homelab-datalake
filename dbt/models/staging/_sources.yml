@@ -1417,3 +1417,463 @@ sources:
               carry.
           - name: origin_countries
             description: The country codes the film originates from.
+
+      # -- the AI platform ------------------------------------------------------
+      #
+      # Thirteen of the fifty-two tables ai_platform_registry.py lands. The other
+      # thirty-nine (agent_versions, budgets, mcp_servers, schedules, teams, and so
+      # on) are queryable in the lake and the SQL console -- see layout.py, which
+      # registers every one of them with a description -- but have no dbt source
+      # here, because nothing in dbt/models references them. A table earns a
+      # source() declaration when a staging model reads it, not on principle.
+      #
+      # `dt` means one of two different things depending on the table's mode in the
+      # registry (see ai_platform_registry.py for MODE_WINDOW vs MODE_SNAPSHOT):
+      # for a window table it is the UTC day of that row's own change column, and a
+      # row appears under exactly one dt for the whole time it exists; for a
+      # snapshot table it is the day the whole table was re-read, and a row that
+      # never changes still appears once under every day since it was first seen.
+      # Each table below says which it is.
+      - name: platform_usage_events
+        description: >
+          One row per call through the api.ai gateway: application, key, person,
+          requested and actual model, full prompt and response, tokens, cost,
+          latency, status, and any camera frames attached. By the owner's
+          2026-09-14 decision, prompt and response are landed in full -- see
+          IMPLEMENTATION_PLAN.md section 15. `dt` is the UTC day of `created_at`; a row is re-extractable
+          for WINDOW_DAYS after that, so a call whose gateway is still finishing
+          up can still be corrected the same day it lands.
+        columns:
+          - name: dt
+            description: Partition date -- the UTC day `created_at` falls on.
+          - name: id
+            description: The call's id. Unique; the key fct_ai_gateway_call uses.
+          - name: application_id
+            description: Which application made the call. Joins to platform_applications.
+          - name: api_key_id
+            description: Which API key made the call. Joins to platform_api_keys.
+          - name: source
+            description: What kind of caller this was -- an agent run, a schedule, a script, and so on.
+          - name: client_name
+            description: The calling client's self-reported name, where one was sent.
+          - name: client_version
+            description: The calling client's self-reported version.
+          - name: actor_label
+            description: A human-readable label for who or what triggered the call.
+          - name: actor_external_id
+            description: An external identifier for the actor, where the caller supplied one.
+          - name: requested_model
+            description: The model alias the caller asked for.
+          - name: actual_model
+            description: The model that actually served the call, after routing.
+          - name: prompt
+            description: >
+              The full prompt sent to the model. Empty before 2026-09-14; whole
+              text from that date, by the owner's decision -- see the module note
+              in ai_platform_registry.py.
+          - name: response
+            description: The model's full response, same landing decision as `prompt`.
+          - name: results
+            description: JSON. Structured tool or function-call results the gateway recorded, where there were any.
+          - name: input_tokens
+            description: Prompt tokens, as the gateway counted them.
+          - name: output_tokens
+            description: Completion tokens.
+          - name: cost_eur
+            description: What the call was billed at, in EUR.
+          - name: latency_ms
+            description: End-to-end latency the gateway observed.
+          - name: status
+            description: success, failure, or whatever other outcome the gateway recorded.
+          - name: failure_code
+            description: Why the call failed, when it did. Null on success.
+          - name: metadata
+            description: >
+              JSON. Everything else the gateway recorded about the call -- including
+              `clipUrl` where a camera clip is attached -- with the base64 camera
+              frames removed: those are decoded into lake objects and referenced by
+              `frame_keys` instead. See ai_platform.py's frame-decoding note.
+          - name: created_at
+            description: When the call was recorded, in UTC.
+          - name: conversation_id
+            description: The conversation this call belongs to, where it belongs to one. Text, not a foreign key -- this column is stored as text in ai_platform itself.
+          - name: frame_keys
+            description: Lake object keys for the camera frames attached to this call's metadata, in order. Empty when there were none.
+          - name: frame_count
+            description: How many frames were successfully decoded. May be less than the number of entries in `metadata`'s original images list if any were malformed -- see the frame-count asset check.
+          - name: frame_bytes
+            description: Total bytes across the decoded frames.
+
+      - name: platform_applications
+        description: >
+          Every application registered against the gateway, snapshotted whole
+          every day (`dt` is the day of the snapshot, not a change date -- see the
+          note above the AI platform block).
+        columns:
+          - name: dt
+            description: Snapshot date -- the day this reading of the table was taken.
+          - name: id
+            description: The application's id.
+          - name: created_by_user_id
+            description: Who registered the application.
+          - name: team_id
+            description: The team the application belongs to, where it belongs to one.
+          - name: name
+            description: The application's display name.
+          - name: environment
+            description: Which environment this application represents -- production, staging, and so on.
+          - name: status
+            description: Whether the application is active.
+          - name: metadata
+            description: JSON. Free-form application metadata.
+          - name: created_at
+            description: When the application was registered.
+          - name: updated_at
+            description: When the application's configuration last changed.
+          - name: model_aliases
+            description: JSON. The model routing aliases configured for this application.
+          - name: tool_profiles
+            description: JSON. Which tool profiles this application may use.
+          - name: monthly_budget_eur
+            description: The application's monthly spend budget, in EUR, where one is set.
+          - name: last_used_at
+            description: When the application last made a call.
+          - name: parent_application_id
+            description: The application this one was derived from, where it has one.
+
+      - name: platform_api_keys
+        description: >
+          Every API key issued to an application, snapshotted whole every day. The
+          secret itself -- its hash, its ciphertext, and the id of the matching
+          LiteLLM key -- is never selected; see ai_platform_registry.py.
+        columns:
+          - name: dt
+            description: Snapshot date -- the day this reading of the table was taken.
+          - name: id
+            description: The key's id.
+          - name: application_id
+            description: Which application the key belongs to. Joins to platform_applications.
+          - name: created_by_user_id
+            description: Who issued the key.
+          - name: label
+            description: The key's human-readable name -- what a person recognises it by.
+          - name: prefix
+            description: The key's visible prefix, safe to display.
+          - name: suffix
+            description: The key's visible suffix, safe to display.
+          - name: status
+            description: active, revoked, and so on.
+          - name: last_used_at
+            description: When the key was last used to make a call.
+          - name: revoked_at
+            description: When the key was revoked, or null if it has not been.
+          - name: created_at
+            description: When the key was issued.
+          - name: updated_at
+            description: When the key's record last changed.
+
+      - name: platform_runs
+        description: >
+          Every agent run -- one per turn of work, whether or not it called the
+          gateway. The source for fct_agent_run. `dt` is the UTC day of
+          `started_at`.
+        columns:
+          - name: dt
+            description: Partition date -- the UTC day `started_at` falls on.
+          - name: id
+            description: The run's id.
+          - name: conversation_id
+            description: Which conversation this run belongs to. Joins to platform_conversations.
+          - name: initiated_by_user_id
+            description: Who started the run.
+          - name: status
+            description: pending, running, completed, failed, awaiting_input, and so on.
+          - name: requested_model
+            description: The model the run asked for.
+          - name: actual_route
+            description: The model route that actually served it.
+          - name: input_tokens
+            description: Prompt tokens across the run.
+          - name: output_tokens
+            description: Completion tokens across the run.
+          - name: cost_eur
+            description: What the run cost, in EUR.
+          - name: started_at
+            description: When the run began.
+          - name: completed_at
+            description: When the run finished, or null while it is still going.
+          - name: failure_code
+            description: Why the run failed, when it did.
+          - name: metadata
+            description: JSON. Everything else recorded about the run.
+          - name: awaiting_input_deadline
+            description: When a run waiting on human input times out, where it is waiting.
+          - name: report_definition_id
+            description: The report definition this run was generating, where it was a report run.
+          - name: reasoning_tokens
+            description: Tokens spent on hidden reasoning, where the model reports them.
+
+      - name: platform_conversations
+        description: >
+          Every conversation. `deleted_at` marks a soft delete rather than
+          removing the row. `dt` is the UTC day of `updated_at`, so a conversation
+          is re-extractable within its trailing window after its title changes or
+          it is deleted.
+        columns:
+          - name: dt
+            description: Partition date -- the UTC day `updated_at` falls on.
+          - name: id
+            description: The conversation's id.
+          - name: owner_user_id
+            description: Who owns the conversation.
+          - name: team_id
+            description: The team the conversation belongs to, where it belongs to one.
+          - name: title
+            description: The conversation's title.
+          - name: agent_id
+            description: Which agent this conversation runs against. Joins to platform_agents.
+          - name: created_at
+            description: When the conversation was started.
+          - name: updated_at
+            description: When the conversation last changed.
+          - name: deleted_at
+            description: When the conversation was soft-deleted, or null if it has not been.
+          - name: reasoning_level
+            description: The reasoning effort configured for this conversation.
+          - name: origin
+            description: How the conversation was started -- chat, schedule, automation, and so on.
+
+      - name: platform_agents
+        description: Every agent configured on the platform, snapshotted whole every day.
+        columns:
+          - name: dt
+            description: Snapshot date -- the day this reading of the table was taken.
+          - name: id
+            description: The agent's id.
+          - name: owner_user_id
+            description: Who owns the agent.
+          - name: team_id
+            description: The team the agent belongs to, where it belongs to one.
+          - name: name
+            description: The agent's display name.
+          - name: description
+            description: The agent's own description of what it does.
+          - name: status
+            description: Whether the agent is active.
+          - name: current_version
+            description: The version number currently in effect.
+          - name: created_at
+            description: When the agent was created.
+          - name: updated_at
+            description: When the agent's configuration last changed.
+          - name: template_id
+            description: The template the agent was built from, where it was built from one.
+
+      - name: platform_run_steps
+        description: >
+          Every step of every run: tool calls, reasoning steps, approvals asked
+          for. The source for fct_agent_tool_call. High volume, and never passes
+          through the LLM gateway -- litellm_spend does not see these. `dt` is the
+          UTC day of `occurred_at`.
+        columns:
+          - name: dt
+            description: Partition date -- the UTC day `occurred_at` falls on.
+          - name: id
+            description: The step's id.
+          - name: run_id
+            description: The run this step belongs to. Joins to platform_runs.
+          - name: sequence
+            description: The step's position within its run.
+          - name: type
+            description: What kind of step this is -- tool_call, reasoning, approval_request, and so on.
+          - name: title
+            description: A short label for the step.
+          - name: description
+            description: A longer description of what the step did.
+          - name: payload
+            description: >
+              JSON. The step's detail, shaped differently for each `type` -- for a
+              tool_call this is expected to carry the tool name, arguments and
+              result, but the exact key names are read defensively (a missing key
+              lands as null rather than failing the model) because they are the
+              application's own internal shape and not a documented contract.
+          - name: occurred_at
+            description: When the step happened.
+
+      - name: platform_messages
+        description: >
+          Every message in every conversation, full text, by the owner's
+          2026-09-14 decision -- see IMPLEMENTATION_PLAN.md section 15. `dt` is the UTC day of `created_at`.
+        columns:
+          - name: dt
+            description: Partition date -- the UTC day `created_at` falls on.
+          - name: id
+            description: The message's id.
+          - name: conversation_id
+            description: The conversation this message belongs to. Joins to platform_conversations.
+          - name: author_user_id
+            description: Who wrote the message, for a human-authored one. Null for the assistant's own messages.
+          - name: run_id
+            description: The run that produced this message, where one did.
+          - name: role
+            description: user, assistant, system, or tool.
+          - name: content
+            description: The message's full text.
+          - name: metadata
+            description: JSON. Everything else recorded about the message.
+          - name: created_at
+            description: When the message was written.
+
+      - name: platform_email_sends
+        description: >
+          Every email the platform has sent or attempted to send. `dt` is the UTC
+          day of `created_at`.
+        columns:
+          - name: dt
+            description: Partition date -- the UTC day `created_at` falls on.
+          - name: id
+            description: The send's id.
+          - name: owner_user_id
+            description: Who triggered the send.
+          - name: run_id
+            description: The run that triggered the send, where one did.
+          - name: approval_id
+            description: The approval that authorised the send, where one was required.
+          - name: template_script_id
+            description: The email template script used, where one was.
+          - name: template_version
+            description: Which version of that template.
+          - name: subject
+            description: The email's subject line.
+          - name: recipients
+            description: JSON. Who the email was sent to.
+          - name: attachments
+            description: JSON. What was attached, where anything was.
+          - name: status
+            description: sent, failed, or pending.
+          - name: failure_reason
+            description: Why the send failed, when it did.
+          - name: created_at
+            description: When the send was attempted.
+
+      - name: platform_automation_runs
+        description: >
+          One row per run of an automation, from pending through its outcome. The
+          source for fct_automation_run. `dt` is the UTC day of `created_at`.
+        columns:
+          - name: dt
+            description: Partition date -- the UTC day `created_at` falls on.
+          - name: id
+            description: The run's id.
+          - name: automation_id
+            description: Which automation this is a run of. Joins to platform_automations.
+          - name: dagster_run_id
+            description: The underlying Dagster run id, where the automation executes as one.
+          - name: status
+            description: pending, running, succeeded, failed.
+          - name: started_at
+            description: When the run began.
+          - name: finished_at
+            description: When the run ended, or null while still running.
+          - name: created_at
+            description: When the run record was created.
+
+      - name: platform_automation_step_runs
+        description: >
+          One row per step of one automation run. `dt` is the UTC day of
+          `started_at`.
+        columns:
+          - name: dt
+            description: Partition date -- the UTC day `started_at` falls on.
+          - name: id
+            description: The step run's id.
+          - name: automation_run_id
+            description: The automation run this step belongs to. Joins to platform_automation_runs.
+          - name: step_id
+            description: Which configured step this is a run of.
+          - name: dagster_run_id
+            description: The underlying Dagster run id for this step, where applicable.
+          - name: status
+            description: pending, running, succeeded, failed, skipped.
+          - name: outputs
+            description: JSON. What the step produced, where it produced anything.
+          - name: error
+            description: The error the step raised, when it failed.
+          - name: started_at
+            description: When the step began.
+          - name: finished_at
+            description: When the step ended.
+          - name: step_position
+            description: The step's position within its automation.
+          - name: step_type
+            description: What kind of step this is.
+          - name: step_label
+            description: The step's display label.
+          - name: step_config
+            description: JSON. The step's own configuration, as run.
+
+      - name: platform_automations
+        description: Every configured automation, snapshotted whole every day.
+        columns:
+          - name: dt
+            description: Snapshot date -- the day this reading of the table was taken.
+          - name: id
+            description: The automation's id.
+          - name: owner_user_id
+            description: Who owns the automation.
+          - name: name
+            description: The automation's display name.
+          - name: description
+            description: What the automation does, in the owner's own words.
+          - name: enabled
+            description: Whether the automation is switched on.
+          - name: cadence_cron
+            description: The cron expression the automation runs on.
+          - name: timezone
+            description: The timezone that cron expression is interpreted in.
+          - name: created_by_approval_id
+            description: The approval that authorised creating this automation, where one was required.
+          - name: created_at
+            description: When the automation was created.
+          - name: updated_at
+            description: When the automation's configuration last changed.
+          - name: consecutive_failures
+            description: How many times in a row the automation has failed.
+          - name: paused_reason
+            description: Why the automation is paused, where it is.
+          - name: paused_at
+            description: When it was paused.
+          - name: last_error
+            description: The most recent error the automation raised.
+
+      - name: platform_users
+        description: >
+          Every platform user -- a handful of rows, this is a household's own
+          platform, not a multi-tenant service -- snapshotted whole every day.
+        columns:
+          - name: dt
+            description: Snapshot date -- the day this reading of the table was taken.
+          - name: id
+            description: The user's id.
+          - name: keycloak_subject
+            description: The matching Keycloak account's subject id.
+          - name: username
+            description: The user's login name.
+          - name: display_name
+            description: The user's display name.
+          - name: email
+            description: The user's email address.
+          - name: status
+            description: active, disabled, and so on.
+          - name: litellm_end_user_id
+            description: The matching end-user id in LiteLLM's own records, where there is one.
+          - name: first_seen_at
+            description: When the user first appeared on the platform.
+          - name: last_seen_at
+            description: When the user was last active.
+          - name: last_login_at
+            description: When the user last logged in.
+          - name: created_at
+            description: When the user's account was created.
+          - name: updated_at
+            description: When the user's record last changed.

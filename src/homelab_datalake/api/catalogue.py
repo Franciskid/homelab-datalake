@@ -165,6 +165,12 @@ class Catalogue:
 # raw objects are written by the ingest asset for their source, whose key is just its
 # function name. Guessing `raw/<table>` would produce a link to the *warehouse* table
 # of that name, which is a different asset that happens to share it.
+#
+# Every other source lands several tables from one shared ingest asset -- camera's
+# six exports all come out of one call to the export API -- so one name per source
+# is enough. `ai_platform` is the exception: `homelab_datalake.assets.ai_platform`
+# builds one asset per table from the registry, so its entry is a function rather
+# than a name, resolved per dataset below instead of listed fifty-two times here.
 _RAW_INGEST_ASSET = {
     "npm": "npm_access_raw",
     "litellm": "litellm_spend_raw",
@@ -183,6 +189,8 @@ _RAW_INGEST_ASSET = {
 
 def asset_path(dataset: layout.Dataset) -> tuple[str, ...]:
     if dataset.layer == layout.LAYER_RAW:
+        if dataset.source == "ai_platform":
+            return (f"{dataset.table}_raw",)
         return (_RAW_INGEST_ASSET[dataset.source],)
     return ("lake", dataset.layer, dataset.table)
 

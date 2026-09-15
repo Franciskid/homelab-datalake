@@ -268,7 +268,63 @@ For when there are thirty seconds, not five minutes.
 
 [Private career context or unrelated service inventory omitted.]
 
-[Private host inventory, source measurements, and access instructions omitted.]
+### Take part of it
+
+| Source | Take | Leave |
+|---|---|---|
+| **`ai_platform.usage_events`** ([count withheld] rows, [volume withheld] at first survey; [count withheld] rows, [volume withheld] by 2026-09-14) | Everything — see the note below the table. | Nothing. Superseded 2026-09-14; §15 has the reversal and why. |
+| **`primary_homelab.Log`** ([count withheld] rows, [volume withheld]) | The 0.3% that is actually events: [count withheld] `HTTP_METRIC`, [count withheld] `DB_METRIC`, [count withheld] `SOCKET_EVENT`, [count withheld] `CV_EVENT`, 164 `AUTH_EVENT` | [count withheld] `SYSTEM_METRIC` rows. They are a worse copy of Prometheus, sampled by an app instead of a purpose-built scraper. Carries `ip`, `email`, `username` — §11 applies. |
+| **Prometheus** | Daily rollups per instance and metric | The raw 15-second series. |
+| **status-page `incidents.json`** | Incidents and uptime samples ([volume withheld], 90-day retention) | Nothing much — it is small and high-signal. |
+
+Two of these are worth the paragraph they will get in an interview. `usage_events` **was**
+select the columns, leave the payload — the same table is [volume withheld] or [volume withheld] depending on whether
+you thought about it — until the owner reversed that decision on 2026-09-14 for the whole
+`ai_platform` database, not just this one table. §15 is that reversal, in full, and why the
+argument below is not wrong so much as answering a question the owner no longer asked: it was
+never "is the payload useless", it was "is this repo a public portfolio piece or a private
+warehouse", and once the repo held camera footage descriptions and reverse-proxy visitor
+traffic in a lake nobody but the owner reads, treating the owner's own conversations
+differently had stopped being a privacy boundary and started being an inconsistency. And
+Prometheus keeps **15 days by default**; rolling it into the lake turns fifteen days into
+forever, which is a real reason for a warehouse to exist rather than a decorative one.
+status-page joins to NPM logs on time and answers "did traffic drop because nobody came, or
+because it was down?"
+
+### Leave it
+
+- **`Log`'s `SYSTEM_METRIC` rows** — [count withheld] rows of host metrics in a relational table at a measured
+  350 bytes each, where Prometheus stores the same shape at one to two bytes per sample (§3.2).
+  The single biggest table on the box, and the correct amount to ingest is zero.
+- **`ai_platform` prompts and responses, `banking_tracker`, Nextcloud** — personal content and
+  financial records. Not a close call.
+- **wg-easy** — VPN peers are who connects from where. Network topology.
+- **Authelia / Keycloak auth logs** — login patterns are genuinely interesting and it is a
+  credential-adjacent audit trail. Bad risk-to-reward for a repo whose point is being shown to
+  strangers.
+- **qbittorrent, jackett, radarr, sonarr** — download history. Awkward to publish anything
+  derived from, aggregates included. Not worth the paragraph.
+- **Jenkins** ([count withheld] jobs, [volume withheld]), **syncthing, portainer, ombi, jellyseerr** — real but thin, or
+  duplicative. Revisit if a stage runs short.
+
+### And within the three planned sources
+
+**NPM — keep:** timestamp, host, path, method, scheme, status, upstream status, bytes sent,
+cache status, user-agent, upstream target, plus geography and ASN derived at ingestion.
+**Drop:** query strings and referer (they carry tokens, reset links and session ids often
+enough not to gamble), and the raw IP once enrichment has run (§6).
+
+**Camera — keep:** event id, camera, zone id and name, rule type, lifecycle, start and
+completion, confidence, category, species and counts, dismissal reason, duplicate-of, and the
+French `summary`. **Drop:** zone polygon geometry, clip and playlist URLs, thumbnails, stream
+ids, and `createdBy` identity. The polygons are a map of the property and `homelab-camera`
+already argues against handing that over. The `summary` describes people at the house — fine in
+the private warehouse, never in the published seed.
+
+**Jellyfin — keep:** item id, name, production year, genres, community rating, runtime, codecs,
+resolution, date added, TMDB id. **Drop:** `Path` (filesystem layout is topology), library
+folder names, and `/Sessions` and `/Users` entirely. Playback history is personal and adds
+nothing the metadata doesn't.
 
 ---
 
@@ -531,7 +587,8 @@ Capture it when it happens rather than inventing one.
 | `client_ip_trust` | `direct` / `cdn_edge` / `restored` column | The column means different things before and after the §6 cutover. Mixing them produces confident wrong numbers. |
 | Query strings, referer | Dropped | Carry tokens, reset links and session ids often enough not to gamble. |
 | User-agent | Kept | Not identifying alone, and it is how bots are told from browsers. |
-| `ai_platform` prompt/response | Never read | Personal content. The grant in §5 names tables and columns so it cannot widen by accident. |
+| `ai_platform` prompt/response, message content | Read and landed in full | **Reversed 2026-09-14** — was "never read". §15 has the decision and the (real) enforcement that replaces it: named columns still, no `select *`, but the two credential/PII exclusion lists below are unmoved and non-negotiable. |
+| `ai_platform` credentials — key hashes/ciphertext, provider credentials, push-subscription keys, the ntfy topic, per-user tool config values, an MCP server's command/metadata | Never read | Not content, and the 2026-09-14 reversal is explicitly about content. A working credential in a readable table is a different kind of problem from data being available; see the registry in §15. |
 | `Log.ip`, `.email`, `.username` | Hashed, same as above | Same data, different table. |
 | Zone polygons | Never exported | A map of the property. Consistent with `homelab-camera`. |
 | Camera `summary` | Warehouse only, never the seed | Describes people at the house. |
@@ -690,5 +747,85 @@ profile, or an agent cannot even discover them; and `datalake` needs listing in
    Confirm before relying on a rollup window wider than that.
 4. **Whether `default-host` and `fallback` logs are worth ingesting at all.** They are scanner
    noise and TLS junk. Probably a separate, cheaper table — decide with the data in hand.
+
+---
+
+## 15. The AI platform's own database — and reversing §4/§11
+
+**The owner's decision, 2026-09-14: the warehouse holds all of `ai_platform`, prompts and
+responses included, not the trimmed columns §4 originally took.** This section is the
+reversal §4 and §11 now point to, plus the build that followed from it (workstream
+WS-41.E1).
+
+**Why the reversal, stated plainly rather than left implicit.** §4's original call was made
+when this repo was, first and foremost, a portfolio piece — §1 says so outright, and a
+portfolio piece has an audience the owner's own conversations should never reach. That
+reasoning held up until camera event summaries (§7: "describes people at the house"),
+reverse-proxy visitor traffic and the full LLM spend ledger (§8, `metadata`, `messages`,
+`response` already selected in `litellm_spend.py` since the ledger's own `messages`/`response`
+columns are landed *whole*, empty only because LiteLLM's payload logging happened to be off)
+were all already sitting in the same private warehouse, behind the same Keycloak-gated MCP
+layer, read by nobody but the owner and whatever they ask the platform's own agents to do
+with it. Excluding one more source's content at that point was not protecting anyone — the
+lake was never published, §5's line about what leaves the repo was never about what enters the
+warehouse — it was a rule that had outlived the reason it was written. The owner's Datalake
+Analyst and the platform's own agents can now be asked "what did I actually ask Claude last
+Tuesday" and get an answer, which was the entire point of the MCP layer in §10 existing.
+
+**What did not reverse.** A prompt is content; a credential is not content, and the
+2026-09-14 decision was never about credentials. `ai_platform_registry.py` excludes, by name,
+every column that is a working secret rather than a fact about a conversation: `api_keys`'
+hash and ciphertext, `providers`' encrypted credential, `push_subscriptions`' endpoint and
+keys, `platform_settings.ntfy_topic`, `user_tool_configs.values`, and `mcp_servers.command`/
+`.metadata` (a locally-spawned MCP server's launch command routinely carries a token as an
+argument). `mcp_servers.url` is kept, with its query string stripped, the same boundary this
+repo already applies to NPM request paths. None of this is discretionary the way the earlier
+"leave the payload" call was — it is enforced twice: the registry never selects these columns,
+and the read-only Postgres role's grant is generated *from* the registry, column-level, so a
+bug in the extraction code could not read one even by mistake. See
+`infra/ai-platform-datalake-role.sql` and the module docstring in `ai_platform_registry.py`
+for the full list and the reasoning behind each entry.
+
+**The scale this actually is.** Measured 2026-09-14: 52 tables (of 54 in the schema — the
+Prisma migration ledger and a one-off backup table are skipped, not silently, by name, in
+`SKIPPED_TABLES`). `usage_events` alone: [count withheld] gateway calls, [volume withheld], most of that [count withheld]
+camera frames base64-encoded into a JSON column rather than landed as text — those are decoded
+to individual JPEG objects in the lake at ingestion and referenced from the row by
+`frame_keys`, not carried as a giant string. `run_steps`: [count withheld] tool calls in the trailing week
+alone, none of which ever touch the LiteLLM ledger, because a tool call is not a gateway call.
+
+**The design, briefly — full detail lives in the code, which is where it has to stay correct.**
+One registry (`ai_platform_registry.py`) lists all 52 tables once: a primary key, a change
+column or `MODE_SNAPSHOT`, the exact `SELECT` list, and any binary/redaction handling. Twenty-
+eight config/entity tables (`agents`, `applications`, `schedules`, and so on) are re-read whole
+every day, the same choice this repo already made for `jellyfin_titles` and `camera_zones`;
+twenty-four event tables (`usage_events`, `runs`, `messages`, `run_steps`, and so on) are
+windowed on a change column with a seven-day trailing re-extraction, so a row that changes
+shortly after landing — a run completing, an approval being decided — is corrected on its next
+re-run rather than frozen at its first-seen values. `message_attachments.data` and
+`generated_files.data` are read, written to the lake as one object per row, and replaced in
+the landed row by `object_key`; the same shape as the camera frames, generalised. dbt lands
+six marts — `fct_ai_gateway_call`, `fct_agent_run`, `fct_agent_tool_call`,
+`fct_conversation_message`, `fct_email_send`, `fct_automation_run` — over thirteen staging
+models, and the MCP semantic layer exposes six matching datasets, so a model reading them is
+told, in the dataset description itself, that a streamed call can report zero tokens and that
+a camera frame is a file referenced by a key rather than a value in the row.
+
+`fct_ai_gateway_call` and its staging model were nearly left out of the lake's curated/marts
+Parquet republish (`layout.CURATED_DATASETS` / `MART_DATASETS`) on the assumption that they
+carried the same unbounded growth as `usage_events`' [volume withheld]. Measured instead of assumed: across
+all [count withheld] rows, `prompt` + `response` together are [volume withheld], averaging 764 bytes a row, and the
+most recent four days ran 344–[volume withheld] each — the [volume withheld] was almost entirely the base64 camera
+frames, and those never reach this table at all; they are decoded to lake objects at ingestion,
+before the row is built. That is not a republish `lake_curated`/`lake_marts` will ever notice,
+so both are registered like every other staging model and mart in this registry, and
+`fct_ai_gateway_call` is fully available through the datasets the same as the other five —
+which is the point of this whole workstream, and api.ai calls are the headline case: who
+called, which application, what it cost, and now the prompt and the answer.
+
+The same correction applies to the raw side one step earlier in the pipeline.
+`platform_usage_events` is loaded into the nightly DuckDB warehouse rebuild in full, like every
+other table in the registry — no `Dataset.lake_only`. The field stays in `layout.py` for the
+next table that genuinely earns it; this one, measured, did not.
 
 > Public history note: private identifiers, measurements, and operational details were redacted. Code examples use placeholder infrastructure.

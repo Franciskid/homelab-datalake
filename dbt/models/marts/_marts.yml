@@ -1582,3 +1582,334 @@ models:
         description: >
           When this pipeline read the row. What lets a merge pick the newest version of a
           record the source has since changed.
+
+  - name: fct_ai_gateway_call
+    description: >
+      One row per call through the api.ai gateway: application, key, person,
+      requested and actual model, full prompt and response, tokens, cost, latency,
+      status, and any camera frames attached. A streamed call whose caller never
+      asked the gateway for usage figures reports zero tokens -- that is a real
+      state, not a failure, and it must not be averaged away as though it cost
+      nothing.
+    columns:
+      - name: call_key
+        description: The call's id.
+        tests: [not_null, unique]
+      - name: partition_date
+        description: The UTC day the call was recorded.
+        tests: [not_null]
+      - name: created_at
+        description: When the call was recorded, in UTC.
+        tests: [not_null]
+      - name: created_hour
+        description: created_at truncated to the hour.
+      - name: application_id
+        description: Which application made the call.
+      - name: application_name
+        description: >
+          The application's display name, as of today. Falls back to the raw id
+          when the application has been deleted or never snapshotted.
+      - name: api_key_id
+        description: Which API key made the call.
+      - name: key_label
+        description: The key's human-readable name, as of today. Falls back to the raw id.
+      - name: call_source
+        description: What kind of caller this was -- an agent run, a schedule, a script.
+      - name: client_name
+        description: The calling client's self-reported name.
+      - name: client_version
+        description: The calling client's self-reported version.
+      - name: actor_label
+        description: A human-readable label for who or what triggered the call.
+      - name: actor_external_id
+        description: An external identifier for the actor, where supplied.
+      - name: requested_model
+        description: The model alias the caller asked for.
+      - name: actual_model
+        description: The model that actually served the call, after routing.
+      - name: was_rerouted
+        description: Whether the served model differs from the one requested.
+      - name: status
+        description: success, failure, or whatever other outcome the gateway recorded.
+      - name: failure_code
+        description: Why the call failed, when it did.
+      - name: input_tokens
+        description: Prompt tokens, as the gateway counted them. Zero is a real state -- see the model note.
+      - name: output_tokens
+        description: Completion tokens.
+      - name: total_tokens
+        description: input_tokens plus output_tokens.
+      - name: cost_eur
+        description: What the call was billed at, in EUR.
+      - name: latency_ms
+        description: End-to-end latency the gateway observed.
+      - name: conversation_id
+        description: The conversation this call belongs to, where it belongs to one.
+      - name: prompt
+        description: >
+          The full prompt sent to the model. By the owner's 2026-09-14 decision this
+          is landed and queryable, reversing the earlier "prompts are personal, not
+          stored" line -- see IMPLEMENTATION_PLAN.md section 15.
+      - name: response
+        description: The model's full response, same landing decision as prompt.
+      - name: results
+        description: JSON. Structured tool/function-call results the gateway recorded.
+      - name: metadata
+        description: >
+          JSON. Everything else the gateway recorded, minus the camera frames --
+          decoded separately, see frame_keys.
+      - name: frame_count
+        description: How many camera frames were attached to this call and successfully decoded.
+      - name: frame_bytes
+        description: Total bytes across the decoded frames.
+      - name: frame_keys
+        description: Lake object keys for the decoded frames, in order.
+      - name: has_frames
+        description: Whether this call had any camera frames attached.
+
+  - name: fct_agent_run
+    description: >
+      One row per agent run -- every turn of work the platform did, whether or not
+      it called the gateway. A run can hold several gateway calls or none; this is
+      the table for "how many runs failed today", not fct_ai_gateway_call.
+    columns:
+      - name: run_key
+        description: The run's id.
+        tests: [not_null, unique]
+      - name: partition_date
+        description: The UTC day the run started.
+        tests: [not_null]
+      - name: started_at
+        description: When the run began.
+        tests: [not_null]
+      - name: started_hour
+        description: started_at truncated to the hour.
+      - name: completed_at
+        description: When the run finished, or null while it is still going.
+      - name: duration_ms
+        description: Wall-clock duration, where the run has finished.
+      - name: conversation_id
+        description: The conversation this run belongs to.
+      - name: conversation_title
+        description: That conversation's title.
+      - name: agent_id
+        description: Which agent the conversation runs against.
+      - name: agent_name
+        description: That agent's display name, as of today. Falls back to the raw id.
+      - name: initiated_by_user_id
+        description: Who started the run.
+      - name: status
+        description: pending, running, completed, failed, awaiting_input, and so on.
+      - name: requested_model
+        description: The model the run asked for.
+      - name: actual_route
+        description: The model route that actually served it.
+      - name: was_rerouted
+        description: Whether the actual route differs from the one requested.
+      - name: failure_code
+        description: Why the run failed, when it did.
+      - name: input_tokens
+        description: Prompt tokens across the run.
+      - name: output_tokens
+        description: Completion tokens across the run.
+      - name: total_tokens
+        description: input_tokens plus output_tokens, both coalesced to zero first.
+      - name: reasoning_tokens
+        description: Tokens spent on hidden reasoning, where the model reports them.
+      - name: cost_eur
+        description: What the run cost, in EUR.
+      - name: awaiting_input_deadline
+        description: When a run waiting on human input times out, where it is waiting.
+      - name: is_awaiting_input
+        description: Whether the run is currently waiting on human input.
+      - name: report_definition_id
+        description: The report definition this run was generating, where it was a report run.
+      - name: is_report_run
+        description: Whether this run was generating a scheduled report.
+      - name: metadata
+        description: JSON. Everything else recorded about the run.
+
+  - name: fct_agent_tool_call
+    description: >
+      One row per tool call an agent run made -- the tool_call slice of run_steps.
+      Never passes through the LLM gateway, so litellm_spend and fct_ai_gateway_call
+      do not see these; "how many times did an agent call export_workbook today" has
+      its answer here. Field extraction from the step's payload is best-effort --
+      see the model for why, and read call_status, tool_name and server_alias with
+      that caveat in mind.
+    columns:
+      - name: tool_call_key
+        description: The run_step's id.
+        tests: [not_null, unique]
+      - name: partition_date
+        description: The UTC day the step happened.
+        tests: [not_null]
+      - name: occurred_at
+        description: When the step happened.
+        tests: [not_null]
+      - name: occurred_hour
+        description: occurred_at truncated to the hour.
+      - name: run_id
+        description: The run this tool call belongs to.
+        tests:
+          - relationships: {to: ref('fct_agent_run'), field: run_key}
+      - name: sequence
+        description: The step's position within its run.
+      - name: tool_name
+        description: >
+          The tool invoked, read from the step's payload where present and falling
+          back to the step's own title otherwise. Best-effort -- see the model note.
+      - name: server_alias
+        description: Which MCP server served the tool, where the payload names one. Best-effort.
+      - name: arguments_json
+        description: JSON. The arguments the call was made with, where the payload carries them.
+      - name: result_json
+        description: JSON. What the tool returned, where the payload carries it.
+      - name: call_status
+        description: >
+          The call's outcome, read from the payload where present; derived as
+          failed/completed from the presence of an error otherwise. Best-effort.
+      - name: error_message
+        description: The error the call raised, when the payload records one.
+      - name: duration_ms
+        description: How long the call took, where the payload records it.
+      - name: step_title
+        description: The step's own short label.
+      - name: step_description
+        description: The step's own longer description.
+      - name: payload
+        description: JSON. The step's raw detail, unparsed -- for a question the extracted columns above do not answer.
+
+  - name: fct_conversation_message
+    description: >
+      One row per message in every conversation, full text, by the owner's
+      2026-09-14 decision -- see IMPLEMENTATION_PLAN.md section 15. The conversation's title and agent travel
+      with each message so a listing reads like a transcript.
+    columns:
+      - name: message_key
+        description: The message's id.
+        tests: [not_null, unique]
+      - name: partition_date
+        description: The UTC day the message was written.
+        tests: [not_null]
+      - name: created_at
+        description: When the message was written.
+        tests: [not_null]
+      - name: created_hour
+        description: created_at truncated to the hour.
+      - name: conversation_id
+        description: The conversation this message belongs to.
+      - name: conversation_title
+        description: That conversation's title.
+      - name: agent_id
+        description: Which agent the conversation runs against.
+      - name: agent_name
+        description: That agent's display name, as of today. Falls back to the raw id.
+      - name: conversation_owner_user_id
+        description: Who owns the conversation this message belongs to.
+      - name: author_user_id
+        description: Who wrote the message, for a human-authored one. Null for the assistant's own messages.
+      - name: run_id
+        description: The run that produced this message, where one did.
+        tests:
+          - relationships: {to: ref('fct_agent_run'), field: run_key}
+      - name: role
+        description: user, assistant, system, or tool.
+      - name: content
+        description: The message's full text.
+      - name: content_length
+        description: Character length of content. Cheap to group or filter by without reading the text itself.
+      - name: metadata
+        description: JSON. Everything else recorded about the message.
+
+  - name: fct_email_send
+    description: Every email the platform has sent or attempted to send.
+    columns:
+      - name: email_send_key
+        description: The send's id.
+        tests: [not_null, unique]
+      - name: partition_date
+        description: The UTC day the send was attempted.
+        tests: [not_null]
+      - name: created_at
+        description: When the send was attempted.
+        tests: [not_null]
+      - name: created_hour
+        description: created_at truncated to the hour.
+      - name: owner_user_id
+        description: Who triggered the send.
+      - name: run_id
+        description: The run that triggered the send, where one did.
+        tests:
+          - relationships: {to: ref('fct_agent_run'), field: run_key}
+      - name: approval_id
+        description: The approval that authorised the send, where one was required.
+      - name: was_approved
+        description: Whether the send went through an approval.
+      - name: template_script_id
+        description: The email template script used, where one was.
+      - name: template_version
+        description: Which version of that template.
+      - name: subject
+        description: The email's subject line.
+      - name: recipients
+        description: JSON. Who the email was sent to.
+      - name: recipient_count
+        description: How many recipients.
+      - name: attachments
+        description: JSON. What was attached, where anything was.
+      - name: attachment_count
+        description: How many attachments.
+      - name: has_attachments
+        description: Whether anything was attached.
+      - name: status
+        description: sent, failed, or pending.
+      - name: was_sent
+        description: Whether the send succeeded.
+      - name: failure_reason
+        description: Why the send failed, when it did.
+
+  - name: fct_automation_run
+    description: >
+      One row per run of an automation, with its step runs folded in as counts by
+      outcome and a JSON array of the steps themselves.
+    columns:
+      - name: automation_run_key
+        description: The run's id.
+        tests: [not_null, unique]
+      - name: partition_date
+        description: The UTC day the run record was created.
+        tests: [not_null]
+      - name: created_at
+        description: When the run record was created.
+        tests: [not_null]
+      - name: started_at
+        description: When the run began.
+      - name: finished_at
+        description: When the run ended, or null while still running.
+      - name: duration_ms
+        description: Wall-clock duration, where the run has finished.
+      - name: automation_id
+        description: Which automation this is a run of.
+      - name: automation_name
+        description: That automation's display name, as of today. Falls back to the raw id.
+      - name: dagster_run_id
+        description: The underlying Dagster run id, where the automation executes as one.
+      - name: status
+        description: pending, running, succeeded, failed.
+      - name: steps_total
+        description: How many steps this run has.
+      - name: steps_succeeded
+        description: How many of them succeeded.
+      - name: steps_failed
+        description: How many failed.
+      - name: steps_pending
+        description: How many are still pending or running.
+      - name: had_a_failed_step
+        description: Whether any step in this run failed.
+      - name: last_step_finished_at
+        description: When the last step to finish did.
+      - name: step_runs_json
+        description: >
+          JSON array of every step run -- id, type, label, status, timing, error --
+          ordered by step_position. The detail behind the counts above.

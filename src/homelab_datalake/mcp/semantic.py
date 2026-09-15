@@ -831,10 +831,362 @@ MEDIA_SERVER_ACTIVITY = Dataset(
 )
 
 
+# --- The AI platform's own database -------------------------------------------
+# Six datasets over the marts in fct_ai_gateway_call.sql through
+# fct_automation_run.sql -- see homelab_datalake.parsing.ai_platform_registry for
+# where all of it comes from, and the owner's 2026-09-14 decision to land it in
+# full. The caveats below are not decoration: a model reading these needs to know
+# a streamed call can legitimately report zero tokens, that prompt/response/content
+# are full, untruncated text, and that a camera frame is a file referenced by a key,
+# not a value sitting in the row.
+
+AI_GATEWAY_CALLS = Dataset(
+    name="ai_gateway_calls",
+    table="marts.fct_ai_gateway_call",
+    kind="event",
+    date_column="partition_date",
+    description=(
+        "One row per call through the api.ai gateway: application, key, person, "
+        "requested and actual model, full prompt and response, tokens, cost, "
+        "latency, status, and any camera frames attached. A streamed call whose "
+        "caller never asked the gateway for usage figures reports zero tokens -- "
+        "that is a real state, not evidence the call was free, and summing tokens "
+        "over a period that includes such calls understates the true count. "
+        "`prompt` and `response` are the full text sent and received, by the "
+        "owner's 2026-09-14 decision. A camera frame is never a value in this "
+        "table: `frame_keys` names the lake objects it was decoded to."
+    ),
+    dimensions=(
+        Dimension("application_name", "application_name", "Which application made the call."),
+        Dimension("key_label", "key_label", "The API key's human-readable name."),
+        Dimension("call_source", "call_source",
+                  "What kind of caller this was -- an agent run, a schedule, a script."),
+        Dimension("client_name", "client_name", "The calling client's self-reported name."),
+        Dimension("requested_model", "requested_model", "The model alias the caller asked for."),
+        Dimension("actual_model", "actual_model", "The model that actually served the call."),
+        Dimension("was_rerouted", "was_rerouted",
+                  "True when the served model differs from the one requested."),
+        Dimension("status", "status", "success, failure, or whatever else the gateway recorded."),
+        Dimension("failure_code", "failure_code", "Why the call failed, when it did."),
+        Dimension("has_frames", "has_frames", "True when a camera frame was attached to this call."),
+    ),
+    measures=(
+        Measure("calls", "count(*)", "Number of calls.", "calls"),
+        Measure("cost_eur", "round(sum(cost_eur)::decimal(18, 6), 6)", "Total cost.", "EUR"),
+        Measure("input_tokens", "sum(input_tokens)", "Prompt tokens. Zero is real -- see the dataset note.", "tokens"),
+        Measure("output_tokens", "sum(output_tokens)", "Completion tokens.", "tokens"),
+        Measure("total_tokens", "sum(total_tokens)", "Prompt plus completion tokens.", "tokens"),
+        Measure("failures", "count(*) FILTER (WHERE status = 'failure')", "Failed calls.", "calls"),
+        Measure("calls_with_frames", "count(*) FILTER (WHERE has_frames)",
+                "Calls with at least one camera frame attached.", "calls"),
+        Measure("frames", "sum(frame_count)", "Camera frames decoded across the calls.", "frames"),
+        Measure("frame_bytes", "sum(frame_bytes)", "Bytes of decoded camera frames.", "bytes"),
+        Measure("median_latency_ms", "round(median(latency_ms)::numeric, 1)",
+                "Median end-to-end latency.", "ms"),
+        Measure("eur_per_call", "round((sum(cost_eur) / nullif(count(*), 0))::decimal(18, 6), 6)",
+                "Mean cost per call, total over count.", "EUR"),
+    ),
+    default_measures=("calls", "cost_eur", "total_tokens"),
+    attributes=(
+        Attribute("call_key", "call_key", "The call's stable id."),
+        Attribute("partition_date", "partition_date", "The UTC day the call was recorded."),
+        Attribute("created_at", "created_at", "When the call was recorded, to the microsecond, UTC."),
+        Attribute("created_hour", "created_hour", "created_at truncated to the hour."),
+        Attribute("application_id", "application_id", "Which application made the call."),
+        Attribute("api_key_id", "api_key_id", "Which API key made the call."),
+        Attribute("client_version", "client_version", "The calling client's self-reported version."),
+        Attribute("actor_label", "actor_label", "A human-readable label for who or what triggered the call."),
+        Attribute("actor_external_id", "actor_external_id", "An external identifier for the actor."),
+        Attribute("conversation_id", "conversation_id", "The conversation this call belongs to, where it belongs to one."),
+        Attribute("prompt", "prompt", "The full prompt sent to the model."),
+        Attribute("response", "response", "The model's full response."),
+        Attribute("results", "results", "JSON. Structured tool/function-call results, where there were any."),
+        Attribute("metadata", "metadata", "JSON. Everything else recorded, minus the camera frames."),
+        Attribute("input_tokens", "input_tokens", "Prompt tokens for this one call."),
+        Attribute("output_tokens", "output_tokens", "Completion tokens for this one call."),
+        Attribute("total_tokens", "total_tokens", "Prompt plus completion tokens for this one call."),
+        Attribute("cost_eur", "cost_eur", "What this one call cost."),
+        Attribute("latency_ms", "latency_ms", "End-to-end latency for this one call."),
+        Attribute("frame_count", "frame_count", "How many camera frames this call had, successfully decoded."),
+        Attribute("frame_bytes", "frame_bytes", "Total bytes across this call's decoded frames."),
+        Attribute("frame_keys", "frame_keys", "Lake object keys for this call's decoded frames, in order."),
+    ),
+    default_fields=(
+        "created_at", "application_name", "key_label", "requested_model", "actual_model",
+        "status", "cost_eur", "total_tokens", "latency_ms", "call_key",
+    ),
+    record_order="created_at",
+)
+
+
+AGENT_RUNS = Dataset(
+    name="agent_runs",
+    table="marts.fct_agent_run",
+    kind="event",
+    date_column="partition_date",
+    description=(
+        "One row per agent run -- every turn of work the platform did, whether or "
+        "not it called the gateway. A run can hold several gateway calls, one, or "
+        "none: this is the dataset for 'how many runs failed today', and "
+        "ai_gateway_calls is the dataset for what those runs actually spent."
+    ),
+    dimensions=(
+        Dimension("agent_name", "agent_name", "The agent the run's conversation runs against."),
+        Dimension("status", "status", "pending, running, completed, failed, awaiting_input, and so on."),
+        Dimension("requested_model", "requested_model", "The model the run asked for."),
+        Dimension("actual_route", "actual_route", "The model route that actually served it."),
+        Dimension("was_rerouted", "was_rerouted", "True when the actual route differs from the one requested."),
+        Dimension("failure_code", "failure_code", "Why the run failed, when it did."),
+        Dimension("is_awaiting_input", "is_awaiting_input", "True while the run is waiting on human input."),
+        Dimension("is_report_run", "is_report_run", "True when the run was generating a scheduled report."),
+    ),
+    measures=(
+        Measure("runs", "count(*)", "Number of runs.", "runs"),
+        Measure("cost_eur", "round(sum(cost_eur)::decimal(18, 6), 6)", "Total cost.", "EUR"),
+        Measure("input_tokens", "sum(input_tokens)", "Prompt tokens across the runs.", "tokens"),
+        Measure("output_tokens", "sum(output_tokens)", "Completion tokens across the runs.", "tokens"),
+        Measure("total_tokens", "sum(total_tokens)", "Prompt plus completion tokens across the runs.", "tokens"),
+        Measure("reasoning_tokens", "sum(reasoning_tokens)",
+                "Hidden-reasoning tokens, where models report them.", "tokens"),
+        Measure("failures", "count(*) FILTER (WHERE status = 'failed')", "Failed runs.", "runs"),
+        Measure("median_duration_ms", "round(median(duration_ms)::numeric, 1)",
+                "Median wall-clock duration, over finished runs.", "ms"),
+        Measure("eur_per_run", "round((sum(cost_eur) / nullif(count(*), 0))::decimal(18, 6), 6)",
+                "Mean cost per run, total over count.", "EUR"),
+    ),
+    default_measures=("runs", "cost_eur", "failures"),
+    attributes=(
+        Attribute("run_key", "run_key", "The run's stable id."),
+        Attribute("partition_date", "partition_date", "The UTC day the run started."),
+        Attribute("started_at", "started_at", "When the run began, to the microsecond, UTC."),
+        Attribute("started_hour", "started_hour", "started_at truncated to the hour."),
+        Attribute("completed_at", "completed_at", "When the run finished, or null while still going."),
+        Attribute("duration_ms", "duration_ms", "Wall-clock duration, where the run has finished."),
+        Attribute("conversation_id", "conversation_id", "The conversation this run belongs to."),
+        Attribute("conversation_title", "conversation_title", "That conversation's title."),
+        Attribute("agent_id", "agent_id", "Which agent the conversation runs against."),
+        Attribute("initiated_by_user_id", "initiated_by_user_id", "Who started the run."),
+        Attribute("input_tokens", "input_tokens", "Prompt tokens for this one run."),
+        Attribute("output_tokens", "output_tokens", "Completion tokens for this one run."),
+        Attribute("total_tokens", "total_tokens", "Prompt plus completion tokens for this one run."),
+        Attribute("reasoning_tokens", "reasoning_tokens", "Hidden-reasoning tokens for this one run."),
+        Attribute("cost_eur", "cost_eur", "What this one run cost."),
+        Attribute("awaiting_input_deadline", "awaiting_input_deadline",
+                  "When a run waiting on human input times out."),
+        Attribute("report_definition_id", "report_definition_id",
+                  "The report definition this run was generating, where it was a report run."),
+        Attribute("metadata", "metadata", "JSON. Everything else recorded about the run."),
+    ),
+    default_fields=(
+        "started_at", "agent_name", "conversation_title", "status", "cost_eur",
+        "total_tokens", "duration_ms", "run_key",
+    ),
+    record_order="started_at",
+)
+
+
+AGENT_TOOL_CALLS = Dataset(
+    name="agent_tool_calls",
+    table="marts.fct_agent_tool_call",
+    kind="event",
+    date_column="partition_date",
+    description=(
+        "One row per tool call an agent run made -- the tool_call slice of the "
+        "platform's run_steps. Never passes through the LLM gateway, so "
+        "ai_gateway_calls does not see these: 'how many times did an agent call "
+        "export_workbook today' has its answer here. tool_name, server_alias, "
+        "call_status and duration_ms are read out of the step's own free-form "
+        "payload on a best-effort basis -- the application's internal shape for "
+        "that payload was not a documented contract when this was built, so a "
+        "missing field lands as null rather than a broken row."
+    ),
+    dimensions=(
+        Dimension("tool_name", "tool_name", "The tool invoked. Best-effort -- see the dataset note."),
+        Dimension("server_alias", "server_alias", "Which MCP server served the tool. Best-effort."),
+        Dimension("call_status", "call_status", "The call's outcome. Best-effort."),
+    ),
+    measures=(
+        Measure("tool_calls", "count(*)", "Number of tool calls.", "calls"),
+        Measure("failures", "count(*) FILTER (WHERE call_status = 'failed')", "Failed calls.", "calls"),
+        Measure("distinct_tools", "count(DISTINCT tool_name)", "Distinct tools invoked.", "tools"),
+        Measure("median_duration_ms", "round(median(duration_ms)::numeric, 1)",
+                "Median call duration, where the payload records one.", "ms"),
+    ),
+    default_measures=("tool_calls", "failures", "distinct_tools"),
+    attributes=(
+        Attribute("tool_call_key", "tool_call_key", "The run_step's stable id."),
+        Attribute("partition_date", "partition_date", "The UTC day the call happened."),
+        Attribute("occurred_at", "occurred_at", "When the call happened, to the microsecond, UTC."),
+        Attribute("occurred_hour", "occurred_hour", "occurred_at truncated to the hour."),
+        Attribute("run_id", "run_id", "The run this tool call belongs to."),
+        Attribute("sequence", "sequence", "The step's position within its run."),
+        Attribute("arguments_json", "arguments_json", "JSON. The call's arguments, where the payload carries them."),
+        Attribute("result_json", "result_json", "JSON. What the tool returned, where the payload carries it."),
+        Attribute("error_message", "error_message", "The error the call raised, when the payload records one."),
+        Attribute("duration_ms", "duration_ms", "How long this one call took, where the payload records it."),
+        Attribute("step_title", "step_title", "The step's own short label."),
+        Attribute("step_description", "step_description", "The step's own longer description."),
+        Attribute("payload", "payload", "JSON. The step's raw detail, unparsed."),
+    ),
+    default_fields=(
+        "occurred_at", "tool_name", "server_alias", "call_status", "duration_ms",
+        "run_id", "tool_call_key",
+    ),
+    record_order="occurred_at",
+)
+
+
+CONVERSATIONS = Dataset(
+    name="conversations",
+    table="marts.fct_conversation_message",
+    kind="event",
+    date_column="partition_date",
+    description=(
+        "One row per message in every conversation, full text, by the owner's "
+        "2026-09-14 decision -- see IMPLEMENTATION_PLAN.md section 15. The conversation's title and agent "
+        "travel with each message so a listing reads like a transcript rather than "
+        "a bag of rows keyed by ids nobody recognises."
+    ),
+    dimensions=(
+        Dimension("agent_name", "agent_name", "The agent the message's conversation runs against."),
+        Dimension("role", "role", "user, assistant, system, or tool."),
+    ),
+    measures=(
+        Measure("messages", "count(*)", "Number of messages.", "messages"),
+        Measure("distinct_conversations", "count(DISTINCT conversation_id)",
+                "Distinct conversations touched.", "conversations"),
+        Measure("avg_content_length", "round(avg(content_length)::numeric, 1)",
+                "Mean message length, in characters.", "characters"),
+        Measure("total_content_length", "sum(content_length)", "Total characters written.", "characters"),
+    ),
+    default_measures=("messages", "distinct_conversations"),
+    attributes=(
+        Attribute("message_key", "message_key", "The message's stable id."),
+        Attribute("partition_date", "partition_date", "The UTC day the message was written."),
+        Attribute("created_at", "created_at", "When the message was written, to the microsecond, UTC."),
+        Attribute("created_hour", "created_hour", "created_at truncated to the hour."),
+        Attribute("conversation_id", "conversation_id", "The conversation this message belongs to."),
+        Attribute("conversation_title", "conversation_title", "That conversation's title."),
+        Attribute("agent_id", "agent_id", "Which agent the conversation runs against."),
+        Attribute("conversation_owner_user_id", "conversation_owner_user_id",
+                  "Who owns the conversation this message belongs to."),
+        Attribute("author_user_id", "author_user_id",
+                  "Who wrote the message, for a human-authored one. Null for the assistant's own messages."),
+        Attribute("run_id", "run_id", "The run that produced this message, where one did."),
+        Attribute("content", "content", "The message's full text."),
+        Attribute("content_length", "content_length", "Character length of this one message."),
+        Attribute("metadata", "metadata", "JSON. Everything else recorded about the message."),
+    ),
+    default_fields=(
+        "created_at", "conversation_title", "agent_name", "role", "content_length", "message_key",
+    ),
+    record_order="created_at",
+)
+
+
+EMAIL_SENDS = Dataset(
+    name="email_sends",
+    table="marts.fct_email_send",
+    kind="event",
+    date_column="partition_date",
+    description="Every email the platform has sent or attempted to send.",
+    dimensions=(
+        Dimension("status", "status", "sent, failed, or pending."),
+        Dimension("was_sent", "was_sent", "True when the send succeeded."),
+        Dimension("was_approved", "was_approved", "True when the send went through an approval."),
+        Dimension("has_attachments", "has_attachments", "True when anything was attached."),
+    ),
+    measures=(
+        Measure("sends", "count(*)", "Number of sends attempted.", "sends"),
+        Measure("sent", "count(*) FILTER (WHERE was_sent)", "Sends that succeeded.", "sends"),
+        Measure("failed", "count(*) FILTER (WHERE NOT was_sent)", "Sends that did not succeed.", "sends"),
+        Measure("avg_recipients", "round(avg(recipient_count)::numeric, 1)",
+                "Mean recipients per send.", "recipients"),
+        Measure("total_recipients", "sum(recipient_count)", "Recipients across the sends.", "recipients"),
+    ),
+    default_measures=("sends", "sent", "failed"),
+    attributes=(
+        Attribute("email_send_key", "email_send_key", "The send's stable id."),
+        Attribute("partition_date", "partition_date", "The UTC day the send was attempted."),
+        Attribute("created_at", "created_at", "When the send was attempted, to the microsecond, UTC."),
+        Attribute("created_hour", "created_hour", "created_at truncated to the hour."),
+        Attribute("owner_user_id", "owner_user_id", "Who triggered the send."),
+        Attribute("run_id", "run_id", "The run that triggered the send, where one did."),
+        Attribute("approval_id", "approval_id", "The approval that authorised the send, where one was required."),
+        Attribute("template_script_id", "template_script_id", "The email template script used, where one was."),
+        Attribute("template_version", "template_version", "Which version of that template."),
+        Attribute("subject", "subject", "The email's subject line."),
+        Attribute("recipients", "recipients", "JSON. Who the email was sent to."),
+        Attribute("recipient_count", "recipient_count", "How many recipients this one send had."),
+        Attribute("attachments", "attachments", "JSON. What was attached, where anything was."),
+        Attribute("attachment_count", "attachment_count", "How many attachments this one send had."),
+        Attribute("failure_reason", "failure_reason", "Why the send failed, when it did."),
+    ),
+    default_fields=(
+        "created_at", "subject", "status", "recipient_count", "was_sent", "email_send_key",
+    ),
+    record_order="created_at",
+)
+
+
+AUTOMATION_RUNS = Dataset(
+    name="automation_runs",
+    table="marts.fct_automation_run",
+    kind="event",
+    date_column="partition_date",
+    description=(
+        "One row per run of an automation, with its step runs folded in: counts by "
+        "outcome, and a JSON array of the steps themselves for the times the "
+        "counts are not enough."
+    ),
+    dimensions=(
+        Dimension("automation_name", "automation_name", "Which automation this is a run of."),
+        Dimension("status", "status", "pending, running, succeeded, failed."),
+        Dimension("had_a_failed_step", "had_a_failed_step", "True when any step in this run failed."),
+    ),
+    measures=(
+        Measure("runs", "count(*)", "Number of automation runs.", "runs"),
+        Measure("failed_runs", "count(*) FILTER (WHERE status = 'failed')", "Runs that failed.", "runs"),
+        Measure("runs_with_a_failed_step", "count(*) FILTER (WHERE had_a_failed_step)",
+                "Runs where at least one step failed, whatever the run's own final status.", "runs"),
+        Measure("median_duration_ms", "round(median(duration_ms)::numeric, 1)",
+                "Median wall-clock duration, over finished runs.", "ms"),
+        Measure("steps_total", "sum(steps_total)", "Steps across the runs.", "steps"),
+        Measure("steps_failed", "sum(steps_failed)", "Failed steps across the runs.", "steps"),
+    ),
+    default_measures=("runs", "failed_runs", "steps_total"),
+    attributes=(
+        Attribute("automation_run_key", "automation_run_key", "The run's stable id."),
+        Attribute("partition_date", "partition_date", "The UTC day the run record was created."),
+        Attribute("created_at", "created_at", "When the run record was created, UTC."),
+        Attribute("started_at", "started_at", "When the run began."),
+        Attribute("finished_at", "finished_at", "When the run ended, or null while still running."),
+        Attribute("duration_ms", "duration_ms", "Wall-clock duration, where the run has finished."),
+        Attribute("automation_id", "automation_id", "Which automation this is a run of."),
+        Attribute("dagster_run_id", "dagster_run_id",
+                  "The underlying Dagster run id, where the automation executes as one."),
+        Attribute("steps_total", "steps_total", "How many steps this run has."),
+        Attribute("steps_succeeded", "steps_succeeded", "How many of them succeeded."),
+        Attribute("steps_failed", "steps_failed", "How many failed."),
+        Attribute("steps_pending", "steps_pending", "How many are still pending or running."),
+        Attribute("last_step_finished_at", "last_step_finished_at", "When the last step to finish did."),
+        Attribute("step_runs_json", "step_runs_json",
+                  "JSON array of every step run -- id, type, label, status, timing, error."),
+    ),
+    default_fields=(
+        "started_at", "automation_name", "status", "steps_total", "steps_failed",
+        "automation_run_key",
+    ),
+    record_order="started_at",
+)
+
+
 DATASETS: dict[str, Dataset] = {
     d.name: d for d in (
         LLM_SPEND, WEB_TRAFFIC, CAMERA_ACTIVITY, MEDIA_LIBRARY, MEDIA_PLAYBACK,
         MEDIA_SERVER_ACTIVITY,
+        AI_GATEWAY_CALLS, AGENT_RUNS, AGENT_TOOL_CALLS, CONVERSATIONS, EMAIL_SENDS,
+        AUTOMATION_RUNS,
     )
 }
 

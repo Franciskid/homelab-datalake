@@ -37,6 +37,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from homelab_datalake.parsing import media_pipeline as _media_pipeline
+from homelab_datalake.parsing import ai_platform_registry as _ai_platform
 
 LAYER_RAW = "raw"
 LAYER_CURATED = "curated"
@@ -79,6 +80,13 @@ class Dataset:
     # would grow a file that analytics_daily rebuilds in full every night; it stays
     # queryable through the SQL API, which reads every lake dataset directly. A
     # non-empty reason, not a bare flag, so the exclusion explains itself.
+    # Non-empty names the reason this dataset should not be rebuilt into the nightly
+    # DuckDB warehouse the way every other raw table is -- unbounded growth that
+    # would make `warehouse_tables`' full-history `read_parquet` rescan slower and
+    # larger every night, forever, with no ceiling. No dataset carries this today:
+    # `platform_usage_events` looked like a candidate and was measured instead of
+    # assumed -- see the note beside `_AI_PLATFORM_RAW` below -- and the real number
+    # did not support it. Left in place for the next table that actually earns it.
     lake_only: str = ""
 
     @property
@@ -186,6 +194,31 @@ RAW_DATASETS: tuple[Dataset, ...] = (
          partition_column=None),
 )
 
+# The AI platform's own database: every api.ai gateway call, every agent run and
+# tool call, every conversation, every automation run -- see
+# homelab_datalake.parsing.ai_platform_registry for the full registry and the
+# owner's 2026-09-14 decision to land all of it. One dataset per table, generated
+# from the registry rather than written out by hand a second time here, so a
+# table's description is never asked to agree with itself across two files.
+# `dt` for every one of them, snapshot tables included: a snapshot still lands one
+# object per day it was taken, the same as jellyfin_titles and camera_zones do.
+_AI_PLATFORM_RAW: tuple[Dataset, ...] = tuple(
+    _raw(spec.table_name, DOMAIN_AI, "ai_platform", spec.name, spec.description)
+    for spec in _ai_platform.REGISTRY
+)
+
+# platform_usage_events carries full prompt and response text on every row. It
+# looked like the one table in this registry that could grow past a nightly
+# rebuild's reach -- [volume withheld] was measured against the whole table on 2026-09-14 -- but
+# that figure was almost entirely the base64 camera frames, and those never reach
+# this table at all: they are decoded to lake objects at ingestion, before the row
+# is built (see ai_platform.py). Measured directly instead of assumed: across all
+# [count withheld] rows, prompt + response together are [volume withheld], averaging 764 bytes a row, and
+# the four most recent days ran 344-[volume withheld] each. That is not a rebuild `raw.
+# platform_usage_events` will ever notice, so it is loaded in full by
+# `warehouse_tables` like every other table in the registry -- no `lake_only`.
+RAW_DATASETS = RAW_DATASETS + _AI_PLATFORM_RAW
+
 # --------------------------------------------------------------------------------
 # curated: written by homelab_datalake.assets.publish, from the dbt models
 # --------------------------------------------------------------------------------
@@ -244,6 +277,34 @@ CURATED_DATASETS: tuple[Dataset, ...] = (
     _curated("stg_tmdb_titles", DOMAIN_MEDIA, "tmdb", "titles",
              "TMDB enrichment, typed, with the revenue-to-budget ratio derived.",
              None),
+    _curated("stg_ai_platform_usage_events", DOMAIN_AI, "ai_platform", "usage_events",
+             "Every api.ai gateway call, typed, full prompt and response included.",
+             "partition_date"),
+    _curated("stg_ai_platform_applications", DOMAIN_AI, "ai_platform", "applications",
+             "The application registry, deduped to the newest snapshot per id.", None),
+    _curated("stg_ai_platform_api_keys", DOMAIN_AI, "ai_platform", "api_keys",
+             "The API key registry, deduped to the newest snapshot per id.", None),
+    _curated("stg_ai_platform_agents", DOMAIN_AI, "ai_platform", "agents",
+             "The agent registry, deduped to the newest snapshot per id.", None),
+    _curated("stg_ai_platform_automations", DOMAIN_AI, "ai_platform", "automations",
+             "The automation registry, deduped to the newest snapshot per id.", None),
+    _curated("stg_ai_platform_users", DOMAIN_AI, "ai_platform", "users",
+             "The user registry, deduped to the newest snapshot per id.", None),
+    _curated("stg_ai_platform_runs", DOMAIN_AI, "ai_platform", "runs",
+             "Every agent run, typed.", "partition_date"),
+    _curated("stg_ai_platform_conversations", DOMAIN_AI, "ai_platform", "conversations",
+             "Every conversation, typed.", "partition_date"),
+    _curated("stg_ai_platform_run_steps", DOMAIN_AI, "ai_platform", "run_steps",
+             "Every step of every run, typed.", "partition_date"),
+    _curated("stg_ai_platform_messages", DOMAIN_AI, "ai_platform", "messages",
+             "Every message, typed, full text included.", "partition_date"),
+    _curated("stg_ai_platform_email_sends", DOMAIN_AI, "ai_platform", "email_sends",
+             "Every email sent or attempted, typed.", "partition_date"),
+    _curated("stg_ai_platform_automation_runs", DOMAIN_AI, "ai_platform", "automation_runs",
+             "One row per run of an automation, typed.", "partition_date"),
+    _curated("stg_ai_platform_automation_step_runs", DOMAIN_AI, "ai_platform",
+             "automation_step_runs", "One row per step of one automation run, typed.",
+             "partition_date"),
 )
 
 # --------------------------------------------------------------------------------
@@ -296,6 +357,23 @@ MART_DATASETS: tuple[Dataset, ...] = (
     _mart("dim_jellyfin_user", DOMAIN_MEDIA, "dim_jellyfin_user",
           "The account each play and activity entry points at: latest snapshot "
           "only.", None),
+    _mart("fct_ai_gateway_call", DOMAIN_AI, "fct_ai_gateway_call",
+          "One row per api.ai gateway call: application, key, person, requested "
+          "and actual model, full prompt and response, tokens, cost, latency.",
+          "partition_date"),
+    _mart("fct_agent_run", DOMAIN_AI, "fct_agent_run",
+          "One row per agent run, whether or not it called the gateway.",
+          "partition_date"),
+    _mart("fct_agent_tool_call", DOMAIN_AI, "fct_agent_tool_call",
+          "One row per tool call a run made, from run_steps.", "partition_date"),
+    _mart("fct_conversation_message", DOMAIN_AI, "fct_conversation_message",
+          "One row per message, full text included.", "partition_date"),
+    _mart("fct_email_send", DOMAIN_AI, "fct_email_send",
+          "One row per email the platform has sent or attempted to send.",
+          "partition_date"),
+    _mart("fct_automation_run", DOMAIN_AI, "fct_automation_run",
+          "One row per automation run, with its step runs folded in.",
+          "partition_date"),
 )
 
 # --------------------------------------------------------------------------------

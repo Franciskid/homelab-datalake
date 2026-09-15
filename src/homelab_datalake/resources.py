@@ -75,6 +75,42 @@ class LakeStorage(ConfigurableResource):
             tmp.replace(path)  # atomic on POSIX, mirroring the single-PUT guarantee
         return len(payload)
 
+    def write_bytes(self, key: str, data: bytes, content_type: str = "application/octet-stream") -> int:
+        """Write one opaque object -- a decoded camera frame, a generated file's
+        bytes -- as opposed to `write_table`, which always writes Parquet.
+
+        Same atomicity story as `write_table`: one PUT on S3, a write-to-temp-then-
+        rename on disk. Used for objects referenced *by* a Parquet row (an
+        `object_key` or an entry in `frame_keys`) rather than for a dataset in its
+        own right, so there is no `layout.Dataset` for these -- see
+        `homelab_datalake.parsing.ai_platform`.
+        """
+        if self.uses_s3:
+            self._client().put_object(
+                Bucket=self.bucket, Key=key, Body=data, ContentType=content_type
+            )
+        else:
+            path = Path(self.local_root) / key
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_suffix(path.suffix + ".tmp")
+            tmp.write_bytes(data)
+            tmp.replace(path)
+        return len(data)
+
+    def count_prefix(self, prefix: str) -> int:
+        """How many objects sit under a prefix. Used to check a written count against
+        an expected one without downloading anything."""
+        if self.uses_s3:
+            count = 0
+            paginator = self._client().get_paginator("list_objects_v2")
+            for page in paginator.paginate(Bucket=self.bucket, Prefix=prefix):
+                count += len(page.get("Contents", []))
+            return count
+        root = Path(self.local_root) / prefix
+        if not root.exists():
+            return 0
+        return sum(1 for path in root.rglob("*") if path.is_file())
+
     def delete_prefix(self, prefix: str) -> int:
         """Remove every object under a prefix. Used to make a re-run replace, not append."""
         removed = 0
