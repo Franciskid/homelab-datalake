@@ -132,10 +132,8 @@ ai_platform_snapshot_job = define_asset_job(
     ),
 )
 def ai_platform_snapshot_schedule(context: ScheduleEvaluationContext):
-    day = context.scheduled_execution_time.date()
-    yield RunRequest(
-        run_key=f"ai-platform-snapshot-{day.isoformat()}", partition_key=day.isoformat()
-    )
+    for key in ai_platform.snapshot_partition_keys(context.scheduled_execution_time):
+        yield RunRequest(run_key=f"ai-platform-snapshot-{key}", partition_key=key)
 
 
 # Event-shaped tables (usage_events, runs, run_steps, messages, and so on) get a
@@ -166,12 +164,10 @@ ai_platform_window_job = define_asset_job(
     ),
 )
 def ai_platform_window_schedule(context: ScheduleEvaluationContext):
-    today = context.scheduled_execution_time.date()
-    for back in range(WINDOW_DAYS):
-        day = today - datetime.timedelta(days=back)
+    for key in ai_platform.window_partition_keys(context.scheduled_execution_time):
         yield RunRequest(
-            run_key=f"ai-platform-window-{day.isoformat()}-{context.scheduled_execution_time:%Y%m%d}",
-            partition_key=day.isoformat(),
+            run_key=f"ai-platform-window-{key}-{context.scheduled_execution_time:%Y%m%d}",
+            partition_key=key,
         )
 
 
