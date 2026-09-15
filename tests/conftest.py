@@ -301,11 +301,186 @@ FROM base;
 """
 
 
+_AI_GATEWAY_CALLS = """
+CREATE OR REPLACE TABLE marts.fct_ai_gateway_call AS
+SELECT
+    'call' || i AS call_key,
+    (DATE '2026-09-01' + (i % 14)) AS partition_date,
+    (TIMESTAMPTZ '2026-09-01 06:00:00Z' + INTERVAL (i) MINUTE) AS created_at,
+    date_trunc('hour', TIMESTAMPTZ '2026-09-01 06:00:00Z' + INTERVAL (i) MINUTE) AS created_hour,
+    'app-' || (i % 3) AS application_id,
+    'App ' || (i % 3) AS application_name,
+    'key-' || (i % 4) AS api_key_id,
+    'Key ' || (i % 4) AS key_label,
+    CASE WHEN i % 5 = 0 THEN 'schedule' ELSE 'agent' END AS call_source,
+    'workbench' AS client_name,
+    '1.0' AS client_version,
+    CASE WHEN i % 6 = 0 THEN 'owner' END AS actor_label,
+    CAST(NULL AS VARCHAR) AS actor_external_id,
+    'claude' AS requested_model,
+    CASE WHEN i % 9 = 0 THEN 'claude-fallback' ELSE 'claude' END AS actual_model,
+    (i % 9 = 0) AS was_rerouted,
+    CASE WHEN i % 23 = 0 THEN 'failure' ELSE 'success' END AS status,
+    CASE WHEN i % 23 = 0 THEN 'upstream_error' END AS failure_code,
+    -- Zero tokens is a real, common state -- a streamed call the caller never asked
+    -- usage figures for. i % 11 exercises it deliberately, not accidentally.
+    CASE WHEN i % 11 = 0 THEN 0 ELSE 100 + i END AS input_tokens,
+    CASE WHEN i % 11 = 0 THEN 0 ELSE 40 + (i % 30) END AS output_tokens,
+    CASE WHEN i % 11 = 0 THEN 0 ELSE 140 + i + (i % 30) END AS total_tokens,
+    CASE WHEN i % 11 = 0 THEN 0.0 ELSE (i % 7) * 0.001 END AS cost_eur,
+    300 + (i % 50) * 10 AS latency_ms,
+    CASE WHEN i % 4 = 0 THEN 'conv-' || (i % 20) END AS conversation_id,
+    'prompt text ' || i AS prompt,
+    'response text ' || i AS response,
+    CAST(NULL AS VARCHAR) AS results,
+    '{"clipUrl": null}' AS metadata,
+    CASE WHEN i % 13 = 0 THEN (i % 4) ELSE 0 END AS frame_count,
+    CASE WHEN i % 13 = 0 THEN (i % 4) * 40000 ELSE 0 END AS frame_bytes,
+    CASE WHEN i % 13 = 0 THEN ['frames/' || i || '/0.jpg'] ELSE [] END AS frame_keys,
+    (i % 13 = 0 AND i % 4 <> 0) AS has_frames
+FROM (SELECT i::INTEGER AS i FROM range(0, 180) t(i));
+"""
+
+_AGENT_RUNS = """
+CREATE OR REPLACE TABLE marts.fct_agent_run AS
+SELECT
+    'run' || i AS run_key,
+    (DATE '2026-09-01' + (i % 14)) AS partition_date,
+    (TIMESTAMPTZ '2026-09-01 06:00:00Z' + INTERVAL (i) MINUTE) AS started_at,
+    date_trunc('hour', TIMESTAMPTZ '2026-09-01 06:00:00Z' + INTERVAL (i) MINUTE) AS started_hour,
+    CASE WHEN i % 17 <> 0 THEN TIMESTAMPTZ '2026-09-01 06:00:00Z' + INTERVAL (i) MINUTE
+                                + INTERVAL (5 + (i % 40)) SECOND END AS completed_at,
+    CASE WHEN i % 17 <> 0 THEN (5 + (i % 40)) * 1000 END AS duration_ms,
+    'conv-' || (i % 20) AS conversation_id,
+    'Conversation ' || (i % 20) AS conversation_title,
+    'agent-' || (i % 3) AS agent_id,
+    'Agent ' || (i % 3) AS agent_name,
+    'user-' || (i % 5) AS initiated_by_user_id,
+    CASE WHEN i % 17 = 0 THEN 'awaiting_input'
+         WHEN i % 19 = 0 THEN 'failed' ELSE 'completed' END AS status,
+    'claude' AS requested_model,
+    CASE WHEN i % 9 = 0 THEN 'claude-fallback' ELSE 'claude' END AS actual_route,
+    (i % 9 = 0) AS was_rerouted,
+    CASE WHEN i % 19 = 0 THEN 'tool_error' END AS failure_code,
+    100 + i AS input_tokens,
+    40 + (i % 30) AS output_tokens,
+    140 + i + (i % 30) AS total_tokens,
+    CASE WHEN i % 4 = 0 THEN 10 + (i % 20) END AS reasoning_tokens,
+    (i % 7) * 0.002 AS cost_eur,
+    CASE WHEN i % 17 = 0 THEN TIMESTAMPTZ '2026-09-02 06:00:00Z' END AS awaiting_input_deadline,
+    (i % 17 = 0) AS is_awaiting_input,
+    CASE WHEN i % 10 = 0 THEN 'report-def-1' END AS report_definition_id,
+    (i % 10 = 0) AS is_report_run,
+    '{}' AS metadata
+FROM (SELECT i::INTEGER AS i FROM range(0, 160) t(i));
+"""
+
+_AGENT_TOOL_CALLS = """
+CREATE OR REPLACE TABLE marts.fct_agent_tool_call AS
+SELECT
+    'step' || i AS tool_call_key,
+    (DATE '2026-09-01' + (i % 14)) AS partition_date,
+    (TIMESTAMPTZ '2026-09-01 06:00:00Z' + INTERVAL (i) MINUTE) AS occurred_at,
+    date_trunc('hour', TIMESTAMPTZ '2026-09-01 06:00:00Z' + INTERVAL (i) MINUTE) AS occurred_hour,
+    'run' || (i % 160) AS run_id,
+    (i % 6) AS sequence,
+    CASE WHEN i % 4 = 0 THEN 'export_workbook'
+         WHEN i % 4 = 1 THEN 'send_email'
+         WHEN i % 4 = 2 THEN 'search_documents' ELSE 'run_query' END AS tool_name,
+    CASE WHEN i % 4 = 2 THEN 'documents' WHEN i % 4 = 3 THEN 'datalake' END AS server_alias,
+    '{"query": "x"}' AS arguments_json,
+    CASE WHEN i % 15 <> 0 THEN '{"rows": 3}' END AS result_json,
+    CASE WHEN i % 15 = 0 THEN 'failed' ELSE 'completed' END AS call_status,
+    CASE WHEN i % 15 = 0 THEN 'timed out' END AS error_message,
+    CASE WHEN i % 15 <> 0 THEN 200 + (i % 500) END AS duration_ms,
+    'Step ' || i AS step_title,
+    'Tool call step ' || i AS step_description,
+    '{"tool_name": "x"}' AS payload
+FROM (SELECT i::INTEGER AS i FROM range(0, 220) t(i));
+"""
+
+_CONVERSATION_MESSAGES = """
+CREATE OR REPLACE TABLE marts.fct_conversation_message AS
+SELECT
+    'msg' || i AS message_key,
+    (DATE '2026-09-01' + (i % 14)) AS partition_date,
+    (TIMESTAMPTZ '2026-09-01 06:00:00Z' + INTERVAL (i) MINUTE) AS created_at,
+    date_trunc('hour', TIMESTAMPTZ '2026-09-01 06:00:00Z' + INTERVAL (i) MINUTE) AS created_hour,
+    'conv-' || (i % 20) AS conversation_id,
+    'Conversation ' || (i % 20) AS conversation_title,
+    'agent-' || (i % 3) AS agent_id,
+    'Agent ' || (i % 3) AS agent_name,
+    'user-' || (i % 5) AS conversation_owner_user_id,
+    CASE WHEN i % 2 = 0 THEN 'user-' || (i % 5) END AS author_user_id,
+    CASE WHEN i % 2 <> 0 THEN 'run' || (i % 160) END AS run_id,
+    CASE WHEN i % 2 = 0 THEN 'user' ELSE 'assistant' END AS role,
+    'message content ' || i AS content,
+    length('message content ' || i) AS content_length,
+    '{}' AS metadata
+FROM (SELECT i::INTEGER AS i FROM range(0, 300) t(i));
+"""
+
+_EMAIL_SENDS = """
+CREATE OR REPLACE TABLE marts.fct_email_send AS
+SELECT
+    'email' || i AS email_send_key,
+    (DATE '2026-09-01' + (i % 14)) AS partition_date,
+    (TIMESTAMPTZ '2026-09-01 06:00:00Z' + INTERVAL (i) HOUR) AS created_at,
+    date_trunc('hour', TIMESTAMPTZ '2026-09-01 06:00:00Z' + INTERVAL (i) HOUR) AS created_hour,
+    'user-' || (i % 5) AS owner_user_id,
+    CASE WHEN i % 3 = 0 THEN 'run' || (i % 160) END AS run_id,
+    CASE WHEN i % 6 = 0 THEN 'approval-' || i END AS approval_id,
+    (i % 6 = 0) AS was_approved,
+    CASE WHEN i % 5 = 0 THEN 'template-1' END AS template_script_id,
+    CASE WHEN i % 5 = 0 THEN 2 END AS template_version,
+    'Subject ' || i AS subject,
+    '["a@example.test"]' AS recipients,
+    1 + (i % 3) AS recipient_count,
+    CASE WHEN i % 8 = 0 THEN '["report.xlsx"]' ELSE '[]' END AS attachments,
+    CASE WHEN i % 8 = 0 THEN 1 ELSE 0 END AS attachment_count,
+    (i % 8 = 0) AS has_attachments,
+    CASE WHEN i % 12 = 0 THEN 'failed' ELSE 'sent' END AS status,
+    (i % 12 <> 0) AS was_sent,
+    CASE WHEN i % 12 = 0 THEN 'smtp_error' END AS failure_reason
+FROM (SELECT i::INTEGER AS i FROM range(0, 90) t(i));
+"""
+
+_AUTOMATION_RUNS = """
+CREATE OR REPLACE TABLE marts.fct_automation_run AS
+SELECT
+    'auto-run' || i AS automation_run_key,
+    (DATE '2026-09-01' + (i % 14)) AS partition_date,
+    (TIMESTAMPTZ '2026-09-01 06:00:00Z' + INTERVAL (i) HOUR) AS created_at,
+    (TIMESTAMPTZ '2026-09-01 06:00:00Z' + INTERVAL (i) HOUR) AS started_at,
+    CASE WHEN i % 10 <> 0 THEN TIMESTAMPTZ '2026-09-01 06:00:00Z' + INTERVAL (i) HOUR
+                                + INTERVAL (2 + (i % 10)) MINUTE END AS finished_at,
+    CASE WHEN i % 10 <> 0 THEN (2 + (i % 10)) * 60000 END AS duration_ms,
+    'automation-' || (i % 4) AS automation_id,
+    'Automation ' || (i % 4) AS automation_name,
+    CASE WHEN i % 3 = 0 THEN 'dagster-run-' || i END AS dagster_run_id,
+    CASE WHEN i % 10 = 0 THEN 'running'
+         WHEN i % 14 = 0 THEN 'failed' ELSE 'succeeded' END AS status,
+    3 + (i % 4) AS steps_total,
+    CASE WHEN i % 14 = 0 THEN 1 + (i % 3) ELSE 3 + (i % 4) END AS steps_succeeded,
+    CASE WHEN i % 14 = 0 THEN 1 ELSE 0 END AS steps_failed,
+    CASE WHEN i % 10 = 0 THEN 1 ELSE 0 END AS steps_pending,
+    (i % 14 = 0) AS had_a_failed_step,
+    CASE WHEN i % 10 <> 0 THEN TIMESTAMPTZ '2026-09-01 06:00:00Z' + INTERVAL (i) HOUR
+                                + INTERVAL (2 + (i % 10)) MINUTE END AS last_step_finished_at,
+    '[{"step_id": "s1", "status": "succeeded"}]' AS step_runs_json
+FROM (SELECT i::INTEGER AS i FROM range(0, 70) t(i));
+"""
+
+
 def build_marts(path: str) -> None:
     con = duckdb.connect(path)
     con.execute("SET TimeZone='UTC';")
     con.execute("CREATE SCHEMA IF NOT EXISTS marts;")
-    for statement in (_LLM, _HTTP, _CAMERA, _LIBRARY, _JELLYFIN_PLAYBACK, _JELLYFIN_ACTIVITY):
+    for statement in (
+        _LLM, _HTTP, _CAMERA, _LIBRARY, _JELLYFIN_PLAYBACK, _JELLYFIN_ACTIVITY,
+        _AI_GATEWAY_CALLS, _AGENT_RUNS, _AGENT_TOOL_CALLS, _CONVERSATION_MESSAGES,
+        _EMAIL_SENDS, _AUTOMATION_RUNS,
+    ):
         con.execute(statement)
     con.close()
 

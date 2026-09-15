@@ -1521,3 +1521,423 @@ models:
         description: >
           Whether the stream declares an HDR range. Read with bit_depth: either alone is a
           claim the other does not support.
+
+  - name: stg_ai_platform_usage_events
+    description: >
+      Every call through the api.ai gateway, typed. Full prompt and response text pass
+      through unchanged -- the owner's 2026-09-14 decision to land them, not a cleaning
+      step. The source for fct_ai_gateway_call.
+    columns:
+      - name: partition_date
+        description: The UTC day `created_at` falls on.
+        tests: [not_null]
+      - name: usage_event_id
+        description: The call's id.
+        tests: [not_null, unique]
+      - name: application_id
+        description: Which application made the call.
+      - name: api_key_id
+        description: Which API key made the call.
+      - name: call_source
+        description: What kind of caller this was -- an agent run, a schedule, a script.
+      - name: client_name
+        description: The calling client's self-reported name.
+      - name: client_version
+        description: The calling client's self-reported version.
+      - name: actor_label
+        description: A human-readable label for who or what triggered the call.
+      - name: actor_external_id
+        description: An external identifier for the actor, where supplied.
+      - name: requested_model
+        description: The model alias the caller asked for.
+      - name: actual_model
+        description: The model that actually served the call.
+      - name: prompt
+        description: The full prompt sent to the model.
+      - name: response
+        description: The model's full response.
+      - name: results
+        description: JSON. Structured tool/function-call results, where there were any.
+      - name: input_tokens
+        description: Prompt tokens.
+      - name: output_tokens
+        description: Completion tokens.
+      - name: cost_eur
+        description: What the call was billed at, in EUR.
+      - name: latency_ms
+        description: End-to-end latency the gateway observed.
+      - name: status
+        description: success, failure, or unknown when the ledger did not say.
+      - name: failure_code
+        description: Why the call failed, when it did.
+      - name: metadata
+        description: JSON. Everything else recorded, minus the camera frames -- see frame_keys.
+      - name: created_at
+        description: When the call was recorded, in UTC.
+      - name: conversation_id
+        description: The conversation this call belongs to, where it belongs to one.
+      - name: frame_keys
+        description: Lake object keys for this call's decoded camera frames, in order.
+      - name: frame_count
+        description: How many frames were successfully decoded.
+      - name: frame_bytes
+        description: Total bytes across the decoded frames.
+
+  - name: stg_ai_platform_applications
+    description: >
+      The application registry, deduped to the newest snapshot per id -- see the
+      model for why a whole-table-snapshot source needs this.
+    columns:
+      - name: id
+        description: The application's id.
+        tests: [not_null, unique]
+      - name: created_by_user_id
+        description: Who registered the application.
+      - name: team_id
+        description: The team the application belongs to, where it belongs to one.
+      - name: application_name
+        description: The application's display name.
+      - name: environment
+        description: Which environment this represents.
+      - name: status
+        description: Whether the application is active.
+      - name: monthly_budget_eur
+        description: The application's monthly spend budget, in EUR, where one is set.
+      - name: created_at
+        description: When the application was registered.
+      - name: updated_at
+        description: When the application's configuration last changed.
+      - name: last_used_at
+        description: When the application last made a call.
+      - name: parent_application_id
+        description: The application this one was derived from, where it has one.
+
+  - name: stg_ai_platform_api_keys
+    description: >
+      The API key registry, deduped to the newest snapshot per id. The secret is
+      never selected upstream -- see ai_platform_registry.py.
+    columns:
+      - name: id
+        description: The key's id.
+        tests: [not_null, unique]
+      - name: application_id
+        description: Which application the key belongs to.
+      - name: created_by_user_id
+        description: Who issued the key.
+      - name: key_label
+        description: The key's human-readable name.
+      - name: prefix
+        description: The key's visible prefix.
+      - name: suffix
+        description: The key's visible suffix.
+      - name: status
+        description: active, revoked, and so on.
+      - name: last_used_at
+        description: When the key was last used.
+      - name: revoked_at
+        description: When the key was revoked, or null.
+      - name: created_at
+        description: When the key was issued.
+      - name: updated_at
+        description: When the key's record last changed.
+
+  - name: stg_ai_platform_agents
+    description: The agent registry, deduped to the newest snapshot per id.
+    columns:
+      - name: id
+        description: The agent's id.
+        tests: [not_null, unique]
+      - name: owner_user_id
+        description: Who owns the agent.
+      - name: team_id
+        description: The team the agent belongs to, where it belongs to one.
+      - name: agent_name
+        description: The agent's display name.
+      - name: agent_description
+        description: The agent's own description of what it does.
+      - name: status
+        description: Whether the agent is active.
+      - name: current_version
+        description: The version number currently in effect.
+      - name: created_at
+        description: When the agent was created.
+      - name: updated_at
+        description: When the agent's configuration last changed.
+      - name: template_id
+        description: The template the agent was built from, where it was built from one.
+
+  - name: stg_ai_platform_automations
+    description: The automation registry, deduped to the newest snapshot per id.
+    columns:
+      - name: id
+        description: The automation's id.
+        tests: [not_null, unique]
+      - name: owner_user_id
+        description: Who owns the automation.
+      - name: automation_name
+        description: The automation's display name.
+      - name: automation_description
+        description: What the automation does, in the owner's own words.
+      - name: enabled
+        description: Whether the automation is switched on.
+      - name: cadence_cron
+        description: The cron expression the automation runs on.
+      - name: timezone
+        description: The timezone that cron expression is interpreted in.
+      - name: consecutive_failures
+        description: How many times in a row the automation has failed.
+      - name: paused_reason
+        description: Why the automation is paused, where it is.
+      - name: paused_at
+        description: When it was paused.
+      - name: last_error
+        description: The most recent error the automation raised.
+      - name: created_at
+        description: When the automation was created.
+      - name: updated_at
+        description: When the automation's configuration last changed.
+
+  - name: stg_ai_platform_users
+    description: >
+      The user registry, deduped to the newest snapshot per id. A handful of rows:
+      this is a household's own platform, not a multi-tenant service.
+    columns:
+      - name: id
+        description: The user's id.
+        tests: [not_null, unique]
+      - name: username
+        description: The user's login name.
+      - name: display_name
+        description: The user's display name.
+      - name: status
+        description: active, disabled, and so on.
+      - name: first_seen_at
+        description: When the user first appeared on the platform.
+      - name: last_seen_at
+        description: When the user was last active.
+      - name: last_login_at
+        description: When the user last logged in.
+
+  - name: stg_ai_platform_runs
+    description: >
+      Every agent run, typed. The source for fct_agent_run.
+    columns:
+      - name: partition_date
+        description: The UTC day `started_at` falls on.
+        tests: [not_null]
+      - name: run_id
+        description: The run's id.
+        tests: [not_null, unique]
+      - name: conversation_id
+        description: Which conversation this run belongs to.
+      - name: initiated_by_user_id
+        description: Who started the run.
+      - name: status
+        description: pending, running, completed, failed, awaiting_input, and so on.
+      - name: requested_model
+        description: The model the run asked for.
+      - name: actual_route
+        description: The model route that actually served it.
+      - name: input_tokens
+        description: Prompt tokens across the run.
+      - name: output_tokens
+        description: Completion tokens across the run.
+      - name: reasoning_tokens
+        description: Tokens spent on hidden reasoning, where the model reports them.
+      - name: cost_eur
+        description: What the run cost, in EUR.
+      - name: started_at
+        description: When the run began.
+        tests: [not_null]
+      - name: completed_at
+        description: When the run finished, or null while it is still going.
+      - name: duration_ms
+        description: Wall-clock duration, where the run has finished.
+      - name: failure_code
+        description: Why the run failed, when it did.
+      - name: metadata
+        description: JSON. Everything else recorded about the run.
+      - name: awaiting_input_deadline
+        description: When a run waiting on human input times out, where it is waiting.
+      - name: report_definition_id
+        description: The report definition this run was generating, where it was a report run.
+
+  - name: stg_ai_platform_conversations
+    description: Every conversation, typed. Joined into fct_agent_run and fct_conversation_message.
+    columns:
+      - name: partition_date
+        description: The UTC day `updated_at` falls on.
+        tests: [not_null]
+      - name: conversation_id
+        description: The conversation's id.
+        tests: [not_null, unique]
+      - name: owner_user_id
+        description: Who owns the conversation.
+      - name: team_id
+        description: The team the conversation belongs to, where it belongs to one.
+      - name: title
+        description: The conversation's title.
+      - name: agent_id
+        description: Which agent this conversation runs against.
+      - name: created_at
+        description: When the conversation was started.
+      - name: updated_at
+        description: When the conversation last changed.
+      - name: deleted_at
+        description: When the conversation was soft-deleted, or null.
+      - name: is_deleted
+        description: Whether the conversation has been soft-deleted.
+      - name: reasoning_level
+        description: The reasoning effort configured for this conversation.
+      - name: origin
+        description: How the conversation was started -- chat, schedule, automation, and so on.
+
+  - name: stg_ai_platform_run_steps
+    description: >
+      Every step of every run, typed. The source for fct_agent_tool_call.
+    columns:
+      - name: partition_date
+        description: The UTC day `occurred_at` falls on.
+        tests: [not_null]
+      - name: run_step_id
+        description: The step's id.
+        tests: [not_null, unique]
+      - name: run_id
+        description: The run this step belongs to.
+      - name: sequence
+        description: The step's position within its run.
+      - name: step_type
+        description: tool_call, reasoning, approval_request, and so on.
+      - name: step_title
+        description: A short label for the step.
+      - name: step_description
+        description: A longer description of what the step did.
+      - name: payload
+        description: >
+          JSON. The step's detail, shaped differently per step_type. Read defensively
+          downstream: a missing key lands as null.
+      - name: occurred_at
+        description: When the step happened.
+        tests: [not_null]
+
+  - name: stg_ai_platform_messages
+    description: Every message, typed. The source for fct_conversation_message.
+    columns:
+      - name: partition_date
+        description: The UTC day `created_at` falls on.
+        tests: [not_null]
+      - name: message_id
+        description: The message's id.
+        tests: [not_null, unique]
+      - name: conversation_id
+        description: The conversation this message belongs to.
+      - name: author_user_id
+        description: Who wrote the message, for a human-authored one.
+      - name: run_id
+        description: The run that produced this message, where one did.
+      - name: role
+        description: user, assistant, system, or tool.
+      - name: content
+        description: The message's full text.
+      - name: metadata
+        description: JSON. Everything else recorded about the message.
+      - name: created_at
+        description: When the message was written.
+        tests: [not_null]
+
+  - name: stg_ai_platform_email_sends
+    description: Every email sent or attempted, typed. The source for fct_email_send.
+    columns:
+      - name: partition_date
+        description: The UTC day `created_at` falls on.
+        tests: [not_null]
+      - name: email_send_id
+        description: The send's id.
+        tests: [not_null, unique]
+      - name: owner_user_id
+        description: Who triggered the send.
+      - name: run_id
+        description: The run that triggered the send, where one did.
+      - name: approval_id
+        description: The approval that authorised the send, where one was required.
+      - name: template_script_id
+        description: The email template script used, where one was.
+      - name: template_version
+        description: Which version of that template.
+      - name: subject
+        description: The email's subject line.
+      - name: recipients
+        description: JSON. Who the email was sent to.
+      - name: recipient_count
+        description: How many recipients, parsed from `recipients`. Zero when it is not a JSON array.
+      - name: attachments
+        description: JSON. What was attached, where anything was.
+      - name: attachment_count
+        description: How many attachments, parsed from `attachments`.
+      - name: status
+        description: sent, failed, pending, or unknown.
+      - name: failure_reason
+        description: Why the send failed, when it did.
+      - name: created_at
+        description: When the send was attempted.
+        tests: [not_null]
+
+  - name: stg_ai_platform_automation_runs
+    description: One row per run of an automation, typed. The source for fct_automation_run.
+    columns:
+      - name: partition_date
+        description: The UTC day `created_at` falls on.
+        tests: [not_null]
+      - name: automation_run_id
+        description: The run's id.
+        tests: [not_null, unique]
+      - name: automation_id
+        description: Which automation this is a run of.
+      - name: dagster_run_id
+        description: The underlying Dagster run id, where the automation executes as one.
+      - name: status
+        description: pending, running, succeeded, failed, or unknown.
+      - name: started_at
+        description: When the run began.
+      - name: finished_at
+        description: When the run ended, or null while still running.
+      - name: duration_ms
+        description: Wall-clock duration, where the run has finished.
+      - name: created_at
+        description: When the run record was created.
+        tests: [not_null]
+
+  - name: stg_ai_platform_automation_step_runs
+    description: One row per step of one automation run, typed.
+    columns:
+      - name: partition_date
+        description: The UTC day `started_at` falls on.
+        tests: [not_null]
+      - name: automation_step_run_id
+        description: The step run's id.
+        tests: [not_null, unique]
+      - name: automation_run_id
+        description: The automation run this step belongs to.
+      - name: step_id
+        description: Which configured step this is a run of.
+      - name: dagster_run_id
+        description: The underlying Dagster run id for this step, where applicable.
+      - name: status
+        description: pending, running, succeeded, failed, skipped, or unknown.
+      - name: outputs
+        description: JSON. What the step produced, where it produced anything.
+      - name: error
+        description: The error the step raised, when it failed.
+      - name: started_at
+        description: When the step began.
+        tests: [not_null]
+      - name: finished_at
+        description: When the step ended.
+      - name: step_position
+        description: The step's position within its automation.
+      - name: step_type
+        description: What kind of step this is.
+      - name: step_label
+        description: The step's display label.
+      - name: step_config
+        description: JSON. The step's own configuration, as run.
