@@ -47,6 +47,8 @@ models:
         description: '{{ doc("req_is_automated") }}'
       - name: host_is_address
         description: '{{ doc("req_host_is_address") }}'
+      - name: client_address
+        description: '{{ doc("client_address") }}'
       - name: client_hash
         description: '{{ doc("client_hash") }}'
       - name: client_network
@@ -90,6 +92,8 @@ models:
           values. Dropping the whole query string left 'which endpoints take a token
           parameter' unanswerable; each name is capped at 64 characters because a scanner can
           put a kilobyte of junk in one.
+      - name: query_string
+        description: '{{ doc("req_query_string") }}'
   - name: int_camera_events
     description: >
       One row per event: the latest version of it. In normal operation this collapses

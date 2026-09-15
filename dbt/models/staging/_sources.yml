@@ -8,7 +8,10 @@ sources:
     schema: raw
     tables:
       - name: npm_access
-        description: One row per HTTP request seen by an Nginx Proxy Manager instance.
+        description: >
+          One row per HTTP request seen by an Nginx Proxy Manager instance, or by
+          mcp.ai.example.test's own access log (host_source='mcp-api', landed by a
+          separate asset -- see parsing.mcp_api_log).
         columns:
           - name: dt
             description: >
@@ -22,10 +25,11 @@ sources:
               that globs the prefix gets one from the path and one from the data.
           - name: host_source
             description: >
-              Which Nginx Proxy Manager instance logged the line -- `primary`, which
-              fronts 44 hosts, or `secondary`, which fronts the camera. The two run on
-              different machines and fail independently, which is why it is half of
-              the partition key.
+              Which source logged the line: `primary` (44 hosts) or `secondary` (the
+              camera) behind Nginx Proxy Manager, each running independently and
+              landed by npm_access_raw; or `mcp-api`, mcp.ai.example.test's own access
+              log, landed by the separate mcp_api_access_raw asset from 2026-09-14
+              because it sits behind no proxy this warehouse otherwise sees.
           - name: timestamp
             description: >
               When nginx logged the request, converted to UTC at ingest. nginx writes a
@@ -33,10 +37,10 @@ sources:
               same day whoever runs the job.
           - name: log_format
             description: >
-              Which of NPM's three line formats this row was parsed from: `proxy`,
-              `standard`, or stock nginx `combined`. Only `proxy` carries the upstream
-              and Sent-to fields, so nulls in those are a property of the format rather
-              than missing data.
+              Which format this row was parsed from: NPM's `proxy` or `standard`,
+              stock nginx `combined`, or `mcp_api_json` for mcp.ai's own JSON access
+              log. Only `proxy` carries the upstream and Sent-to fields, so nulls in
+              those are a property of the format rather than missing data.
           - name: request_host
             description: >
               The Host header the client sent. Client-controlled, so scanners put bare
@@ -75,6 +79,14 @@ sources:
           - name: sent_to
             description: >
               The upstream nginx forwarded to ($server). Only the `proxy` format has it.
+          - name: client_address
+            description: >
+              The client address exactly as the source logged it, raw. Added
+              2026-09-14 alongside the columns below, which are unchanged -- see
+              homelab_datalake.privacy for the decision. Private-warehouse-only: no
+              export, seed or publish path may select it. Null before 2026-09-14,
+              and null for any older row whose source line had already rotated off
+              disk by the day this shipped.
           - name: client_hash
             description: >
               Salted HMAC-SHA256 of the client address, truncated to 16 bytes. The
@@ -150,6 +162,16 @@ sources:
               string left "which endpoints take a token parameter" unanswerable. Each
               name is truncated to 64 characters, because a scanner can put a kilobyte
               of junk in one and this column exists to be grouped by.
+          - name: query_string
+            description: >
+              The query string exactly as sent, without the leading `?`. Added
+              2026-09-14, raw and private-warehouse-only -- see
+              homelab_datalake.privacy for the decision; `has_query` and
+              `query_param_names` above are unchanged and still what any export or
+              public dataset should read. Null when there was no `?` at all; `''`
+              when there was one with nothing after it. Also null for every row from
+              before 2026-09-14, and for an older row whose source line had already
+              rotated off disk by the day this shipped.
 
       - name: npm_access_rejects
         description: >

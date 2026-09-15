@@ -21,8 +21,11 @@ the filename is not evidence of the day.
 {% enddocs %}
 
 {% docs req_npm_instance %}
-Which Nginx Proxy Manager logged the request: `primary`, which fronts 44 hosts, or
-`secondary`, which fronts the camera. They run on different machines and fail independently.
+Which proxy logged the request: `primary` (44 hosts) or `secondary` (the camera) behind
+Nginx Proxy Manager, each on its own machine and failing independently; or
+`mcp-api`, which is not NPM at all -- it is mcp.ai.example.test's own access log,
+landed in this same table from 2026-09-14 because it sits behind no proxy this
+warehouse otherwise sees. See `parsing.mcp_api_log` for its field mapping.
 {% enddocs %}
 
 {% docs req_requested_at %}
@@ -37,9 +40,10 @@ session's timezone.
 {% enddocs %}
 
 {% docs req_log_format %}
-Which of NPM's three line formats the row was parsed from: `proxy`, `standard`, or
-stock nginx `combined`. Only `proxy` carries the upstream and cache fields, so a null
-in those is a property of the format rather than missing data.
+Which format the row was parsed from: NPM's `proxy` or `standard`, stock nginx
+`combined`, or `mcp_api_json` for mcp.ai's own JSON access log. Only `proxy`
+carries the upstream and cache fields, so a null in those is a property of the
+format rather than missing data.
 {% enddocs %}
 
 {% docs req_request_host %}
@@ -66,6 +70,16 @@ tokens, session ids and API keys often enough that storing them is a bet with no
 The path cut to its first two segments. Full paths have unbounded cardinality -- every
 media id is its own path -- and two segments is what somebody actually wants grouped in
 a dashboard.
+{% enddocs %}
+
+{% docs req_query_string %}
+The query string exactly as sent, without the leading `?`. Added 2026-09-14, raw and
+private-warehouse-only -- see homelab_datalake.privacy for the decision. `has_query`
+and `query_param_names` are unchanged and still the columns any export or public
+dataset should read. Null when the request carried no `?` at all; `''` when it carried one with nothing
+after it -- `has_query` is true in the second case and false in the first, which is
+what tells the two apart. Also null for every row from before 2026-09-14, and for an
+older row whose source line had already rotated off disk by the day this shipped.
 {% enddocs %}
 
 {% docs req_status %}
@@ -125,6 +139,16 @@ generation a row came from, and nothing groups by it.
 
 
 {# ------------------------------------------------- the privacy boundary, shared #}
+
+{% docs client_address %}
+The client address exactly as the source logged it, raw. Added 2026-09-14 alongside
+the derived columns below, which are unchanged -- see homelab_datalake.privacy for
+the decision and the guarantees that still hold. Private-warehouse-only: no export,
+seed or publish path may select it. Null before 2026-09-14, and null for any older
+row whose source line had already rotated off disk by the day this shipped -- NPM
+keeps roughly five weeks, so it cannot be filled in retroactively past what was
+still there to re-read.
+{% enddocs %}
 
 {% docs client_hash %}
 Salted HMAC-SHA256 of the client address, truncated to 16 bytes. The address itself is

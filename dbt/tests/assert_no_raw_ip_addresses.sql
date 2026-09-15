@@ -8,6 +8,13 @@
 -- `request_host` because the Host header legitimately contains addresses -- scanners
 -- send them, and that is a fact worth keeping rather than laundering.
 --
+-- `client_address` is excluded for a newer, different reason: since 2026-09-14 it
+-- *is* the address, on purpose -- see homelab_datalake.privacy for the decision.
+-- Checking it here would fail every row rather than catch a fault. What still
+-- matters is that it stays out of columns that are not supposed to hold it, which
+-- is exactly what the `user_agent` checks below and the `client_network` exclusion
+-- above already guard -- a leak would show up there, not by this column existing.
+--
 -- `path` is excluded for exactly the same reason, added 30 Aug 2026 when a backfill of
 -- thirty older days turned up five of them. Every one was an address the *attacker*
 -- typed, not a visitor the pipeline failed to hash:

@@ -10,6 +10,12 @@
 --
 -- `is_internal` uses the redacted private-address flag rather than re-deriving it,
 -- because the address itself is gone by this point. That is the boundary working.
+--
+-- `client_address` and `query_string` are the 2026-09-14 exception to that: raw,
+-- private-warehouse-only, alongside the redacted/derived columns which are
+-- unchanged. See homelab_datalake.privacy for why, and the export-path tests in
+-- tests/test_publish.py / tests/test_serving.py for what keeps them out of anything
+-- this repo would ship as public.
 
 with source as (
 
@@ -37,6 +43,7 @@ renamed as (
         nullif(user_agent, '')                      as user_agent,
         nullif(sent_to, '')                         as upstream_target,
 
+        client_address,
         client_hash,
         client_network,
         client_trust,
@@ -52,7 +59,8 @@ renamed as (
         referer,
         gzip_ratio,
         has_query,
-        query_param_names
+        query_param_names,
+        query_string
 
     from source
 

@@ -1,16 +1,40 @@
-"""The PII boundary. A client address goes in; an address never comes out.
+"""The PII boundary. A client address goes in; `redact_client` never lets it out.
 
-This is the only place a raw client address is allowed to exist, and it exists
-only in memory. Everything written to disk or object storage has been through
-`redact_client`, which returns a salted hash, a coarse network, and a trust
-label -- and drops the original.
+For a year this docstring said an address never comes out at all. That changed on
+2026-09-14: the owner decided the warehouse should hold the raw client address and
+the raw query string too, alongside the derived columns below, because a lakehouse
+that hashes away the thing someone might one day need to look up is not holding "all
+available data" -- it is holding a summary of it. The derived columns did not stop
+existing or stop being the default: `redact_client` is unchanged, every existing
+chart -- country, city, network operator, bot-versus-human -- still runs off the hash
+and the network, and nothing here got easier to de-anonymise by looking at one row.
 
-The ordering matters and is the whole design: geo and ASN are derived *while*
-the address is still in hand (see homelab_datalake.geo), and only then is it
-discarded. That keeps every chart the address would have enabled -- country,
-city, network operator, bot-versus-human -- without keeping anything that
-identifies a household. There is deliberately no "raw landing zone we clean up
-later", because that zone is the leak.
+What changed is that `homelab_datalake.parsing.extract` now *also* writes
+`parsed.client` and `raw_query_string(parsed.uri)` straight into `raw.npm_access`
+(and the mcp-api equivalent), unredacted, alongside `client_hash`/`client_network`.
+Two things keep that from being the leak this module used to promise could not
+happen:
+
+* **It is scoped to `raw/`, `curated/` and `marts/` in the private warehouse.**
+  Those layers are reachable only through Keycloak-gated tools (the MCP server, the
+  workbench API, dbt/notebook access on the deployed host) -- never through anything
+  that ships in this git repository. `seed/` is gitignored and synthetic either way
+  (see `scripts/generate_seed.py`), and `homelab_datalake.assets.publish` /
+  `homelab_datalake.serving` never touch a wider audience than they did before this
+  change; see the tests exercising those modules for the assertion, not just this
+  comment.
+* **Geo and network derivation still happen first, and `redact_client` still runs
+  unconditionally.** The raw columns are additive, not a replacement -- a caller who
+  only ever reads `client_hash`/`client_network`/`client_trust` sees the exact same
+  pipeline as before. The raw columns exist for the caller who has a legitimate
+  reason to look a request up by the address that made it, on the deployed instance,
+  which nobody outside the household can reach.
+
+NPM keeps roughly five weeks of lines before logrotate recycles them (see
+`LOG_RETENTION_START` in `assets/npm_access.py`), so this cannot be backfilled past
+what is still on disk the day it ships: older partitions keep null raw columns
+forever, and `mcp.semantic.WEB_TRAFFIC`'s description says from which date onward
+they are populated.
 """
 
 from __future__ import annotations
@@ -121,12 +145,39 @@ def redact_client(address: str | None, salt: str) -> RedactedClient:
 def strip_query(uri: str | None) -> str | None:
     """Keep the path, drop the query string.
 
-    Query strings carry password-reset tokens, session ids and API keys often enough
-    that storing them is a bet with no upside. The path is what analysis needs.
+    Query strings can carry sensitive values often enough that a value-free `path`
+    is worth keeping as its own column regardless. Since 2026-09-14 the raw string
+    also survives separately, in `query_string` (see `raw_query_string` below) --
+    that was a decision to stop discarding the value, not to stop offering the
+    value-free path.
     """
     if uri is None:
         return None
     return uri.split("?", 1)[0]
+
+
+def raw_query_string(uri: str | None) -> str | None:
+    """The query string exactly as sent, without the leading `?`.
+
+    Added 2026-09-14, when the owner decided this warehouse should keep the raw
+    query value alongside the value-free `path` and the parameter names below, so a
+    request can be reconstructed in full when there is a legitimate reason to.
+
+    This value lands only in `raw.npm_access` and its mcp-api counterpart, and in
+    the curated/marts models built from them -- all private-warehouse-only, reached
+    solely through the Keycloak-gated MCP server and workbench API on the deployed
+    host, never through anything this git repository ships. No export, seed or
+    publish path may select it; that is enforced in code, not only documented --
+    see `tests/test_no_real_addresses_in_fixtures.py` and the export-path tests in
+    `tests/test_publish.py` / `tests/test_serving.py`.
+
+    Distinct from an absent query string: returns `None` only when there was no `?`
+    at all, and `""` when there was one with nothing after it -- `has_query` is
+    true in both of the cases this returns, so this is what tells them apart.
+    """
+    if uri is None or "?" not in uri:
+        return None
+    return uri.split("?", 1)[1]
 
 
 def query_param_names(uri: str | None) -> list[str]:

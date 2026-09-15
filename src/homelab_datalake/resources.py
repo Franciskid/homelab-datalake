@@ -142,6 +142,63 @@ class LakeStorage(ConfigurableResource):
             # caller treats None as "first snapshot".
             return None
 
+    def list_keys(self, prefix: str) -> list[str]:
+        """Every object key under a prefix, sorted. Empty if the prefix holds nothing.
+
+        Added for the secondary inbox (WS-41.E2 part B): unlike a partition write, an
+        inbox is not addressed by a single known key, so a reader has to ask what
+        is there first. Works on both backends, which is what lets a test exercise
+        the inbox-reading path without a bucket.
+        """
+        if self.uses_s3:
+            client = self._client()
+            paginator = client.get_paginator("list_objects_v2")
+            keys: list[str] = []
+            for page in paginator.paginate(Bucket=self.bucket, Prefix=prefix):
+                keys += [obj["Key"] for obj in page.get("Contents", [])]
+            return sorted(keys)
+        root = Path(self.local_root) / prefix
+        if not root.exists():
+            return []
+        return sorted(
+            str((p.relative_to(self.local_root)).as_posix()) for p in root.rglob("*") if p.is_file()
+        )
+
+    def read_bytes(self, key: str) -> bytes | None:
+        """Raw bytes of one object, or None if it is not there.
+
+        The non-Parquet counterpart to `read_table`, for objects this lake did not
+        write itself -- the secondary inbox holds plain and gzipped text, mirrored from
+        secondary rather than produced by `write_table`.
+        """
+        try:
+            if self.uses_s3:
+                return self._client().get_object(Bucket=self.bucket, Key=key)["Body"].read()
+            path = Path(self.local_root) / key
+            if not path.exists():
+                return None
+            return path.read_bytes()
+        except Exception:  # noqa: BLE001 - an object that vanished between list_keys and
+            # this read (the mirror overwrote it mid-sync) is not a failure worth
+            # stopping the run for; the caller simply sees one less object's lines.
+            return None
+
+    def write_bytes(self, key: str, data: bytes) -> int:
+        """Write raw bytes to one object. Returns bytes written.
+
+        Used by tests to build inbox fixtures without a real sync, and available to
+        anything else that needs to land a non-Parquet object in the lake.
+        """
+        if self.uses_s3:
+            self._client().put_object(Bucket=self.bucket, Key=key, Body=data)
+        else:
+            path = Path(self.local_root) / key
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_suffix(path.suffix + ".tmp")
+            tmp.write_bytes(data)
+            tmp.replace(path)
+        return len(data)
+
     def duckdb_scan_target(self, prefix: str) -> str:
         """A glob DuckDB can read every partition through."""
         if self.uses_s3:
@@ -208,12 +265,22 @@ class LakeStorage(ConfigurableResource):
 
 
 class NpmLogSources(ConfigurableResource):
-    """Where each host's NPM logs are readable from, inside the Dagster container.
+    """Where each *directory-backed* log source is readable from, inside the container.
 
-    primary's are a read-only bind mount of the live NPM volume. Only the instances
-    actually mounted are ingested -- NPM_HOSTS decides, and it defaults to primary
-    alone. The two sites are never joined at the host level; anything read across
-    them goes over its public URL with a token, as the camera source does.
+    primary's is a read-only bind mount of the live NPM volume; mcp-api's is a
+    read-only mount of the platform's own access-log directory (see
+    `assets.npm_access.mcp_api_access_raw`). secondary is deliberately absent: it used to
+    default here to a local mount (`NPM_LOG_DIR_SECONDARY`) that named a path no
+    container actually had -- secondary is not reachable from this host at
+    all, which is exactly why the lake inbox exists (WS-41.E2 part B). secondary's logs
+    are read from `lake.list_keys("inbox/npm/secondary")` in `assets.npm_access`
+    instead, through the `LakeStorage` resource every asset already has, so there
+    is nothing to configure here for it.
+
+    Only the instances actually mounted are ingested -- NPM_HOSTS decides, and it
+    defaults to primary and secondary. The sites are never joined at the host level;
+    anything read across them goes over its public URL with a token, as the camera
+    source does, or through the lake mirror, as secondary now does.
     """
 
     # ConfigurableResource is a Pydantic model, which deep-copies field
@@ -234,6 +301,6 @@ class NpmLogSources(ConfigurableResource):
         return cls(
             directories={
                 "primary": os.environ.get("NPM_LOG_DIR_PRIMARY", "./seed/logs/primary"),
-                "secondary": os.environ.get("NPM_LOG_DIR_SECONDARY", "./seed/logs/secondary"),
+                "mcp-api": os.environ.get("MCP_API_LOG_DIR", "./seed/logs/mcp-api"),
             }
         )

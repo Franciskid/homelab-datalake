@@ -3,9 +3,12 @@ version: 2
 models:
   - name: fct_http_request
     description: >
-      One row per HTTP request across both Nginx Proxy Manager instances. Client
-      addresses are hashed at ingestion and never stored; geography and network
-      operator are derived at that same boundary, before the address is discarded.
+      One row per HTTP request: both Nginx Proxy Manager instances, plus
+      mcp.ai.example.test's own access log from 2026-09-14 (npm_instance='mcp-api').
+      Client addresses are hashed and geography/network are derived at ingestion, as
+      before; since 2026-09-14 the raw address and the raw query string are also
+      kept, in client_address and query_string, private-warehouse-only -- see
+      homelab_datalake.privacy.
     columns:
       - name: request_key
         description: >
@@ -28,10 +31,10 @@ models:
         description: '{{ doc("req_partition_date") }}'
         tests: [not_null]
       - name: npm_instance
-        description: Which NPM the request hit. primary fronts 44 hosts; secondary fronts the camera.
+        description: '{{ doc("req_npm_instance") }}'
         tests:
           - not_null
-          - accepted_values: {values: ['primary', 'secondary']}
+          - accepted_values: {values: ['primary', 'secondary', 'mcp-api']}
       - name: requested_at
         description: '{{ doc("req_requested_at") }}'
         tests: [not_null]
@@ -43,6 +46,8 @@ models:
         description: '{{ doc("req_path") }}'
       - name: path_group
         description: '{{ doc("req_path_group") }}'
+      - name: query_string
+        description: '{{ doc("req_query_string") }}'
       - name: method
         description: '{{ doc("req_method") }}'
       - name: scheme
@@ -71,6 +76,8 @@ models:
           - dbt_utils.accepted_range: {min_value: 0, inclusive: true}
       - name: user_agent
         description: '{{ doc("req_user_agent") }}'
+      - name: client_address
+        description: '{{ doc("client_address") }}'
       - name: client_hash
         description: '{{ doc("client_hash") }}'
       - name: client_network
@@ -109,10 +116,10 @@ models:
       - name: geo_as_org
         description: '{{ doc("geo_as_org") }}'
       - name: log_format
-        description: Which of NPM's three line formats this row was parsed from.
+        description: '{{ doc("req_log_format") }}'
         tests:
           - not_null
-          - accepted_values: {values: ['proxy', 'standard', 'combined']}
+          - accepted_values: {values: ['proxy', 'standard', 'combined', 'mcp_api_json']}
 
   - name: agg_traffic_daily
     description: >
