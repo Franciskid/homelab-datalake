@@ -525,6 +525,158 @@ models:
       - name: runtime_minutes
         description: '{{ doc("lib_runtime_minutes") }}'
 
+  - name: dim_jellyfin_user
+    description: >
+      The account each play and activity entry points at. Latest snapshot only --
+      accounts do not carry the kind of history dim_title_scd2 exists for.
+    columns:
+      - name: user_id
+        description: '{{ doc("usr_user_id") }}'
+        tests: [not_null, unique]
+      - name: user_name
+        description: '{{ doc("usr_user_name") }}'
+      - name: is_administrator
+        description: '{{ doc("usr_is_administrator") }}'
+      - name: is_disabled
+        description: '{{ doc("usr_is_disabled") }}'
+      - name: last_login
+        description: '{{ doc("usr_last_login") }}'
+      - name: last_activity
+        description: '{{ doc("usr_last_activity") }}'
+      - name: last_snapshot_date
+        description: The day of the most recent account snapshot this row was built from.
+        tests: [not_null]
+
+  - name: fct_jellyfin_playback
+    description: >
+      One row per playback session, joined to the title dimension where it resolves.
+      The plugin records how long the player was open, which is not proof of a
+      finished viewing -- a paused film and an abandoned one both accumulate seconds.
+      No relationship test joins `item_id` to `fct_library_title` or `user_id` to
+      `dim_jellyfin_user`: the library snapshot is movies only, so every Episode,
+      Video and TvChannel session is a legitimate non-match (`is_in_library` exists
+      for exactly this), and measured against this server's real history, 3 of 16
+      distinct playback accounts and dozens of activity-log accounts are not in the
+      current `/Users` list at all -- deleted or system accounts, not a data-quality
+      bug a foreign-key test should fail the build over.
+    columns:
+      - name: playback_key
+        description: Surrogate key over started_at, user_id and item_id -- the closest thing PlaybackActivity has to a natural key.
+        tests: [not_null, unique]
+      - name: partition_date
+        description: '{{ doc("pb_partition_date") }}'
+        tests: [not_null]
+      - name: partition_hour
+        description: '{{ doc("pb_partition_hour") }}'
+        tests: [not_null]
+      - name: extracted_at
+        description: '{{ doc("pb_extracted_at") }}'
+      - name: started_at
+        description: '{{ doc("pb_started_at") }}'
+        tests: [not_null]
+      - name: started_hour
+        description: '{{ doc("pb_started_hour") }}'
+      - name: started_hour_of_day
+        description: '{{ doc("pb_started_hour_of_day") }}'
+      - name: started_weekday
+        description: '{{ doc("pb_started_weekday") }}'
+      - name: is_weekend
+        description: '{{ doc("pb_is_weekend") }}'
+      - name: user_id
+        description: '{{ doc("pb_user_id") }}'
+      - name: user_name
+        description: '{{ doc("pb_user_name") }}'
+      - name: item_id
+        description: '{{ doc("pb_item_id") }}'
+        tests: [not_null]
+      - name: item_type
+        description: '{{ doc("pb_item_type") }}'
+      - name: title
+        description: The title as the plugin recorded it -- item_name, under the name this dataset's dimension uses.
+      - name: series_name
+        description: '{{ doc("pb_series_name") }}'
+      - name: is_episode
+        description: '{{ doc("pb_is_episode") }}'
+      - name: genre
+        description: >
+          The title's primary genre, from bridge_title_genre. Not the full list: joining
+          the bridge at fact grain would multiply every watch-time measure by the number
+          of genres a film carries, the same trade-off stg_jellyfin_titles already makes
+          for studio and production_country. Null for anything not in the movie library.
+        tests:
+          - relationships: {to: ref('dim_genre'), field: genre_name}
+      - name: playback_method
+        description: '{{ doc("pb_playback_method") }}'
+      - name: client_name
+        description: '{{ doc("pb_client_name") }}'
+      - name: device_name
+        description: '{{ doc("pb_device_name") }}'
+      - name: play_duration_seconds
+        description: '{{ doc("pb_play_duration_seconds") }}'
+        tests:
+          - dbt_utils.accepted_range: {min_value: 0, inclusive: true}
+      - name: is_in_library
+        description: >
+          Whether item_id resolved against the current version of dim_title_scd2.
+          True for a Movie; always false for an Episode, Video or TvChannel, because
+          none of those are ever fetched into the library snapshot.
+        tests: [not_null]
+      - name: library_community_rating
+        description: TMDB's vote average for the title, from the library snapshot. Null unless is_in_library.
+
+  - name: fct_jellyfin_activity
+    description: >
+      One row per server activity log entry: sign-ins, playback starts and stops,
+      library and account changes. No relationship test joins user_id to
+      dim_jellyfin_user -- see fct_jellyfin_playback's note; the same deleted and
+      system accounts appear here too, in greater number.
+    columns:
+      - name: activity_id
+        description: '{{ doc("act_activity_id") }}'
+        tests: [not_null, unique]
+      - name: partition_date
+        description: '{{ doc("act_partition_date") }}'
+        tests: [not_null]
+      - name: extracted_at
+        description: '{{ doc("act_extracted_at") }}'
+      - name: happened_at
+        description: '{{ doc("act_happened_at") }}'
+        tests: [not_null]
+      - name: happened_hour
+        description: '{{ doc("act_happened_hour") }}'
+      - name: happened_hour_of_day
+        description: Hour of day, 0 to 23, in UTC.
+      - name: happened_weekday
+        description: Weekday name of happened_at, in UTC.
+      - name: is_weekend
+        description: Whether happened_at fell on a Saturday or a Sunday, in UTC.
+      - name: activity_type
+        description: '{{ doc("act_activity_type") }}'
+      - name: name
+        description: '{{ doc("act_name") }}'
+      - name: overview
+        description: '{{ doc("act_overview") }}'
+      - name: short_overview
+        description: '{{ doc("act_short_overview") }}'
+      - name: user_id
+        description: '{{ doc("act_user_id") }}'
+      - name: user_name
+        description: The account's name, joined from dim_jellyfin_user. Null when user_id is null or the account no longer appears in the current snapshot.
+      - name: item_id
+        description: '{{ doc("act_item_id") }}'
+      - name: severity
+        description: '{{ doc("act_severity") }}'
+        tests:
+          - accepted_values: {values: ['Information', 'Warning', 'Error']}
+      - name: is_error
+        description: '{{ doc("act_is_error") }}'
+      - name: is_warning
+        description: '{{ doc("act_is_warning") }}'
+      - name: unmapped_json
+        description: >
+          JSON, or null. Any field the activity log sent that the raw schema does not
+          name.
+
   - name: fct_camera_event
     description: >
       One row per camera event, latest version. Vision analysis lands hours after the

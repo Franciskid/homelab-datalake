@@ -274,3 +274,46 @@ models:
           JSON, or null. Anything the export sent that the raw schema does not name. Carried
           onto the fact rather than left in raw, because the person who notices it is the one
           looking at the data.
+
+  - name: int_jellyfin_playback
+    description: >
+      One row per playback session: the latest version of it, deduped on
+      (started_at, user_id, item_id) -- the closest thing PlaybackActivity has to an
+      id. A guard rather than a mechanism: jellyfin_playback_raw already merges on
+      this key at write time, so in normal operation this collapses nothing.
+    columns:
+      - name: partition_date
+        description: '{{ doc("pb_partition_date") }}'
+        tests: [not_null]
+      - name: partition_hour
+        description: '{{ doc("pb_partition_hour") }}'
+        tests: [not_null]
+      - name: extracted_at
+        description: '{{ doc("pb_extracted_at") }}'
+        tests: [not_null]
+      - name: started_at
+        description: '{{ doc("pb_started_at") }}'
+        tests: [not_null]
+      - name: user_id
+        description: '{{ doc("pb_user_id") }}'
+      - name: user_name
+        description: '{{ doc("pb_user_name") }}'
+      - name: item_id
+        description: '{{ doc("pb_item_id") }}'
+        tests: [not_null]
+      - name: item_type
+        description: '{{ doc("pb_item_type") }}'
+      - name: item_name
+        description: '{{ doc("pb_item_name") }}'
+      - name: series_name
+        description: '{{ doc("pb_series_name") }}'
+      - name: playback_method
+        description: '{{ doc("pb_playback_method") }}'
+      - name: client_name
+        description: '{{ doc("pb_client_name") }}'
+      - name: device_name
+        description: '{{ doc("pb_device_name") }}'
+      - name: play_duration_seconds
+        description: '{{ doc("pb_play_duration_seconds") }}'
+      - name: is_episode
+        description: '{{ doc("pb_is_episode") }}'

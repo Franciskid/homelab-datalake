@@ -212,9 +212,11 @@ CURATED_DATASETS: tuple[Dataset, ...] = (
     _curated("stg_jellyfin_title_genres", DOMAIN_MEDIA, "jellyfin", "title_genres",
              "Title-to-genre pairs, trimmed and deduplicated.",
              "snapshot_date"),
-    _curated("stg_jellyfin_playback", DOMAIN_MEDIA, "jellyfin", "playback",
-             "Playback sessions, typed, with the series name parsed out of episode "
-             "titles.", "partition_date"),
+    # int_, not stg_: playback sessions are deduped onto (started_at, user_id,
+    # item_id) here, the same reason int_camera_events supersedes stg_camera_events.
+    _curated("int_jellyfin_playback", DOMAIN_MEDIA, "jellyfin", "playback",
+             "Playback sessions, typed and deduped, with the series name parsed out "
+             "of episode titles.", "partition_date"),
     _curated("stg_jellyfin_activity", DOMAIN_MEDIA, "jellyfin", "activity",
              "Activity log entries, typed.", "partition_date"),
     _curated("stg_jellyfin_users", DOMAIN_MEDIA, "jellyfin", "users",

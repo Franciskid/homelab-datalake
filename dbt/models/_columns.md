@@ -573,4 +573,185 @@ Surrogate key over item id and snapshot date. The grain of the library fact tabl
 row per title per day it was seen.
 {% enddocs %}
 
+
+{# ------------------------------------------------------------------ playback #}
+
+{% docs pb_partition_date %}
+The UTC calendar date of `started_at`. A convenience for joining a session to a
+daily-grain table; the partition itself is hourly.
+{% enddocs %}
+
+{% docs pb_partition_hour %}
+The start, in UTC, of the hourly partition this session was read for.
+{% enddocs %}
+
+{% docs pb_extracted_at %}
+When this pipeline read the row. What lets the merge in `jellyfin_playback_raw` pick
+the newest version of a session the plugin has since finished committing.
+{% enddocs %}
+
+{% docs pb_started_at %}
+The session's start, converted to UTC. The plugin's own `DateCreated` column carries
+no zone; verified against this installation, not assumed, that it is UTC -- see
+`_parse_playback_timestamp` in `parsing/jellyfin.py` for the worked example against a
+real session cross-checked with the standard activity log.
+{% enddocs %}
+
+{% docs pb_user_id %}
+The account's Jellyfin id.
+{% enddocs %}
+
+{% docs pb_user_name %}
+The account's name, resolved from `/Users` at ingest. The plugin's own query returns
+one or the other, never both, in a single call.
+{% enddocs %}
+
+{% docs pb_item_id %}
+The item played. For a movie this is the same id the library snapshot uses; for an
+episode it is the episode's own id, which the library snapshot never fetches.
+{% enddocs %}
+
+{% docs pb_item_type %}
+`Movie`, `Episode`, `Video` (a home recording outside the library's scope) or
+`TvChannel`.
+{% enddocs %}
+
+{% docs pb_item_name %}
+The title as the plugin recorded it. For an episode this already embeds the series
+name and the episode number in Jellyfin's own display convention, which is what
+`series_name` is parsed from.
+{% enddocs %}
+
+{% docs pb_series_name %}
+Parsed at ingest from `item_name`'s own "\<series\> - sNNeNN - \<title\>" convention,
+for an `Episode` row only -- no join and no extra API call. Null for anything that is
+not an episode.
+{% enddocs %}
+
+{% docs pb_playback_method %}
+`DirectPlay`, `DirectStream`, or a `Transcode` naming the video and audio codec path.
+{% enddocs %}
+
+{% docs pb_client_name %}
+The Jellyfin client used -- Jellyfin Web, Android TV, Swiftfin, and so on.
+{% enddocs %}
+
+{% docs pb_device_name %}
+The physical device or browser the client ran on.
+{% enddocs %}
+
+{% docs pb_play_duration_seconds %}
+How long the player was open, in whole seconds -- verified against a real session's
+own start and stop in the activity log, not assumed. This is not proof a title was
+watched to completion; it is how long the player stayed open.
+{% enddocs %}
+
+{% docs pb_is_episode %}
+Whether `item_type` is `Episode`. What `series_name` and the genre join key off.
+{% enddocs %}
+
+{% docs pb_started_hour %}
+`started_at` truncated to the hour, in UTC.
+{% enddocs %}
+
+{% docs pb_started_hour_of_day %}
+Hour of day, 0 to 23, in UTC.
+{% enddocs %}
+
+{% docs pb_started_weekday %}
+Weekday name of `started_at`, in UTC.
+{% enddocs %}
+
+{% docs pb_is_weekend %}
+Whether `started_at` fell on a Saturday or a Sunday, in UTC.
+{% enddocs %}
+
+
+{# -------------------------------------------------------------- server activity #}
+
+{% docs act_partition_date %}
+Partition date: the UTC day the entry falls in.
+{% enddocs %}
+
+{% docs act_extracted_at %}
+When this pipeline read the row.
+{% enddocs %}
+
+{% docs act_activity_id %}
+The activity log's own auto-incrementing id.
+{% enddocs %}
+
+{% docs act_happened_at %}
+When Jellyfin logged the entry, in UTC -- the API's own timestamps carry a `Z`.
+{% enddocs %}
+
+{% docs act_happened_hour %}
+`happened_at` truncated to the hour, in UTC.
+{% enddocs %}
+
+{% docs act_activity_type %}
+The kind of entry -- `VideoPlayback`, `SessionStarted`, `AuthenticationSucceeded`, and
+so on.
+{% enddocs %}
+
+{% docs act_name %}
+Free text Jellyfin generated for the entry, such as "guest vient d'arrêter la lecture
+de X sur Chrome".
+{% enddocs %}
+
+{% docs act_overview %}
+A longer free-text note, when Jellyfin wrote one. Usually null.
+{% enddocs %}
+
+{% docs act_short_overview %}
+A short free-text note -- for a sign-in, the client's own address on the LAN.
+{% enddocs %}
+
+{% docs act_user_id %}
+The account the entry concerns, when it concerns one.
+{% enddocs %}
+
+{% docs act_item_id %}
+The item the entry concerns, when it concerns one.
+{% enddocs %}
+
+{% docs act_severity %}
+`Information`, `Warning`, or `Error`, as Jellyfin classified the entry.
+{% enddocs %}
+
+{% docs act_is_error %}
+Whether `severity` is `Error`.
+{% enddocs %}
+
+{% docs act_is_warning %}
+Whether `severity` is `Warning`.
+{% enddocs %}
+
+
+{# --------------------------------------------------------------------- users #}
+
+{% docs usr_user_id %}
+Jellyfin's stable id for the account.
+{% enddocs %}
+
+{% docs usr_user_name %}
+The account's name.
+{% enddocs %}
+
+{% docs usr_is_administrator %}
+Whether the account can administer the server.
+{% enddocs %}
+
+{% docs usr_is_disabled %}
+Whether the account is currently disabled.
+{% enddocs %}
+
+{% docs usr_last_login %}
+When the account last authenticated, in UTC.
+{% enddocs %}
+
+{% docs usr_last_activity %}
+When the account was last active on the server, in UTC.
+{% enddocs %}
+
 > Public history note: private identifiers, measurements, and operational details were redacted. Code examples use placeholder infrastructure.

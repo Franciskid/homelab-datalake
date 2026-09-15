@@ -614,6 +614,122 @@ sources:
               deployment, which is why the dimension downstream is keyed by a hash of it
               rather than by the name.
 
+      - name: jellyfin_playback
+        description: >
+          Every Playback Reporting plugin row: who watched what, on what, for how long
+          the player was open. Hourly partitions, merged rather than replaced -- see
+          the asset's own docstring for why a later read of an hour can add rows a
+          first read could not see. Landed 2026-09-14, when the owner reversed the
+          decision that had excluded this.
+        columns:
+          - name: partition_hour
+            description: The start of the hourly partition this row was read for, in UTC.
+          - name: dt
+            description: The UTC calendar date of started_at. A convenience for joining to daily-grain tables.
+          - name: _extracted_at
+            description: >
+              When this pipeline read the row. What lets the merge pick the newest
+              version of a session the plugin has since finished committing.
+          - name: started_at
+            description: >
+              The session's start, converted to UTC. The plugin's own DateCreated
+              column carries no zone; verified against this installation (not
+              assumed) that it is UTC, by lining PlaybackActivity rows up against the
+              standard API's activity log, which does carry one -- see
+              `_parse_playback_timestamp` in parsing/jellyfin.py for the worked
+              example.
+          - name: user_id
+            description: The account's Jellyfin id.
+          - name: user_name
+            description: >
+              The account's name, resolved from `/Users` at ingest -- the plugin's own
+              query can return one or the other but not both in the same call.
+          - name: item_id
+            description: The item played. For a movie this is the same id the library snapshot uses; for an episode it is the episode's own id, which the library never fetches.
+          - name: item_type
+            description: Movie, Episode, Video (a home movie or recording outside the library's scope) or TvChannel.
+          - name: item_name
+            description: >
+              The title as the plugin recorded it. For an episode this already
+              embeds the series and the episode number in Jellyfin's own display
+              convention, which is what `series_name` is parsed from.
+          - name: series_name
+            description: >
+              Parsed at ingest from item_name's "<series> - sNNeNN - <title>"
+              convention, for an Episode row only. No join and no extra API call --
+              see parse_series_name for why one would find nothing to join against
+              anyway.
+          - name: playback_method
+            description: DirectPlay, DirectStream, or a Transcode with the video and audio codec path.
+          - name: client_name
+            description: The Jellyfin client used -- Jellyfin Web, Android TV, Swiftfin, and so on.
+          - name: device_name
+            description: The physical device or browser the client ran on.
+          - name: play_duration_seconds
+            description: >
+              How long the player was open, in whole seconds -- verified against a
+              real session's own start and stop in the activity log, not assumed.
+              This is not proof a title was watched to completion.
+
+      - name: jellyfin_activity
+        description: >
+          The server activity log: sign-ins, playback starts and stops, library and
+          account changes. Read from a floor-only, newest-first API -- see
+          activity_window in parsing/jellyfin.py for what that costs a backfill.
+        columns:
+          - name: dt
+            description: Partition date, the UTC day the entry falls in.
+          - name: _extracted_at
+            description: When this pipeline read the row.
+          - name: id
+            description: The activity log's own auto-incrementing id.
+          - name: date
+            description: When Jellyfin logged the entry, in UTC -- the API's own timestamps carry a `Z`.
+          - name: type
+            description: "The kind of entry -- VideoPlayback, SessionStarted, AuthenticationSucceeded, and so on."
+          - name: name
+            description: Free text Jellyfin generated for the entry, such as "guest vient d'arrêter la lecture de X sur Chrome".
+          - name: overview
+            description: A longer free-text note, when Jellyfin wrote one. Usually null.
+          - name: short_overview
+            description: A short free-text note -- for a sign-in, the client's own address on the LAN.
+          - name: user_id
+            description: The account the entry concerns, when it concerns one.
+          - name: item_id
+            description: The item the entry concerns, when it concerns one.
+          - name: severity
+            description: Information, Warning, or Error, as Jellyfin classified the entry.
+          - name: _unmapped
+            description: >
+              JSON. Any field the activity log sent that this schema does not name,
+              kept rather than dropped.
+
+      - name: jellyfin_users
+        description: >
+          A daily snapshot of the account list: name and two flags, nothing from
+          configuration or password policy beyond those.
+        columns:
+          - name: dt
+            description: The day this reading of the account list was taken.
+          - name: id
+            description: Jellyfin's stable id for the account.
+          - name: name
+            description: The account's name.
+          - name: is_administrator
+            description: Whether the account can administer the server.
+          - name: is_disabled
+            description: Whether the account is currently disabled.
+          - name: last_login
+            description: When the account last authenticated, in UTC.
+          - name: last_activity
+            description: When the account was last active on the server, in UTC.
+          - name: _unmapped
+            description: >
+              JSON. Any top-level field `/Users` sent that is neither read from nor
+              deliberately dropped -- see `_USER_NOT_STORED` in parsing/jellyfin.py
+              for the configuration and password-policy fields that are dropped on
+              purpose and therefore never show up here.
+
       - name: camera_events
         description: >
           Attention events. Not final when first written: vision analysis lands hours
