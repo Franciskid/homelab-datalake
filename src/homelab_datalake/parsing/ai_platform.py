@@ -54,6 +54,7 @@ import json
 import os
 import re
 import uuid
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, time, timedelta
 
@@ -315,6 +316,54 @@ def extract_table_day(spec: TableSpec, day: date, rows: list[dict] | None = None
     return out
 
 
+# --------------------------------------------------------------------------------
+# The secret scan: a safety net over the registry's exclusions, not a replacement
+# for them. Excluding a column keeps a *known* secret out; this catches a secret
+# sitting somewhere nobody named -- a working key pasted into a free-text field, a
+# bearer token left in a JSON blob -- which no column-level GRANT can anticipate.
+# --------------------------------------------------------------------------------
+
+# Long enough that ordinary prose essentially never matches by chance -- a paragraph
+# of English does not run 200 characters of pure base64 alphabet -- while every real
+# secret this has to catch (a hashed key, a PEM-encoded block, a long token) clears
+# it easily.
+_MIN_BASE64_RUN = 200
+
+_SECRET_PATTERNS: tuple[re.Pattern, ...] = (
+    re.compile(r"sk-[A-Za-z0-9_-]{16,}"),
+    re.compile(r"Bearer\s+[A-Za-z0-9._-]{16,}"),
+    re.compile(r"-----BEGIN [A-Z0-9 ]+-----"),
+    re.compile(rf"[A-Za-z0-9+/]{{{_MIN_BASE64_RUN},}}={{0,2}}"),
+)
+
+
+def looks_like_a_secret(value: str) -> bool:
+    """Whether a string carries one of the secret shapes this pipeline must never land."""
+    return any(pattern.search(value) for pattern in _SECRET_PATTERNS)
+
+
+def scan_for_secrets(
+    rows: Iterable[dict], skip_columns: frozenset[str] = frozenset()
+) -> list[tuple[int, str]]:
+    """(row index, column name) for every string value that looks like a secret.
+
+    Runs over the *landed* row shape -- what `extract_table_day` actually returns,
+    after transient keys (`_binary_data`, `_frames`) are gone and excluded columns
+    were never read in the first place. `skip_columns` names fields that
+    legitimately hold long opaque text and are not credentials -- `prompt`,
+    `response`, `metadata` and the like -- so the scan does not cry wolf on every
+    row of a table that is supposed to carry full text.
+    """
+    findings: list[tuple[int, str]] = []
+    for index, row in enumerate(rows):
+        for column, value in row.items():
+            if column in skip_columns or column.startswith("_"):
+                continue
+            if isinstance(value, str) and looks_like_a_secret(value):
+                findings.append((index, column))
+    return findings
+
+
 __all__ = [
     "BINARY_PREFIXES",
     "GATEWAY_FRAMES_PREFIX",
@@ -325,4 +374,6 @@ __all__ = [
     "decode_data_uri",
     "extract_frames",
     "extract_table_day",
+    "looks_like_a_secret",
+    "scan_for_secrets",
 ]

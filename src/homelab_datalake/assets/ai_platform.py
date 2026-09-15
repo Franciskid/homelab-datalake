@@ -69,6 +69,22 @@ CHECK_ROW_COUNT = "extracted_rows_match_landed_rows"
 CHECK_FRAME_COUNT = "frame_count_matches_objects_written"
 
 
+def row_count_check_passed(extracted: int, landed: int) -> bool:
+    """CHECK_ROW_COUNT's pass/fail rule, pulled out so it is testable on its own:
+    what got extracted from ai_platform for a partition must equal what the landed
+    Parquet object actually holds. A silent truncation or duplication in the write
+    path would otherwise still look like a healthy green materialisation."""
+    return extracted == landed
+
+
+def frame_count_check_passed(frames_expected: int, objects_present: int) -> bool:
+    """CHECK_FRAME_COUNT's pass/fail rule: every frame a row claims to have decoded
+    (`sum(frame_count)`) must have an object actually sitting behind it. A mismatch
+    means a frame was decoded but never written, or written and then orphaned by a
+    partial re-run."""
+    return frames_expected == objects_present
+
+
 def _objects_prefix_for_day(spec: TableSpec, day: date) -> str | None:
     """Where this table's binary or frame objects live for one day, or None."""
     if spec.binary_column:
@@ -179,7 +195,7 @@ def _make_table_asset(spec: TableSpec):
 
         yield AssetCheckResult(
             check_name=CHECK_ROW_COUNT,
-            passed=(landed_rows == result.count),
+            passed=row_count_check_passed(result.count, landed_rows),
             severity=AssetCheckSeverity.ERROR,
             metadata={"rows_extracted": result.count, "rows_landed": landed_rows},
         )
@@ -189,7 +205,7 @@ def _make_table_asset(spec: TableSpec):
             objects_present = lake.count_prefix(objects_prefix) if objects_prefix else 0
             yield AssetCheckResult(
                 check_name=CHECK_FRAME_COUNT,
-                passed=(expected_frames == objects_present),
+                passed=frame_count_check_passed(expected_frames, objects_present),
                 severity=AssetCheckSeverity.ERROR,
                 metadata={
                     "frames_expected": expected_frames,

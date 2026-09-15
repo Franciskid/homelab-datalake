@@ -51,3 +51,7 @@ ignore = ["E501"]  # line-length is enforced by the formatter, not as an error
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["S101", "S105", "S106"]
 "tests/test_litellm_spend.py" = ["S101", "DTZ001"]
+# One naive datetime, deliberately: the test asserts a naive timestamp is still
+# treated as UTC, as a safety net in case one ever slips past the connection's own
+# UTC pin -- see test_a_naive_timestamp_is_treated_as_utc.
+"tests/test_ai_platform.py" = ["S101", "DTZ001"]
