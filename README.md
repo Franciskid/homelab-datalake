@@ -69,7 +69,7 @@ facts and summaries prepared for analysis.
 | Nginx Proxy Manager | Requests, response codes, paths, and pseudonymous visitor identifiers | Which application had the most errors? |
 | LiteLLM | Model calls, costs, token counts, timing, and workload metadata | Where did AI spending go? |
 | Homelab Camera | Events, clip metadata, zone states, annotations, and observation coverage | When was activity highest, and was the camera observing then? |
-| Jellyfin | Library snapshots, playback sessions, the server activity log, and the account list | Who watched what, and how has the library changed? |
+| Jellyfin | The whole library -- movies, series, seasons, episodes, box sets and other videos -- with playback sessions, the activity log, and accounts | Who watched what, and how has the library changed? |
 | TMDB and MaxMind, optional | Film information and coarse geographic/network context | How do titles or traffic compare by region? |
 
 Camera recordings stay in the camera application, and media files stay in
