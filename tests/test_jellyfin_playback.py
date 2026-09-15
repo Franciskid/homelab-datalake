@@ -11,20 +11,24 @@ import pytest
 
 from homelab_datalake.assets.jellyfin import (
     _PLAYBACK_SCHEMA,
+    ACTIVITY_PREFIX,
     _merge_playback,
     _playback_key,
+    _write_activity_history_day,
 )
 from homelab_datalake.parsing.jellyfin import (
     _PLAYBACK_COLUMNS,
     _parse_duration_seconds,
     _parse_playback_timestamp,
     _sqlite_literal,
+    activity_history,
     activity_window,
     parse_playback_rows,
     parse_series_name,
     user_rows,
     users_by_id,
 )
+from homelab_datalake.resources import LakeStorage
 
 # --------------------------------------------------------------------------------
 # timestamp: DateCreated is UTC on this server, verified against the standard API's
@@ -388,3 +392,127 @@ def test_activity_window_reads_multiple_pages():
     ]
     rows, _ = activity_window(day, pages=pages)
     assert len(rows) == 20
+
+
+# --------------------------------------------------------------------------------
+# the one-pass history load: every entry, bucketed by day, no minDate floor
+# --------------------------------------------------------------------------------
+
+
+def test_activity_history_pages_all_the_way_to_the_end():
+    """A bug that stops after the first page would look identical to a correct
+    implementation on a log short enough to fit in one -- the same shape of test as
+    activity_window's own multi-page check, but with no day filter to stop it early."""
+    pages = [
+        [_entry(Id=n, Date="2026-09-12T20:00:00.0000000Z") for n in range(200, 190, -1)],
+        [_entry(Id=n, Date="2023-11-21T16:15:05.0000000Z") for n in range(10, 0, -1)],
+    ]
+    by_day, _ = activity_history(pages=pages)
+    assert sum(len(rows) for rows in by_day.values()) == 20
+
+
+def test_activity_history_buckets_across_a_utc_midnight():
+    """The whole point of bucketing by the entry's own date rather than a requested
+    window: two entries twenty seconds apart either side of midnight must land in
+    two different day partitions."""
+    pages = [[
+        _entry(Id=1, Date="2026-09-12T23:59:59.0000000Z"),
+        _entry(Id=2, Date="2026-09-13T00:00:19.0000000Z"),
+    ]]
+    by_day, _ = activity_history(pages=pages)
+    assert set(by_day) == {date(2026, 9, 12), date(2026, 9, 13)}
+    assert [r["id"] for r in by_day[date(2026, 9, 12)]] == [1]
+    assert [r["id"] for r in by_day[date(2026, 9, 13)]] == [2]
+
+
+def test_activity_history_reaches_the_logs_first_day():
+    """Verified against the real server on 2026-09-15: the earliest entry is
+    2023-11-21T16:15:05Z. A fixture at that instant must bucket to that day, not be
+    dropped as somehow out of range -- there is no floor here to drop it against."""
+    by_day, _ = activity_history(pages=[[_entry(Id=1, Date="2023-11-21T16:15:05.0000000Z")]])
+    assert date(2023, 11, 21) in by_day
+
+
+def test_activity_history_skips_an_entry_with_no_parseable_date():
+    by_day, _ = activity_history(pages=[[_entry(Id=1, Date=None)]])
+    assert by_day == {}
+
+
+def test_activity_history_reports_a_field_the_schema_does_not_name():
+    _, unmapped = activity_history(pages=[[_entry(Id=1, SomethingNew="x")]])
+    assert "SomethingNew" in unmapped
+
+
+def test_activity_history_with_no_pages_and_no_url_refuses_rather_than_hang():
+    with pytest.raises(ValueError, match="JELLYFIN_URL"):
+        activity_history()
+
+
+def test_activity_history_omits_minDate_entirely():
+    """The whole reason this reaches three years back in one pass rather than
+    paying activity_window's escalating per-day cost: no floor is ever sent."""
+    from homelab_datalake.parsing.jellyfin import fetch_activity_page
+
+    captured = {}
+    import urllib.request as _urllib_request
+
+    class _FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self):
+            return b'{"Items": []}'
+
+    def fake_urlopen(request, timeout=60):
+        captured["url"] = request.full_url
+        return _FakeResponse()
+
+    original = _urllib_request.urlopen
+    _urllib_request.urlopen = fake_urlopen
+    try:
+        fetch_activity_page("https://jf.example", "key", 0, 500)
+    finally:
+        _urllib_request.urlopen = original
+    assert "minDate" not in captured["url"]
+
+
+def test_writing_a_history_day_twice_replaces_rather_than_accumulates(tmp_path):
+    """The property that makes the whole pass safe to re-run: the second write for a
+    day must leave the lake with exactly the second call's rows, not both calls'."""
+    lake = LakeStorage(local_root=str(tmp_path / "lake"))
+    day = date(2023, 11, 21)
+
+    first, _ = activity_history(
+        pages=[[_entry(Id=n, Date="2023-11-21T16:15:05.0000000Z") for n in (1, 2, 3)]]
+    )
+    _, count, _ = _write_activity_history_day(lake, day, first[day])
+    assert count == 3
+
+    second, _ = activity_history(
+        pages=[[_entry(Id=9, Date="2023-11-21T16:15:05.0000000Z")]]
+    )
+    _, count, _ = _write_activity_history_day(lake, day, second[day])
+    assert count == 1
+
+    table = lake.read_table(f"{ACTIVITY_PREFIX}/dt={day.isoformat()}/data.parquet")
+    assert table.num_rows == 1
+    assert table.to_pylist()[0]["id"] == 9
+
+
+def test_a_repeated_write_of_the_same_day_is_byte_for_byte_the_same_shape(tmp_path):
+    """Re-running the whole day with identical input must be indistinguishable from
+    having run it once -- same row count, same content, not doubled."""
+    lake = LakeStorage(local_root=str(tmp_path / "lake"))
+    day = date(2023, 11, 21)
+    by_day, _ = activity_history(
+        pages=[[_entry(Id=n, Date="2023-11-21T16:15:05.0000000Z") for n in (1, 2)]]
+    )
+
+    _write_activity_history_day(lake, day, by_day[day])
+    _write_activity_history_day(lake, day, by_day[day])
+
+    table = lake.read_table(f"{ACTIVITY_PREFIX}/dt={day.isoformat()}/data.parquet")
+    assert table.num_rows == 2
