@@ -31,7 +31,8 @@ from dagster import (
     multi_asset,
 )
 
-from homelab_datalake import serving
+from homelab_datalake import layout, serving
+from homelab_datalake.assets.ai_platform import ai_platform_asset_by_table
 from homelab_datalake.assets.camera import (
     _ANNOTATION_SCHEMA,
     _CLIP_SCHEMA,
@@ -74,6 +75,8 @@ from homelab_datalake.assets.npm_access import _SCHEMA as ACCESS_SCHEMA
 from homelab_datalake.assets.tmdb import _SCHEMA as _TMDB_SCHEMA
 from homelab_datalake.assets.tmdb import TMDB_PREFIX, tmdb_titles_raw
 from homelab_datalake.mcp import semantic
+from homelab_datalake.parsing.ai_platform_registry import REGISTRY as _AI_PLATFORM_REGISTRY
+from homelab_datalake.parsing.ai_platform_types import arrow_schema_for as _ai_platform_schema
 from homelab_datalake.resources import LakeStorage
 
 # Resolved to an absolute path once, here, and written back to the environment.
@@ -122,6 +125,20 @@ _SOURCES = (
     ("tmdb_titles", TMDB_PREFIX, _TMDB_SCHEMA, tmdb_titles_raw,
      ("Budget, revenue, language and vote counts by TMDB id. Empty when no API key "
       "is configured, which leaves the library marts' enrichment columns null.")),
+    # The AI platform's 52 tables, generated from the registry rather than typed out
+    # a third time -- layout.py already generates its dataset registrations the same
+    # way, from the same registry, so all three (registry, lake layout, warehouse
+    # load) can never name a table three different ways.
+    *(
+        (
+            spec.table_name,
+            layout.prefix(spec.table_name),
+            _ai_platform_schema(spec),
+            ai_platform_asset_by_table[spec.table_name],
+            spec.description,
+        )
+        for spec in _AI_PLATFORM_REGISTRY
+    ),
 )
 
 

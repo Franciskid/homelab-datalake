@@ -36,6 +36,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from homelab_datalake.parsing import ai_platform_registry as _ai_platform
+
 LAYER_RAW = "raw"
 LAYER_CURATED = "curated"
 LAYER_MARTS = "marts"
@@ -156,6 +158,21 @@ RAW_DATASETS: tuple[Dataset, ...] = (
          "Budget, revenue, language and vote counts by TMDB id.",
          partition_column=None),
 )
+
+# The AI platform's own database: every api.ai gateway call, every agent run and
+# tool call, every conversation, every automation run -- see
+# homelab_datalake.parsing.ai_platform_registry for the full registry and the
+# owner's 2026-09-14 decision to land all of it. One dataset per table, generated
+# from the registry rather than written out by hand a second time here, so a
+# table's description is never asked to agree with itself across two files.
+# `dt` for every one of them, snapshot tables included: a snapshot still lands one
+# object per day it was taken, the same as jellyfin_titles and camera_zones do.
+_AI_PLATFORM_RAW: tuple[Dataset, ...] = tuple(
+    _raw(spec.table_name, DOMAIN_AI, "ai_platform", spec.name, spec.description)
+    for spec in _ai_platform.REGISTRY
+)
+
+RAW_DATASETS = RAW_DATASETS + _AI_PLATFORM_RAW
 
 # --------------------------------------------------------------------------------
 # curated: written by homelab_datalake.assets.publish, from the dbt models
