@@ -97,6 +97,9 @@ REPAIRS_PER_TICK = 2
 
 hourly_partitions = HourlyPartitionsDefinition(start_date=STREAM_START, timezone="UTC")
 daily_partitions = DailyPartitionsDefinition(start_date=STREAM_START[:10], timezone="UTC")
+# Metadata is a snapshot of now, taken under today's key. end_offset=1 makes today a
+# partition; without it the 03:10 tick fails on an unknown key.
+metadata_partitions = DailyPartitionsDefinition(start_date=STREAM_START[:10], timezone="UTC", end_offset=1)
 
 CHECK_MATCHES_PROMETHEUS = "hour_matches_prometheus"
 CHECK_NO_DUPLICATES = "no_duplicate_samples"
@@ -779,7 +782,7 @@ def prometheus_samples_compacted(context: AssetExecutionContext, lake: LakeStora
 
 
 @asset(
-    partitions_def=daily_partitions,
+    partitions_def=metadata_partitions,
     group_name="prometheus",
     kinds={"python", "prometheus"},
     retry_policy=RetryPolicy(max_retries=3, delay=30),

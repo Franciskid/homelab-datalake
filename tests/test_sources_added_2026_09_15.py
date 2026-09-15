@@ -8,9 +8,11 @@ from pathlib import Path
 
 import pyarrow as pa
 import pytest
+from dagster import Definitions, build_schedule_context
 
 from homelab_datalake import lakeio, layout
-from homelab_datalake.assets import keycloak, status_page
+from homelab_datalake.assets import host_logs as host_logs_assets
+from homelab_datalake.assets import keycloak, media_pipeline, prometheus, status_page
 from homelab_datalake.parsing import host_logs
 from homelab_datalake.resources import LakeStorage
 
@@ -144,3 +146,22 @@ def test_every_new_source_is_registered_where_the_catalogue_can_link_it():
 
     for dataset in layout.RAW_DATASETS:
         assert catalogue.asset_path(dataset)[0].endswith("_raw"), dataset.table
+
+
+# ---------------------------------------------------------------------------- schedules
+
+
+@pytest.mark.parametrize("module", [host_logs_assets, keycloak, media_pipeline, prometheus, status_page],
+                         ids=lambda m: m.__name__.rsplit(".", 1)[-1])
+@pytest.mark.parametrize("hour", [0, 23])
+def test_every_schedule_asks_only_for_partitions_that_exist(module, hour, tmp_path):
+    # Dagster checks a requested partition when the tick runs, not when the code loads. A
+    # schedule asking for a day that has not ended fails every hour in production and
+    # passes everything else: keycloak_schedule asked for today with no end offset.
+    defs = Definitions(assets=module.ASSETS, jobs=module.JOBS, schedules=module.SCHEDULES,
+                       resources={"lake": LakeStorage(local_root=str(tmp_path))})
+    repository = defs.get_repository_def()
+    when = datetime(2026, 9, 16, hour, 59, tzinfo=UTC)
+    for schedule in module.SCHEDULES:
+        context = build_schedule_context(scheduled_execution_time=when, repository_def=repository)
+        schedule.evaluate_tick(context)
