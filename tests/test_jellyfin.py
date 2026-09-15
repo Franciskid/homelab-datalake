@@ -127,8 +127,13 @@ def test_decade_is_derived_from_production_year():
     assert snapshot(DAY, items=[item(ProductionYear=2007)]).titles[0]["decade"] == 2000
 
 
-def test_playback_fields_are_never_requested():
-    """Playback history is personal and the metadata answers every question here."""
+def test_playback_fields_are_never_requested_on_the_library_snapshot():
+    """This is about the movie snapshot specifically, not a claim that the warehouse
+    holds no playback data anywhere -- since 2026-09-14 it does, read from the
+    Playback Reporting plugin by the functions tested in test_jellyfin_playback.py.
+    What stays true here is that FIELDS, which asks the standard `/Items` endpoint
+    for one snapshot of the library, never asks it for a user's own history inline.
+    """
     for forbidden in ("UserData", "PlayCount", "Sessions"):
         assert forbidden not in FIELDS
 
