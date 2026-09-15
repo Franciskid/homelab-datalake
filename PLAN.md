@@ -42,6 +42,18 @@ Data stays on the server. See §4.
 Use library **metadata**, not playback history — metadata is safe to publish as a seed,
 playback history is personal and adds nothing to the demonstration.
 
+**Reversed 2026-09-14.** Asked for "this weekend's Jellyfin usage" with a per-user watch-time
+graph, the platform's Datalake Analyst correctly refused: the warehouse held the library
+catalogue and nothing else. At the same moment the household's daily recap email was already
+reading the same watch time live from the Jellyfin Playback Reporting plugin — a warehouse
+that cannot answer a question its own household already gets answered elsewhere is a gap, not
+a boundary. The rule is now: land everything the Jellyfin API and its plugins offer, playback
+history and the server activity log and account list included. See
+`src/homelab_datalake/parsing/jellyfin.py` for the extraction (three more APIs: the plugin's
+own SQL endpoint, the standard activity log, the standard user list) and
+`src/homelab_datalake/assets/jellyfin.py` for the three raw assets this added
+(`jellyfin_playback_raw` hourly, `jellyfin_activity_raw` and `jellyfin_users_raw` daily).
+
 **Together:** volume + semi-structured + external API enrichment. Covers most of what the job
 actually involves.
 
