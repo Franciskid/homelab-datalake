@@ -34,6 +34,7 @@ and the new one.
 
 from __future__ import annotations
 
+import dataclasses
 from dataclasses import dataclass
 
 from homelab_datalake.parsing import ai_platform_registry as _ai_platform
@@ -74,6 +75,14 @@ class Dataset:
     # can be re-run and can be checked, and so a deployment mid-migration can still
     # find its data. Remove these once every environment is on the new layout.
     legacy_prefix: str | None = None
+    # Non-empty names the reason this dataset should not be rebuilt into the nightly
+    # DuckDB warehouse the way every other raw table is -- unbounded growth that
+    # would make `warehouse_tables`' full-history `read_parquet` rescan slower and
+    # larger every night, forever, with no ceiling. Set here as a decision to flag
+    # to whoever wires up the enforcement -- see the note beside
+    # `platform_usage_events` below in this file for the one dataset that carries it
+    # today and why full nightly materialisation is the wrong default for it.
+    lake_only: str = ""
 
     @property
     def prefix(self) -> str:
@@ -172,6 +181,32 @@ _AI_PLATFORM_RAW: tuple[Dataset, ...] = tuple(
     for spec in _ai_platform.REGISTRY
 )
 
+# platform_usage_events carries full prompt and response text on every one of
+# [count withheld]+ rows ([volume withheld] measured 2026-09-14, though most of that figure was the
+# base64 camera frames, which never reach this table -- they are decoded into lake
+# objects at ingestion; see ai_platform.py). What lands here is free text with no
+# ceiling, growing every day forever, and `warehouse_tables` rebuilds every raw
+# table from its *entire* history on every run -- fine for a bounded config table,
+# wrong for the one table in this registry that will not stop growing.
+#
+# Flagged `lake_only` rather than silently left to grow the nightly rebuild: this
+# says a table needs bounded or on-demand loading instead of "read everything,
+# every night, forever". No enforcement lives in this branch yet -- see the field's
+# own docstring on Dataset -- so today this dataset is still loaded in full by
+# `warehouse_tables`, same as before the flag existed; it is set here as the
+# decision for whoever wires up the enforcement to act on.
+_AI_PLATFORM_RAW = tuple(
+    dataclasses.replace(
+        dataset,
+        lake_only=(
+            "unbounded prompt/response text, growing forever; see the note above "
+            "_AI_PLATFORM_RAW in this file"
+        ),
+    )
+    if dataset.table == "platform_usage_events" else dataset
+    for dataset in _AI_PLATFORM_RAW
+)
+
 RAW_DATASETS = RAW_DATASETS + _AI_PLATFORM_RAW
 
 # --------------------------------------------------------------------------------
@@ -218,6 +253,37 @@ CURATED_DATASETS: tuple[Dataset, ...] = (
     _curated("stg_tmdb_titles", DOMAIN_MEDIA, "tmdb", "titles",
              "TMDB enrichment, typed, with the revenue-to-budget ratio derived.",
              None),
+    # stg_ai_platform_usage_events is deliberately absent from this list, for the
+    # same reason fct_ai_gateway_call is absent from MART_DATASETS below: it carries
+    # the same unbounded prompt/response text as platform_usage_events, and this
+    # list is what lake_curated republishes to Parquet in full, every night. It is
+    # still built by dbt and queryable in the warehouse; it is not given a second,
+    # ever-growing copy in the lake on a schedule that never stops adding to it.
+    _curated("stg_ai_platform_applications", DOMAIN_AI, "ai_platform", "applications",
+             "The application registry, deduped to the newest snapshot per id.", None),
+    _curated("stg_ai_platform_api_keys", DOMAIN_AI, "ai_platform", "api_keys",
+             "The API key registry, deduped to the newest snapshot per id.", None),
+    _curated("stg_ai_platform_agents", DOMAIN_AI, "ai_platform", "agents",
+             "The agent registry, deduped to the newest snapshot per id.", None),
+    _curated("stg_ai_platform_automations", DOMAIN_AI, "ai_platform", "automations",
+             "The automation registry, deduped to the newest snapshot per id.", None),
+    _curated("stg_ai_platform_users", DOMAIN_AI, "ai_platform", "users",
+             "The user registry, deduped to the newest snapshot per id.", None),
+    _curated("stg_ai_platform_runs", DOMAIN_AI, "ai_platform", "runs",
+             "Every agent run, typed.", "partition_date"),
+    _curated("stg_ai_platform_conversations", DOMAIN_AI, "ai_platform", "conversations",
+             "Every conversation, typed.", "partition_date"),
+    _curated("stg_ai_platform_run_steps", DOMAIN_AI, "ai_platform", "run_steps",
+             "Every step of every run, typed.", "partition_date"),
+    _curated("stg_ai_platform_messages", DOMAIN_AI, "ai_platform", "messages",
+             "Every message, typed, full text included.", "partition_date"),
+    _curated("stg_ai_platform_email_sends", DOMAIN_AI, "ai_platform", "email_sends",
+             "Every email sent or attempted, typed.", "partition_date"),
+    _curated("stg_ai_platform_automation_runs", DOMAIN_AI, "ai_platform", "automation_runs",
+             "One row per run of an automation, typed.", "partition_date"),
+    _curated("stg_ai_platform_automation_step_runs", DOMAIN_AI, "ai_platform",
+             "automation_step_runs", "One row per step of one automation run, typed.",
+             "partition_date"),
 )
 
 # --------------------------------------------------------------------------------
@@ -256,6 +322,30 @@ MART_DATASETS: tuple[Dataset, ...] = (
     _mart("dim_genre", DOMAIN_MEDIA, "dim_genre", "The genre lookup.", None),
     _mart("bridge_title_genre", DOMAIN_MEDIA, "bridge_title_genre",
           "The many-to-many between titles and genres.", "snapshot_date"),
+    # fct_ai_gateway_call is deliberately NOT registered here. It carries the same
+    # unbounded, ever-growing prompt/response text as platform_usage_events (see the
+    # lake_only note above _AI_PLATFORM_RAW), and this list is what the lake_marts
+    # asset republishes to Parquet *in full, every night, forever* -- doubling that
+    # growth into a second copy for no reader this table does not already have: dbt
+    # still builds it as a real table in the warehouse and the serving file picks it
+    # up automatically (serving.publish copies every *_marts table unconditionally,
+    # with no dependency on this registry), so it stays fully queryable through the
+    # SQL console, the semantic layer and the MCP tools. What it does not get is a
+    # second full copy dumped to lake Parquet on a schedule that never stops adding
+    # to it.
+    _mart("fct_agent_run", DOMAIN_AI, "fct_agent_run",
+          "One row per agent run, whether or not it called the gateway.",
+          "partition_date"),
+    _mart("fct_agent_tool_call", DOMAIN_AI, "fct_agent_tool_call",
+          "One row per tool call a run made, from run_steps.", "partition_date"),
+    _mart("fct_conversation_message", DOMAIN_AI, "fct_conversation_message",
+          "One row per message, full text included.", "partition_date"),
+    _mart("fct_email_send", DOMAIN_AI, "fct_email_send",
+          "One row per email the platform has sent or attempted to send.",
+          "partition_date"),
+    _mart("fct_automation_run", DOMAIN_AI, "fct_automation_run",
+          "One row per automation run, with its step runs folded in.",
+          "partition_date"),
 )
 
 ALL_DATASETS: tuple[Dataset, ...] = RAW_DATASETS + CURATED_DATASETS + MART_DATASETS
