@@ -166,6 +166,18 @@ def test_series_are_written_once_per_hour_by_a_long_lived_process(lake):
     assert first.series == 3 and second.series == 0
 
 
+def test_series_written_this_hour_survive_a_new_process(lake, tmp_path):
+    """Each tick may run in a fresh process; the ids on disk still stop a rewrite."""
+    fake = _fake()
+    state = tmp_path / "state"
+    first = stream.stream_tick(lake, fake, None, T0 + 5 * 60_000, emitted={}, state_dir=state)
+    second = stream.stream_tick(lake, fake, first.cursor(), T0 + 8 * 60_000, emitted={}, state_dir=state)
+    assert first.series == 3 and second.series == 0
+    later = stream.stream_tick(lake, fake, second.cursor(), T0 + 2 * HOUR + 8 * 60_000, emitted={}, state_dir=state)
+    assert later.series == 3  # a new hour writes its label sets again
+    assert not (state / f"series-{T0}.bin").exists()  # and the old hour's file is pruned
+
+
 def test_after_an_outage_the_tick_reads_fifteen_minutes_and_queues_the_missed_hours(lake):
     fake = _fake(end=T0 + 6 * HOUR)
     cursor = json_cursor = stream.Tick(start_ms=T0, end_ms=T0 + 10 * 60_000).cursor()
