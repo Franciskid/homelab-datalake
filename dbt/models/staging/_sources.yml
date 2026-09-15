@@ -730,6 +730,131 @@ sources:
               for the configuration and password-policy fields that are dropped on
               purpose and therefore never show up here.
 
+      - name: jellyfin_library_items
+        description: >
+          A daily snapshot of everything in the library that is not a movie: series,
+          seasons, episodes, box sets and other videos. Landed 2026-09-15, the same
+          reversal that added playback -- the movie-only snapshot in jellyfin_titles
+          is unchanged, this is the rest. `People` is not requested: measured at
+          thirty times the cost of every other field combined, for a credits list per
+          episode nothing here asks for -- see LIBRARY_ITEM_FIELDS in
+          parsing/jellyfin.py for the numbers.
+        columns:
+          - name: dt
+            description: The day this reading of the library was taken.
+          - name: item_id
+            description: Jellyfin's item id. Stable across snapshots.
+          - name: item_type
+            description: Series, Season, Episode, BoxSet or Video.
+          - name: title
+            description: The item's name as Jellyfin displays it.
+          - name: original_title
+            description: The title as released, when Jellyfin knows one.
+          - name: production_year
+            description: Year of production as Jellyfin holds it.
+          - name: premiere_date
+            description: Release or first-air date.
+          - name: end_date
+            description: >
+              When a series ended, if it has. Populated on Series only, and only once
+              it has one -- an ongoing show has no end date yet, which is a real
+              state and not a missing one.
+          - name: status
+            description: '"Continuing" or "Ended", on a Series. Null on every other type.'
+          - name: added_at
+            description: When the item was added to the library, in UTC.
+          - name: community_rating
+            description: TMDB's vote average, where Jellyfin holds one.
+          - name: critic_rating
+            description: Critic score, where Jellyfin holds one.
+          - name: official_rating
+            description: Age or content certification.
+          - name: runtime_minutes
+            description: >
+              Runtime as reported, converted from Jellyfin's 100-nanosecond ticks.
+              Meaningful for an Episode or a Video, which are real files; a Series'
+              own runtime is borrowed from whichever episode Jellyfin last looked at
+              and is not a fact about the show.
+          - name: container
+            description: The file container, for an Episode or a Video.
+          - name: video_codec
+            description: Codec of the primary video stream, where the item has one.
+          - name: video_height
+            description: Height in pixels of the primary video stream.
+          - name: video_width
+            description: Width in pixels of the primary video stream.
+          - name: resolution_class
+            description: Height bucketed into 4K / 1080p / 720p / SD / low, same bands as the movie library.
+          - name: audio_codec
+            description: Codec of the primary audio stream, where the item has one.
+          - name: audio_channels
+            description: Channel count of the primary audio stream.
+          - name: tmdb_id
+            description: TMDB identifier, where Jellyfin matched one.
+          - name: imdb_id
+            description: IMDb identifier, where Jellyfin matched one.
+          - name: tvdb_id
+            description: TVDB identifier, where Jellyfin matched one -- more common here than in the movie library.
+          - name: studio
+            description: The first studio Jellyfin lists for the item.
+          - name: studios
+            description: Every studio credited, in the order the API gave them.
+          - name: production_country
+            description: First entry of Jellyfin's ProductionLocations.
+          - name: production_countries
+            description: Every production country, primary first.
+          - name: genres
+            description: >
+              Every genre the item carries, as a list -- not bridged to a dimension
+              the way the movie library's genres are. See fct_library_item.sql for
+              why a bridge is not built for this volume yet.
+          - name: sort_name
+            description: The name the library sorts by.
+          - name: overview
+            description: The item's synopsis, where Jellyfin has one.
+          - name: tagline
+            description: The item's marketing line, first one only.
+          - name: taglines
+            description: Every tagline the library holds for the item.
+          - name: tags
+            description: Free-form tags applied to the item.
+          - name: parent_id
+            description: >
+              The library folder on a Series, Movie, BoxSet or standalone Video; the
+              series id on a Season; the season id on an Episode. Use series_id and
+              season_id below instead of relying on this.
+          - name: series_id
+            description: The series an Episode or a Season belongs to. Null on every other type.
+          - name: series_name
+            description: The series' name, carried directly on an Episode or a Season row.
+          - name: season_id
+            description: The season an Episode belongs to. Null on every other type, including Season itself -- a Season's own id is its item_id.
+          - name: season_name
+            description: The season's name, carried directly on an Episode row.
+          - name: index_number
+            description: >
+              Raw as Jellyfin sends it: a season's own number on a Season row, an
+              episode's own number on an Episode row. stg_jellyfin_library_items
+              resolves the unambiguous season_number/episode_number from this.
+          - name: parent_index_number
+            description: The season number, carried directly on an Episode row. Null elsewhere.
+          - name: stream_count
+            description: How many media streams the item has, where it has any.
+          - name: remote_trailer_count
+            description: How many trailers the library knows about for the item.
+          - name: external_urls
+            description: The item's pages on public databases, as name and url pairs.
+          - name: file_size_bytes
+            description: Size of the primary media file, for an Episode or a Video.
+          - name: file_bitrate
+            description: Overall bitrate of the primary media file.
+          - name: media_source_count
+            description: How many media sources the item has.
+          - name: _unmapped
+            description: >
+              JSON. Any field Jellyfin returned that nothing here reads, kept rather
+              than dropped -- the same convention as jellyfin_titles._unmapped.
+
       - name: camera_events
         description: >
           Attention events. Not final when first written: vision analysis lands hours
