@@ -525,6 +525,127 @@ models:
       - name: runtime_minutes
         description: '{{ doc("lib_runtime_minutes") }}'
 
+  - name: fct_library_item
+    description: >
+      One row per series, season, episode, box set or other video per snapshot --
+      everything in the library that fct_library_title does not cover, which is
+      movies only. A plain snapshot fact rather than a second dim_title_scd2: see the
+      model's own SQL for why five very different grains (a container with no file,
+      a real video file, a show that borrows its rating from an episode) do not share
+      one versioning scheme, and why genres/tags/studios stay as list columns rather
+      than a second bridge and dimension.
+    columns:
+      - name: item_key
+        description: Surrogate key over item_id and snapshot_date.
+        tests: [not_null, unique]
+      - name: item_id
+        description: '{{ doc("lit_item_id") }}'
+        tests: [not_null]
+      - name: snapshot_date
+        description: '{{ doc("lib_snapshot_date") }}'
+        tests: [not_null]
+      - name: item_type
+        description: '{{ doc("lit_item_type") }}'
+        tests:
+          - not_null
+          - accepted_values: {values: ['Series', 'Season', 'Episode', 'BoxSet', 'Video']}
+      - name: is_series
+        description: '{{ doc("lit_is_series") }}'
+      - name: is_episode
+        description: '{{ doc("lit_is_episode") }}'
+      - name: title
+        description: '{{ doc("lit_title") }}'
+      - name: original_title
+        description: '{{ doc("lib_original_title") }}'
+      - name: production_year
+        description: '{{ doc("lib_production_year") }}'
+      - name: premiere_date
+        description: '{{ doc("lib_premiere_date") }}'
+      - name: end_date
+        description: '{{ doc("lit_end_date") }}'
+      - name: status
+        description: '{{ doc("lit_status") }}'
+        tests:
+          - accepted_values: {values: ['Continuing', 'Ended'], config: {severity: warn}}
+      - name: added_at
+        description: '{{ doc("lib_added_at") }}'
+      - name: community_rating
+        description: '{{ doc("lib_community_rating") }}'
+      - name: critic_rating
+        description: '{{ doc("lib_critic_rating") }}'
+      - name: official_rating
+        description: '{{ doc("lib_official_rating") }}'
+      - name: runtime_minutes
+        description: '{{ doc("lit_runtime_minutes") }}'
+      - name: container
+        description: '{{ doc("lib_container") }}'
+      - name: video_codec
+        description: '{{ doc("lib_video_codec") }}'
+      - name: video_height
+        description: '{{ doc("lib_video_height") }}'
+      - name: video_width
+        description: '{{ doc("lib_video_width") }}'
+      - name: resolution_class
+        description: '{{ doc("lib_resolution_class") }}'
+      - name: audio_codec
+        description: '{{ doc("lib_audio_codec") }}'
+      - name: audio_channels
+        description: '{{ doc("lib_audio_channels") }}'
+      - name: tmdb_id
+        description: '{{ doc("lib_tmdb_id") }}'
+      - name: imdb_id
+        description: '{{ doc("lib_imdb_id") }}'
+      - name: tvdb_id
+        description: TVDB identifier, where Jellyfin matched one.
+      - name: studio
+        description: '{{ doc("lib_studio") }}'
+      - name: studios
+        description: Every studio credited, in the order the API gave them.
+      - name: production_country
+        description: '{{ doc("lib_production_country") }}'
+      - name: production_countries
+        description: Every production country, primary first.
+      - name: genres
+        description: '{{ doc("lit_genres") }}'
+      - name: sort_name
+        description: The name the library sorts by.
+      - name: overview
+        description: The item's synopsis, where Jellyfin has one.
+      - name: tagline
+        description: The item's marketing line, first one only.
+      - name: taglines
+        description: Every tagline the library holds for the item.
+      - name: tags
+        description: Free-form tags applied to the item.
+      - name: parent_id
+        description: '{{ doc("lit_parent_id") }}'
+      - name: series_id
+        description: '{{ doc("lit_series_id") }}'
+      - name: series_name
+        description: '{{ doc("lit_series_name") }}'
+      - name: season_id
+        description: '{{ doc("lit_season_id") }}'
+      - name: season_name
+        description: '{{ doc("lit_season_name") }}'
+      - name: season_number
+        description: '{{ doc("lit_season_number") }}'
+      - name: episode_number
+        description: '{{ doc("lit_episode_number") }}'
+      - name: stream_count
+        description: How many media streams the item has, where it has any.
+      - name: remote_trailer_count
+        description: How many trailers the library knows about for the item.
+      - name: external_urls
+        description: The item's pages on public databases, as name and url pairs.
+      - name: file_size_bytes
+        description: Size of the primary media file, for an Episode or a Video.
+      - name: file_bitrate
+        description: Overall bitrate of the primary media file.
+      - name: media_source_count
+        description: How many media sources the item has.
+      - name: unmapped_json
+        description: '{{ doc("lit_unmapped_json") }}'
+
   - name: dim_jellyfin_user
     description: >
       The account each play and activity entry points at. Latest snapshot only --
@@ -552,13 +673,18 @@ models:
       One row per playback session, joined to the title dimension where it resolves.
       The plugin records how long the player was open, which is not proof of a
       finished viewing -- a paused film and an abandoned one both accumulate seconds.
-      No relationship test joins `item_id` to `fct_library_title` or `user_id` to
-      `dim_jellyfin_user`: the library snapshot is movies only, so every Episode,
-      Video and TvChannel session is a legitimate non-match (`is_in_library` exists
-      for exactly this), and measured against this server's real history, 3 of 16
-      distinct playback accounts and dozens of activity-log accounts are not in the
-      current `/Users` list at all -- deleted or system accounts, not a data-quality
-      bug a foreign-key test should fail the build over.
+      An episode's series is resolved by id against fct_library_item where that
+      snapshot reaches it (series_resolved_by_id says which rows), with the
+      item_name-parsed series name kept as the documented fallback -- [rate withheld] of
+      distinct episodes ever played, [rate withheld] of episode rows, measured 2026-09-15; see
+      the model's own SQL for the numbers behind that. No relationship test joins
+      `item_id` to `fct_library_title` or `user_id` to `dim_jellyfin_user`: the movie
+      library snapshot is movies only, so every Episode, Video and TvChannel session
+      is a legitimate non-match (`is_in_library` exists for exactly this), and
+      measured against this server's real history, 3 of 16 distinct playback
+      accounts and dozens of activity-log accounts are not in the current `/Users`
+      list at all -- deleted or system accounts, not a data-quality bug a
+      foreign-key test should fail the build over.
     columns:
       - name: playback_key
         description: Surrogate key over started_at, user_id and item_id -- the closest thing PlaybackActivity has to a natural key.
@@ -593,8 +719,29 @@ models:
         description: '{{ doc("pb_item_type") }}'
       - name: title
         description: The title as the plugin recorded it -- item_name, under the name this dataset's dimension uses.
+      - name: series_id
+        description: >
+          The episode's series, resolved by id against fct_library_item's latest
+          snapshot. Null when the id join does not reach it -- see
+          series_resolved_by_id -- and always null for anything that is not an
+          episode, since there is no parsed fallback for an id.
       - name: series_name
-        description: '{{ doc("pb_series_name") }}'
+        description: >
+          The series name, from the id join above when it resolves, falling back to
+          the name parsed out of item_name (pb_series_name at the staging layer)
+          when it does not. series_resolved_by_id says which source supplied this
+          value for a given row.
+      - name: series_resolved_by_id
+        description: >
+          True when series_id/series_name came from the id join against
+          fct_library_item; false when they fell back to the item_name parse (or
+          both are null, for anything that is not an episode). Measured 2026-09-15:
+          false for [rate withheld] of episode playback rows.
+        tests: [not_null]
+      - name: season_number
+        description: '{{ doc("lit_season_number") }}. Null when the id join does not resolve -- there is no parsed fallback for a season number.'
+      - name: episode_number
+        description: '{{ doc("lit_episode_number") }}. Null when the id join does not resolve -- there is no parsed fallback for an episode number.'
       - name: is_episode
         description: '{{ doc("pb_is_episode") }}'
       - name: genre

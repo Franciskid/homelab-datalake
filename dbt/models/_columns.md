@@ -754,4 +754,87 @@ When the account last authenticated, in UTC.
 When the account was last active on the server, in UTC.
 {% enddocs %}
 
+
+{# ---------------------------------------------------------- the wider library #}
+
+{% docs lit_item_id %}
+Jellyfin's item id. Stable across snapshots.
+{% enddocs %}
+
+{% docs lit_item_type %}
+Series, Season, Episode, BoxSet or Video. Never Movie -- that item type stays in
+jellyfin_titles/fct_library_title, unchanged.
+{% enddocs %}
+
+{% docs lit_title %}
+The item's name as Jellyfin displays it.
+{% enddocs %}
+
+{% docs lit_end_date %}
+When a series ended, if it has. Populated on Series only, and only once it has one --
+an ongoing show has no end date yet, which is a real state and not a missing one.
+{% enddocs %}
+
+{% docs lit_status %}
+"Continuing" or "Ended", on a Series. Null on every other type.
+{% enddocs %}
+
+{% docs lit_runtime_minutes %}
+Runtime as reported, converted from Jellyfin's 100-nanosecond ticks. Meaningful for an
+Episode or a Video, which are real files; a Series' own runtime is borrowed from
+whichever episode Jellyfin last looked at and is not a fact about the show.
+{% enddocs %}
+
+{% docs lit_parent_id %}
+The library folder on a Series, Movie, BoxSet or standalone Video; the series id on a
+Season; the season id on an Episode. Use series_id and season_id instead of relying on
+this to mean one thing.
+{% enddocs %}
+
+{% docs lit_series_id %}
+The series an Episode or a Season belongs to. Null on every other type.
+{% enddocs %}
+
+{% docs lit_series_name %}
+The series' name, carried directly on an Episode or a Season row by Jellyfin -- not
+derived.
+{% enddocs %}
+
+{% docs lit_season_id %}
+The season an Episode belongs to. Null on every other type, Season itself included --
+a Season's own id is its own item_id.
+{% enddocs %}
+
+{% docs lit_season_name %}
+The season's name, carried directly on an Episode row.
+{% enddocs %}
+
+{% docs lit_season_number %}
+The season number, resolved from Jellyfin's raw index numbers: a Season row's own
+IndexNumber, or an Episode row's ParentIndexNumber. Null for anything else.
+{% enddocs %}
+
+{% docs lit_episode_number %}
+The episode number within its season, from an Episode row's own IndexNumber. Null for
+anything else.
+{% enddocs %}
+
+{% docs lit_is_episode %}
+Whether item_type is Episode.
+{% enddocs %}
+
+{% docs lit_is_series %}
+Whether item_type is Series.
+{% enddocs %}
+
+{% docs lit_genres %}
+Every genre the item carries, as a list -- not bridged to a dimension the way the
+movie library's genres are. See fct_library_item.sql for why.
+{% enddocs %}
+
+{% docs lit_unmapped_json %}
+JSON, or null. Any field Jellyfin returned that nothing here reads, kept rather than
+dropped -- the same convention as the movie library's _unmapped.
+{% enddocs %}
+
 > Public history note: private identifiers, measurements, and operational details were redacted. Code examples use placeholder infrastructure.

@@ -725,6 +725,124 @@ models:
           for the configuration and password-policy fields dropped on purpose, which
           therefore never show up here.
 
+  - name: stg_jellyfin_library_items
+    description: >
+      Series, seasons, episodes, box sets and other videos, typed. Everything the
+      movie-only stg_jellyfin_titles does not cover; see fct_library_item.sql for why
+      they are not the same table.
+    columns:
+      - name: snapshot_date
+        description: '{{ doc("lib_snapshot_date") }}'
+        tests: [not_null]
+      - name: item_id
+        description: '{{ doc("lit_item_id") }}'
+        tests: [not_null]
+      - name: item_type
+        description: '{{ doc("lit_item_type") }}'
+        tests:
+          - accepted_values: {values: ['Series', 'Season', 'Episode', 'BoxSet', 'Video']}
+      - name: title
+        description: '{{ doc("lit_title") }}'
+      - name: original_title
+        description: '{{ doc("lib_original_title") }}'
+      - name: production_year
+        description: '{{ doc("lib_production_year") }}'
+      - name: premiere_date
+        description: '{{ doc("lib_premiere_date") }}'
+      - name: end_date
+        description: '{{ doc("lit_end_date") }}'
+      - name: status
+        description: '{{ doc("lit_status") }}'
+      - name: added_at
+        description: '{{ doc("lib_added_at") }}'
+      - name: community_rating
+        description: '{{ doc("lib_community_rating") }}'
+      - name: critic_rating
+        description: '{{ doc("lib_critic_rating") }}'
+      - name: official_rating
+        description: '{{ doc("lib_official_rating") }}'
+      - name: runtime_minutes
+        description: '{{ doc("lit_runtime_minutes") }}'
+      - name: container
+        description: '{{ doc("lib_container") }}'
+      - name: video_codec
+        description: '{{ doc("lib_video_codec") }}'
+      - name: video_height
+        description: '{{ doc("lib_video_height") }}'
+      - name: video_width
+        description: '{{ doc("lib_video_width") }}'
+      - name: resolution_class
+        description: '{{ doc("lib_resolution_class") }}'
+      - name: audio_codec
+        description: '{{ doc("lib_audio_codec") }}'
+      - name: audio_channels
+        description: '{{ doc("lib_audio_channels") }}'
+      - name: tmdb_id
+        description: '{{ doc("lib_tmdb_id") }}'
+      - name: imdb_id
+        description: '{{ doc("lib_imdb_id") }}'
+      - name: tvdb_id
+        description: TVDB identifier, where Jellyfin matched one -- more common here than in the movie library.
+      - name: studio
+        description: '{{ doc("lib_studio") }}'
+      - name: studios
+        description: Every studio credited, in the order the API gave them.
+      - name: production_country
+        description: '{{ doc("lib_production_country") }}'
+      - name: production_countries
+        description: Every production country, primary first.
+      - name: genres
+        description: '{{ doc("lit_genres") }}'
+      - name: sort_name
+        description: The name the library sorts by.
+      - name: overview
+        description: The item's synopsis, where Jellyfin has one.
+      - name: tagline
+        description: The item's marketing line, first one only.
+      - name: taglines
+        description: Every tagline the library holds for the item.
+      - name: tags
+        description: Free-form tags applied to the item.
+      - name: parent_id
+        description: '{{ doc("lit_parent_id") }}'
+      - name: series_id
+        description: '{{ doc("lit_series_id") }}'
+      - name: series_name
+        description: '{{ doc("lit_series_name") }}'
+      - name: season_id
+        description: '{{ doc("lit_season_id") }}'
+      - name: season_name
+        description: '{{ doc("lit_season_name") }}'
+      - name: index_number
+        description: >
+          Raw as Jellyfin sends it: a season's own number on a Season row, an
+          episode's own number on an Episode row. season_number/episode_number below
+          resolve the ambiguity.
+      - name: parent_index_number
+        description: The season number, carried directly on an Episode row. Null elsewhere.
+      - name: stream_count
+        description: How many media streams the item has, where it has any.
+      - name: remote_trailer_count
+        description: How many trailers the library knows about for the item.
+      - name: external_urls
+        description: The item's pages on public databases, as name and url pairs.
+      - name: file_size_bytes
+        description: Size of the primary media file, for an Episode or a Video.
+      - name: file_bitrate
+        description: Overall bitrate of the primary media file.
+      - name: media_source_count
+        description: How many media sources the item has.
+      - name: unmapped_json
+        description: '{{ doc("lit_unmapped_json") }}'
+      - name: season_number
+        description: '{{ doc("lit_season_number") }}'
+      - name: episode_number
+        description: '{{ doc("lit_episode_number") }}'
+      - name: is_episode
+        description: '{{ doc("lit_is_episode") }}'
+      - name: is_series
+        description: '{{ doc("lit_is_series") }}'
+
   - name: stg_tmdb_titles
     description: >
       The few TMDB figures Jellyfin has no field for, one row per id. Optional: empty

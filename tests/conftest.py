@@ -242,7 +242,14 @@ SELECT
          ELSE 'Movie' END AS item_type,
     CASE WHEN is_ep THEN 'Show ' || (i % 4) || ' - s01e0' || ((i % 9) + 1) || ' - Episode ' || i
          ELSE 'Film ' || (i % 40) END AS title,
+    -- Two-thirds of episodes resolve by id against the library catalogue, a third
+    -- fall back to the name parse -- both paths need a row in the fixture. The real
+    -- server's own split, measured 2026-09-15, was [rate withheld] resolved to [rate withheld] fallback.
+    CASE WHEN is_ep AND i % 3 <> 0 THEN 'series-' || (i % 4) END AS series_id,
     CASE WHEN is_ep THEN 'Show ' || (i % 4) END AS series_name,
+    (is_ep AND i % 3 <> 0) AS series_resolved_by_id,
+    CASE WHEN is_ep AND i % 3 <> 0 THEN 1 END AS season_number,
+    CASE WHEN is_ep AND i % 3 <> 0 THEN (i % 9) + 1 END AS episode_number,
     is_ep AS is_episode,
     CASE WHEN NOT is_ep AND i % 6 <> 0
          THEN ['Action', 'Drama', 'Comedy'][(i % 3) + 1] END AS genre,

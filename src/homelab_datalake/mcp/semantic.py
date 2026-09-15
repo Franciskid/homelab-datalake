@@ -538,11 +538,15 @@ MEDIA_LIBRARY = Dataset(
     kind="snapshot",
     date_column="snapshot_date",
     description=(
-        "The film library as it stood on a given day: one row per title per snapshot. "
-        "No file paths, and no playback or per-user data here specifically -- for "
-        "who watched what and for how long, ask media_playback instead. Because this "
-        "is a snapshot rather than a stream of events, a query returns a single day "
-        "-- the latest snapshot on or before the end of the range."
+        "The **movie** library as it stood on a given day: one row per film per "
+        "snapshot. No file paths, and no playback or per-user data here specifically "
+        "-- for who watched what and for how long, ask media_playback instead. "
+        "Movies only: series, seasons, episodes, box sets and other videos are a "
+        "separate, much larger catalogue (roughly [count withheld] items against [count withheld] movies) "
+        "landed in the warehouse's fct_library_item as a plain daily snapshot, not "
+        "yet exposed through this semantic layer. Because this dataset is a snapshot "
+        "rather than a stream of events, a query returns a single day -- the latest "
+        "snapshot on or before the end of the range."
     ),
     dimensions=(
         Dimension("resolution_class", "resolution_class", "4K, 1080p, 720p, SD, low."),
@@ -658,12 +662,14 @@ MEDIA_PLAYBACK = Dataset(
         "That last point is not a technicality -- the plugin records how long the "
         "player stayed open, which is not proof anything was watched to completion. "
         "A paused film left open overnight and a film actually finished both "
-        "accumulate seconds the same way. Series and genre only resolve for what the "
-        "movie library actually catalogues: an episode's series name is parsed from "
-        "its own title rather than joined, because the library snapshot never "
-        "fetches series or episodes at all, and genre is the title's single primary "
-        "genre rather than the full list, to avoid multiplying watch time by how "
-        "many genres a film carries."
+        "accumulate seconds the same way. An episode's series is resolved by id "
+        "against the library's series/season/episode catalogue where that reaches "
+        "it; series_resolved_by_id says whether a given row used that or fell back "
+        "to a name parsed from the title (measured 2026-09-15: [rate withheld] of episode "
+        "rows). genre is the title's single primary genre rather than the full "
+        "list, to avoid multiplying watch time by how many genres a film carries, "
+        "and is only ever populated for a Movie -- the catalogue that resolves "
+        "series and season does not carry genres per episode."
     ),
     dimensions=(
         Dimension("person", "user_name", "Who played it, by account name. Null for "
@@ -671,15 +677,20 @@ MEDIA_PLAYBACK = Dataset(
                   "snapshot -- see user_id in the row-level fields for the raw id."),
         Dimension("title", "title", "The title as the plugin recorded it."),
         Dimension("series", "series_name",
-                  "The show a played episode belongs to, parsed from its title. "
-                  "Null for anything that is not an episode."),
+                  "The show a played episode belongs to -- resolved by id against "
+                  "the library where that reaches it, parsed from the episode's own "
+                  "title otherwise. Null for anything that is not an episode. See "
+                  "series_resolved_by_id for which source supplied a given row."),
         Dimension("media_type", "item_type",
                   "Movie, Episode, Video (a home recording outside the library's "
                   "scope) or TvChannel."),
         Dimension("genre", "genre",
                   "The title's primary genre. Only ever populated for a Movie -- "
-                  "the library never catalogues a series or an episode, so there is "
-                  "nothing to resolve a genre against for either."),
+                  "the library never catalogues a genre for a series or an episode."),
+        Dimension("series_resolved_by_id", "series_resolved_by_id",
+                  "True when series/season/episode came from an id join against the "
+                  "library catalogue; false when they fell back to a name parsed "
+                  "from the title, or when the session is not an episode at all."),
         Dimension("client", "client_name", "The Jellyfin client used to play it."),
         Dimension("device", "device_name", "The physical device or browser."),
         Dimension("playback_method", "playback_method",
@@ -722,6 +733,15 @@ MEDIA_PLAYBACK = Dataset(
         Attribute("started_hour", "started_hour", "started_at truncated to the hour."),
         Attribute("user_id", "user_id", "The account's raw Jellyfin id."),
         Attribute("item_id", "item_id", "The item's raw Jellyfin id."),
+        Attribute("series_id", "series_id",
+                  "The series' raw Jellyfin id, when series_resolved_by_id is true. "
+                  "Null on the name-parse fallback -- there is no id to fall back to."),
+        Attribute("season_number", "season_number",
+                  "The season number, when the id join resolves. No parsed "
+                  "fallback exists for this -- a title alone does not carry it."),
+        Attribute("episode_number", "episode_number",
+                  "The episode number, when the id join resolves. No parsed "
+                  "fallback exists for this either."),
         Attribute("play_duration_seconds", "play_duration_seconds",
                   "How long the player was open, in seconds."),
         Attribute("library_community_rating", "library_community_rating",
