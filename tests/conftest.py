@@ -208,12 +208,94 @@ FROM (SELECT i::INTEGER AS i FROM range(0, 120) t(i)),
      (SELECT d::INTEGER AS d FROM range(0, 3) s(d));
 """
 
+# One session in five is an episode, which never resolves against the movie-only
+# library or carries a genre -- the same split the real server shows. A third of
+# sessions belong to an account id the fixture never names, the same shape measured
+# against the real server: deleted or system accounts outnumber live ones in the raw
+# history, so a test that only ever sees a resolved person would not be exercising
+# the common case.
+_JELLYFIN_PLAYBACK = """
+CREATE OR REPLACE TABLE marts.fct_jellyfin_playback AS
+WITH base AS (
+    SELECT
+        i,
+        (TIMESTAMPTZ '2026-08-01 05:00:00Z' + INTERVAL (i * 53) MINUTE) AS ts,
+        (i % 5 = 0) AS is_ep
+    FROM (SELECT i::INTEGER AS i FROM range(0, 180) t(i))
+)
+SELECT
+    'pk' || i AS playback_key,
+    CAST(ts AS DATE) AS partition_date,
+    date_trunc('hour', ts) AS partition_hour,
+    ts + INTERVAL 5 MINUTE AS extracted_at,
+    ts AS started_at,
+    date_trunc('hour', ts) AS started_hour,
+    (i % 24) AS started_hour_of_day,
+    ['Monday', 'Tuesday', 'Wednesday'][(i % 3) + 1] AS started_weekday,
+    (i % 7 > 4) AS is_weekend,
+    CASE WHEN i % 3 <> 0 THEN 'user-' || (i % 6) END AS user_id,
+    CASE WHEN i % 3 <> 0 THEN 'person' || (i % 6) END AS user_name,
+    'item-' || (i % 40) AS item_id,
+    CASE WHEN is_ep THEN 'Episode'
+         WHEN i % 11 = 0 THEN 'Video'
+         WHEN i % 13 = 0 THEN 'TvChannel'
+         ELSE 'Movie' END AS item_type,
+    CASE WHEN is_ep THEN 'Show ' || (i % 4) || ' - s01e0' || ((i % 9) + 1) || ' - Episode ' || i
+         ELSE 'Film ' || (i % 40) END AS title,
+    CASE WHEN is_ep THEN 'Show ' || (i % 4) END AS series_name,
+    is_ep AS is_episode,
+    CASE WHEN NOT is_ep AND i % 6 <> 0
+         THEN ['Action', 'Drama', 'Comedy'][(i % 3) + 1] END AS genre,
+    CASE WHEN i % 4 = 0 THEN 'DirectPlay' ELSE 'Transcode (v:hevc a:aac)' END AS playback_method,
+    ['Jellyfin Web', 'Android TV', 'Swiftfin'][(i % 3) + 1] AS client_name,
+    ['Chrome', 'Safari', 'Shield'][(i % 3) + 1] AS device_name,
+    30 + (i % 7000) AS play_duration_seconds,
+    (NOT is_ep AND i % 11 <> 0) AS is_in_library,
+    CASE WHEN NOT is_ep AND i % 11 <> 0 THEN 5.0 + (i % 40) / 10.0 END AS library_community_rating
+FROM base;
+"""
+
+# Most entries name no account at all -- a library scan concerns nobody -- and among
+# the ones that do, most name an id the account snapshot no longer holds. Both
+# measured against the real server, not guessed.
+_JELLYFIN_ACTIVITY = """
+CREATE OR REPLACE TABLE marts.fct_jellyfin_activity AS
+WITH base AS (
+    SELECT i, (TIMESTAMPTZ '2026-08-01 00:00:00Z' + INTERVAL (i * 17) MINUTE) AS ts
+    FROM (SELECT i::INTEGER AS i FROM range(0, 220) t(i))
+)
+SELECT
+    i AS activity_id,
+    CAST(ts AS DATE) AS partition_date,
+    ts + INTERVAL 1 MINUTE AS extracted_at,
+    ts AS happened_at,
+    date_trunc('hour', ts) AS happened_hour,
+    (i % 24) AS happened_hour_of_day,
+    ['Monday', 'Tuesday', 'Wednesday'][(i % 3) + 1] AS happened_weekday,
+    (i % 7 > 4) AS is_weekend,
+    ['VideoPlayback', 'SessionStarted', 'AuthenticationSucceeded', 'LibraryScan'][(i % 4) + 1]
+        AS activity_type,
+    'entry ' || i AS name,
+    CASE WHEN i % 19 = 0 THEN 'A longer note.' END AS overview,
+    CASE WHEN i % 5 = 0 THEN 'Adresse IP : 10.0.0.' || (i % 20) END AS short_overview,
+    CASE WHEN i % 3 = 0 THEN 'user-' || (i % 6)
+         WHEN i % 3 = 1 THEN 'ghost-' || i END AS user_id,
+    CASE WHEN i % 3 = 0 THEN 'person' || (i % 6) END AS user_name,
+    CASE WHEN i % 4 = 0 THEN 'item-' || (i % 40) END AS item_id,
+    CASE WHEN i % 29 = 0 THEN 'Error'
+         WHEN i % 11 = 0 THEN 'Warning' ELSE 'Information' END AS severity,
+    (i % 29 = 0) AS is_error,
+    (i % 11 = 0 AND i % 29 <> 0) AS is_warning,
+    CAST(NULL AS VARCHAR) AS unmapped_json
+FROM base;
+"""
+
 
 def build_marts(path: str) -> None:
     con = duckdb.connect(path)
     con.execute("SET TimeZone='UTC';")
     con.execute("CREATE SCHEMA IF NOT EXISTS marts;")
-    for statement in (_LLM, _HTTP, _CAMERA, _LIBRARY):
+    for statement in (_LLM, _HTTP, _CAMERA, _LIBRARY, _JELLYFIN_PLAYBACK, _JELLYFIN_ACTIVITY):
         con.execute(statement)
     con.close()
 
