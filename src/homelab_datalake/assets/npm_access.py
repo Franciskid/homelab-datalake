@@ -24,7 +24,6 @@ its own job, rather than stretching one partitions definition to fit two things 
 started on different days.
 """
 
-import glob
 import os
 from datetime import date
 
@@ -86,11 +85,14 @@ SECONDARY_INBOX_PREFIX = "inbox/npm/secondary"
 # not in HOSTS/npm_partitions, and its host_source value is not a NPM_HOSTS entry.
 MCP_API_HOST = "mcp-api"
 
-# The day the platform-side access log first exists is the platform team's decision,
-# not NPM's -- overridable so the orchestrator can correct it once that ships without
-# a code change. 2026-09-14 is the date of the decision to build it at all (see
-# PLAN.md and privacy.py); the log itself may start a little after.
-MCP_API_LOG_START = os.environ.get("MCP_API_LOG_START", "2026-09-14")
+# The day the platform-side access log first exists is the platform team's
+# decision, not NPM's -- overridable so the orchestrator can correct it without a
+# code change if it ever moves again. 2026-09-15 is the day ai-platform's own
+# compose actually started writing it (one day after the 2026-09-14 decision to
+# build it at all -- see PLAN.md and privacy.py). A fixed date rather than one
+# derived from the earliest file present, matching camera_zones_raw's precedent:
+# simple, and correct as long as this constant is updated if the log ever moves.
+MCP_API_LOG_START = os.environ.get("MCP_API_LOG_START", "2026-09-15")
 mcp_api_partitions = DailyPartitionsDefinition(start_date=MCP_API_LOG_START)
 
 RAW_PREFIX = layout.prefix("npm_access")
@@ -416,16 +418,15 @@ def mcp_api_access_raw(
             "A read-only mount of the platform's mcp.ai access-log directory -- see "
             "MCP_API_LOG_DIR in docker-compose.yml."
         )
-    # Mirrors the mounted-directory check above: a directory with no access-*.log
-    # file in it at all is a broken mount. A directory that holds files for other
-    # days but not this one is the ordinary case for a day before the log started,
-    # or the day it has not rolled over to yet -- extract_mcp_api_partition treats
-    # that as zero rows, not a failure.
-    if not glob.glob(os.path.join(log_dir, "access-*.log")):
-        raise FileNotFoundError(
-            f"no access-*.log files found in {log_dir!r}. This is a broken mount, "
-            "not a day before the log started."
-        )
-
+    # Unlike primary/secondary, "the directory holds no access-*.log file at all" is not
+    # a broken-mount signal for this source and is not checked here. NPM's hosts
+    # have been logging continuously for years, so an empty directory only ever
+    # means a bad mount; this one started at MCP_API_LOG_START, with nothing
+    # written before it and nothing guaranteed written the moment it starts
+    # either -- the file for a given day may not exist until the first request of
+    # that day lands. isdir is the one mount-health signal this source can
+    # honestly give; extract_mcp_api_partition already treats a missing day file
+    # as zero rows, not an error, and the checks below pass cleanly on zero rows
+    # read from zero lines.
     result = extract_mcp_api_partition(log_dir, day, salt, geo)
     yield from _land_and_check(context, lake, MCP_API_HOST, day, result)
