@@ -103,11 +103,18 @@ jellyfin_daily_job = define_asset_job(
         AssetSelection.groups("jellyfin")
         - AssetSelection.assets(
             jellyfin.jellyfin_playback_raw, jellyfin.jellyfin_activity_raw,
-            jellyfin.jellyfin_users_raw,
+            jellyfin.jellyfin_users_raw, jellyfin.jellyfin_library_items_raw,
         )
     ),
     partitions_def=jellyfin.library_partitions,
-    description="Snapshot the media library.",
+    description="Snapshot the movie library.",
+)
+
+jellyfin_library_items_job = define_asset_job(
+    name="jellyfin_library_items",
+    selection=AssetSelection.assets(jellyfin.jellyfin_library_items_raw),
+    partitions_def=jellyfin.library_items_partitions,
+    description="Snapshot today's series, seasons, episodes, box sets and other videos.",
 )
 
 jellyfin_playback_job = define_asset_job(
@@ -144,6 +151,24 @@ jellyfin_users_job = define_asset_job(
 def jellyfin_daily_schedule(context: ScheduleEvaluationContext):
     day = context.scheduled_execution_time.date()
     yield RunRequest(run_key=f"jellyfin-{day.isoformat()}", partition_key=day.isoformat())
+
+
+@schedule(
+    job=jellyfin_library_items_job,
+    cron_schedule="32 3 * * *",
+    default_status=DefaultScheduleStatus.STOPPED,
+    description=(
+        "Today's series, seasons, episodes, box sets and other videos, at 03:32 UTC, "
+        "two minutes after the movie snapshot. Today's, not yesterday's, for the same "
+        "reason the movie snapshot is: this describes the library now. Measured at "
+        "[duration withheld] for the roughly [count withheld] non-movie items on this server -- see "
+        "parsing/jellyfin.py for why (`People` is not requested) and for what the "
+        "same read cost with it included ([duration withheld])."
+    ),
+)
+def jellyfin_library_items_schedule(context: ScheduleEvaluationContext):
+    day = context.scheduled_execution_time.date()
+    yield RunRequest(run_key=f"jellyfin-library-items-{day.isoformat()}", partition_key=day.isoformat())
 
 
 @schedule(
@@ -394,12 +419,12 @@ def notify_on_failure(context):
 defs = Definitions(
     assets=all_assets,
     jobs=[npm_daily_job, npm_backfill_job, litellm_daily_job, jellyfin_daily_job,
-          jellyfin_playback_job, jellyfin_activity_job, jellyfin_users_job,
-          camera_daily_job, camera_zones_job, analytics_job],
+          jellyfin_library_items_job, jellyfin_playback_job, jellyfin_activity_job,
+          jellyfin_users_job, camera_daily_job, camera_zones_job, analytics_job],
     schedules=[npm_daily_schedule, litellm_daily_schedule, jellyfin_daily_schedule,
-               jellyfin_playback_hourly_schedule, jellyfin_activity_schedule,
-               jellyfin_users_schedule, camera_daily_schedule, camera_late_arrival_schedule,
-               camera_zones_schedule, analytics_daily_schedule],
+               jellyfin_library_items_schedule, jellyfin_playback_hourly_schedule,
+               jellyfin_activity_schedule, jellyfin_users_schedule, camera_daily_schedule,
+               camera_late_arrival_schedule, camera_zones_schedule, analytics_daily_schedule],
     sensors=[notify_on_failure],
     resources={
         "lake": LakeStorage.from_env(),

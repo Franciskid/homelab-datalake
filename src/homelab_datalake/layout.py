@@ -145,6 +145,13 @@ RAW_DATASETS: tuple[Dataset, ...] = (
     _raw("jellyfin_users", DOMAIN_MEDIA, "jellyfin", "users",
          "Daily snapshot of the account list: name, admin flag, disabled flag, last "
          "seen. Nothing from configuration or password policy beyond those."),
+    # Added 2026-09-15: the movie-only snapshot above was never the whole library.
+    # Series, seasons, episodes, box sets and other videos -- roughly [count withheld] items --
+    # land here instead of in jellyfin_titles; see assets/jellyfin.py for why they are
+    # kept separate from the movie snapshot dim_title_scd2 depends on.
+    _raw("jellyfin_library_items", DOMAIN_MEDIA, "jellyfin", "library_items",
+         "Daily snapshot of everything in the library that is not a movie: series, "
+         "seasons, episodes, box sets and other videos."),
     _raw("camera_events", DOMAIN_MONITORING, "camera", "events",
          "Attention events. Not final when first written: analysis lands later."),
     _raw("camera_clips", DOMAIN_MONITORING, "camera", "clips",
@@ -215,12 +222,17 @@ CURATED_DATASETS: tuple[Dataset, ...] = (
     # int_, not stg_: playback sessions are deduped onto (started_at, user_id,
     # item_id) here, the same reason int_camera_events supersedes stg_camera_events.
     _curated("int_jellyfin_playback", DOMAIN_MEDIA, "jellyfin", "playback",
-             "Playback sessions, typed and deduped, with the series name parsed out "
-             "of episode titles.", "partition_date"),
+             "Playback sessions, typed and deduped, with an episode's series "
+             "resolved by id against the library-items snapshot where it exists, "
+             "the title-parse kept only as a fallback.", "partition_date"),
     _curated("stg_jellyfin_activity", DOMAIN_MEDIA, "jellyfin", "activity",
              "Activity log entries, typed.", "partition_date"),
     _curated("stg_jellyfin_users", DOMAIN_MEDIA, "jellyfin", "users",
              "Account snapshots, typed.", "snapshot_date"),
+    _curated("stg_jellyfin_library_items", DOMAIN_MEDIA, "jellyfin", "library_items",
+             "Series, seasons, episodes, box sets and other videos, typed, with "
+             "season_number/episode_number resolved from the raw index numbers.",
+             "snapshot_date"),
     _curated("stg_tmdb_titles", DOMAIN_MEDIA, "tmdb", "titles",
              "TMDB enrichment, typed, with the revenue-to-budget ratio derived.",
              None),
@@ -259,6 +271,12 @@ MART_DATASETS: tuple[Dataset, ...] = (
           "One row per film per snapshot, Jellyfin joined to TMDB.", "snapshot_date"),
     _mart("dim_title_scd2", DOMAIN_MEDIA, "dim_title_scd2",
           "Title history: one row per version, with validity dates.", None),
+    # Deliberately not versioned like dim_title_scd2 -- see fct_library_item.sql for
+    # why a snapshot fact is the honest match for five very different item grains.
+    _mart("fct_library_item", DOMAIN_MEDIA, "fct_library_item",
+          "One row per series, season, episode, box set or other video per "
+          "snapshot -- everything in the library that is not a movie.",
+          "snapshot_date"),
     _mart("dim_genre", DOMAIN_MEDIA, "dim_genre", "The genre lookup.", None),
     _mart("bridge_title_genre", DOMAIN_MEDIA, "bridge_title_genre",
           "The many-to-many between titles and genres.", "snapshot_date"),

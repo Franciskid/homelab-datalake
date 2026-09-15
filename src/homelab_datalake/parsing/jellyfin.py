@@ -344,15 +344,16 @@ def _title_row(item: dict, snapshot_day: date) -> dict:
     }
 
 
-def fetch_page(base_url: str, api_key: str, start_index: int, limit: int) -> dict:
+def fetch_page(base_url: str, api_key: str, start_index: int, limit: int,
+               include_types: str = "Movie", fields: str = FIELDS) -> dict:
     import urllib.parse
     import urllib.request
 
     query = urllib.parse.urlencode(
         {
             "Recursive": "true",
-            "IncludeItemTypes": "Movie",
-            "Fields": FIELDS,
+            "IncludeItemTypes": include_types,
+            "Fields": fields,
             "StartIndex": start_index,
             "Limit": limit,
             "EnableTotalRecordCount": "true",
@@ -423,6 +424,223 @@ def snapshot(snapshot_day: date, base_url: str | None = None, api_key: str | Non
                 continue
             seen_genres[name] = None
             out.genres.append({"dt": snapshot_day, "item_id": item.get("Id"), "genre": name})
+
+    return out
+
+
+# --------------------------------------------------------------------------------
+# the wider library: series, seasons, episodes, box sets, other videos
+# --------------------------------------------------------------------------------
+#
+# Added 2026-09-14, in the same reversal that added playback: the owner's decision was
+# that the warehouse holds everything available, and `snapshot()` above only ever asked
+# for Movie. The server was measured on 2026-09-15 to hold Movie [count withheld], Series 325,
+# Season [count withheld], Episode [count withheld], BoxSet 186, Video 417 -- roughly [count withheld] items the
+# warehouse had never seen.
+#
+# **`People` is not requested here, and that is a measured decision, not an oversight.**
+# A page of 500 Episodes with the same field list `snapshot()` uses for movies took
+# 13.29s; the same page with every field held constant except `People` removed took
+# [duration withheld] -- thirty times faster. Isolating each field individually confirmed `People`
+# alone: [duration withheld] for [count withheld] items, against [duration withheld] each for Studios, ExternalUrls and
+# RemoteTrailers. A full combined read of all five non-movie types with `People`
+# included measured at [duration withheld] ([count withheld] items, [volume withheld] of JSON); the same read
+# with only `People` dropped measured at [duration withheld] for [count withheld] items, [volume withheld]. Cast and crew
+# per episode was never asked for -- the brief wants series/season/episode relationships
+# and dates, not a credits list per episode -- so the field that costs thirty times the
+# rest of the response combined is simply not requested.
+LIBRARY_ITEM_TYPES = "Series,Season,Episode,BoxSet,Video"
+
+LIBRARY_ITEM_FIELDS = (
+    "Genres,ProviderIds,ProductionYear,PremiereDate,EndDate,CommunityRating,"
+    "CriticRating,OfficialRating,RunTimeTicks,DateCreated,MediaStreams,MediaSources,"
+    "Studios,Container,OriginalTitle,ProductionLocations,Tags,Taglines,Overview,"
+    "SortName,ExternalUrls,RemoteTrailers,ParentId,SeriesId,SeriesName,SeasonId,"
+    "SeasonName,IndexNumber,ParentIndexNumber,Status"
+)
+
+# `ChildCount` and `RecursiveItemCount` are deliberately not requested: both were tried
+# against a real BoxSet and a real Season and both came back null on this server, so
+# asking for them would add request weight for a column that would be null throughout.
+#
+# Image and UI-only fields dropped for the same reason as the movie NOT_STORED list.
+# `AirDays` is a series' broadcast schedule -- never asked for, and not requested.
+_LIBRARY_ITEM_NOT_STORED = frozenset(
+    {
+        "Path", "MediaSources", "ImageTags", "ImageBlurHashes", "BackdropImageTags",
+        "ServerId", "LocationType", "PlayAccess", "ParentBackdropImageTags",
+        "ParentBackdropItemId", "ParentThumbImageTag", "ParentThumbItemId",
+        "ScreenshotImageTags", "ChannelId", "AirDays", "SeriesPrimaryImageTag",
+        "ParentLogoItemId", "ParentLogoImageTag", "DisplayOrder", "People",
+    }
+)
+
+_LIBRARY_ITEM_CONSUMED = frozenset(
+    {
+        "Id", "Name", "OriginalTitle", "SortName", "Overview", "Taglines", "Tags",
+        "ProductionYear", "PremiereDate", "EndDate", "Status", "DateCreated",
+        "CommunityRating", "CriticRating", "OfficialRating", "RunTimeTicks",
+        "Container", "MediaStreams", "ProviderIds", "Studios", "ProductionLocations",
+        "Genres", "GenreItems", "RemoteTrailers", "ExternalUrls", "ParentId", "Type",
+        "MediaType", "VideoType", "HasSubtitles", "IsFolder", "SeriesId", "SeriesName",
+        "SeasonId", "SeasonName", "IndexNumber", "ParentIndexNumber",
+    }
+)
+
+
+@dataclass
+class LibraryItemsSnapshot:
+    items: list[dict] = field(default_factory=list)
+    #: Field names Jellyfin sent that nothing here reads. Reported, never silent.
+    unmapped: set[str] = field(default_factory=set)
+    total_reported: int = 0
+    pages: int = 0
+
+    @property
+    def count(self) -> int:
+        return len(self.items)
+
+
+def _library_item_row(item: dict, snapshot_day: date) -> dict:
+    """One row for a Series, Season, Episode, BoxSet or Video item.
+
+    Deliberately not a second copy of `_title_row`: a Season and a BoxSet are
+    containers with no video file of their own, and forcing them through a function
+    that assumes one would mean every video/audio column silently reading null for
+    reasons that have nothing to do with the field being absent from Jellyfin. What
+    genuinely applies to every type -- name, dates, ratings, provider ids, genres,
+    the primary studio and country -- is read the same way `_title_row` reads it;
+    what only applies to a playable file -- codec, resolution, file size -- comes
+    from the same MediaStreams/MediaSources shape when it is there and is null
+    otherwise; what only applies to the series hierarchy -- SeriesId, SeasonId, the
+    season and episode numbers, a series' own status and end date -- is new here.
+    """
+    video = _stream(item.get("MediaStreams"), "Video")
+    audio = _stream(item.get("MediaStreams"), "Audio")
+    ticks = item.get("RunTimeTicks") or 0
+    height = video.get("Height")
+    year = item.get("ProductionYear")
+
+    providers = item.get("ProviderIds") or {}
+    sources = item.get("MediaSources") or [{}]
+    primary_source = sources[0] if sources else {}
+    streams = item.get("MediaStreams") or []
+    taglines = [t for t in (item.get("Taglines") or []) if t]
+
+    return {
+        "dt": snapshot_day,
+        "item_id": item.get("Id"),
+        "item_type": item.get("Type"),
+        "title": item.get("Name"),
+        "original_title": item.get("OriginalTitle"),
+        "production_year": year,
+        "premiere_date": (_parse_timestamp(item.get("PremiereDate")) or datetime.min.replace(tzinfo=UTC)).date()
+        if item.get("PremiereDate") else None,
+        # Only a Series carries this, and only sometimes -- an ongoing show has no
+        # end date yet, which is a real state and not a missing one.
+        "end_date": (_parse_timestamp(item.get("EndDate")) or datetime.min.replace(tzinfo=UTC)).date()
+        if item.get("EndDate") else None,
+        # "Continuing" or "Ended", on a Series. Null on everything else.
+        "status": item.get("Status"),
+        "added_at": _parse_timestamp(item.get("DateCreated")),
+        "community_rating": item.get("CommunityRating"),
+        "critic_rating": item.get("CriticRating"),
+        "official_rating": item.get("OfficialRating"),
+        "runtime_minutes": round(ticks / TICKS_PER_SECOND / 60) if ticks else None,
+        "container": item.get("Container"),
+        "video_codec": video.get("Codec"),
+        "video_height": height,
+        "video_width": video.get("Width"),
+        "resolution_class": resolution_class(height),
+        "audio_codec": audio.get("Codec"),
+        "audio_channels": audio.get("Channels"),
+        "tmdb_id": providers.get("Tmdb"),
+        "imdb_id": providers.get("Imdb"),
+        "tvdb_id": providers.get("Tvdb"),
+        "studio": (item.get("Studios") or [{}])[0].get("Name"),
+        "studios": _names(item.get("Studios")),
+        "production_country": (item.get("ProductionLocations") or [None])[0],
+        "production_countries": [c for c in (item.get("ProductionLocations") or []) if c],
+        "genres": [g.strip() for g in (item.get("Genres") or []) if (g or "").strip()],
+        "sort_name": item.get("SortName"),
+        "overview": item.get("Overview"),
+        "tagline": taglines[0] if taglines else None,
+        "taglines": taglines,
+        "tags": [t for t in (item.get("Tags") or []) if t],
+        # The library-folder id on a Series, Movie, BoxSet or standalone Video; the
+        # series id on a Season; the season id on an Episode. What it means depends
+        # on item_type, which is why series_id/season_id below exist as their own
+        # columns rather than asking a reader to know this.
+        "parent_id": item.get("ParentId"),
+        # Populated on Season and Episode. A Season's own id is its series id here;
+        # an Episode carries both its series and its season.
+        "series_id": item.get("SeriesId"),
+        "series_name": item.get("SeriesName"),
+        # Populated on Episode only.
+        "season_id": item.get("SeasonId"),
+        "season_name": item.get("SeasonName"),
+        # Raw as Jellyfin sends them: a season's own number on a Season row, an
+        # episode's own number on an Episode row. stg_jellyfin_library_items derives
+        # the unambiguous season_number/episode_number columns from these plus
+        # item_type -- kept raw here for the same reason every other raw layer in
+        # this repo keeps the source's own fields rather than a derived reading.
+        "index_number": item.get("IndexNumber"),
+        "parent_index_number": item.get("ParentIndexNumber"),
+        "stream_count": len(streams),
+        "remote_trailer_count": len(item.get("RemoteTrailers") or []),
+        "external_urls": [
+            {"name": u.get("Name"), "url": u.get("Url")}
+            for u in (item.get("ExternalUrls") or [])
+            if u.get("Url")
+        ],
+        "file_size_bytes": primary_source.get("Size"),
+        "file_bitrate": primary_source.get("Bitrate"),
+        "media_source_count": len(sources) if item.get("MediaSources") else 0,
+    }
+
+
+def library_items_snapshot(snapshot_day: date, base_url: str | None = None,
+                           api_key: str | None = None,
+                           items: list[dict] | None = None) -> LibraryItemsSnapshot:
+    """Series, seasons, episodes, box sets and other videos, as of today.
+
+    `items` is injectable so tests need no server. Movies are not included -- they
+    stay on `snapshot()`, unchanged, which is the point: this is an addition, not a
+    replacement for the pipeline dim_title_scd2 already depends on.
+    """
+    out = LibraryItemsSnapshot()
+
+    if items is None:
+        base_url = base_url or os.environ.get("JELLYFIN_URL", "")
+        api_key = api_key or os.environ.get("JELLYFIN_API_KEY", "")
+        if not base_url or not api_key:
+            raise ValueError("JELLYFIN_URL and JELLYFIN_API_KEY are required")
+        items = []
+        start = 0
+        while True:
+            page = fetch_page(base_url, api_key, start, PAGE_SIZE,
+                              include_types=LIBRARY_ITEM_TYPES, fields=LIBRARY_ITEM_FIELDS)
+            batch = page.get("Items") or []
+            out.total_reported = page.get("TotalRecordCount", 0) or out.total_reported
+            out.pages += 1
+            items.extend(batch)
+            start += len(batch)
+            if not batch or start >= out.total_reported:
+                break
+    else:
+        out.total_reported = len(items)
+
+    for item in items:
+        leftovers = {
+            key: value for key, value in item.items()
+            if key not in _LIBRARY_ITEM_CONSUMED and key not in _LIBRARY_ITEM_NOT_STORED
+        }
+        out.unmapped.update(leftovers)
+        row = _library_item_row(item, snapshot_day)
+        row["_unmapped"] = (
+            json.dumps(leftovers, default=str, sort_keys=True) if leftovers else None
+        )
+        out.items.append(row)
 
     return out
 

@@ -303,6 +303,201 @@ def _previous_count(lake: LakeStorage, day: date) -> int | None:
 
 
 # --------------------------------------------------------------------------------
+# the wider library: series, seasons, episodes, box sets, other videos
+# --------------------------------------------------------------------------------
+#
+# A daily snapshot, replaced rather than merged, on the same reasoning as
+# jellyfin_library_raw: this describes the library as it stands today, so a title
+# removed from it should be absent rather than preserved out of caution. Kept as a
+# separate raw dataset and a separate asset from the movie snapshot on purpose --
+# see the module docstring in parsing/jellyfin.py for the measured reason `People`
+# is not requested, and dim_title_scd2's own docstring in dbt for why these rows do
+# not flow into it.
+#
+# Collection starts today: like jellyfin_library_raw, a snapshot describes the
+# library *now*, so there is no earlier date this can honestly be backfilled to.
+LIBRARY_ITEMS_START = "2026-09-15"
+library_items_partitions = DailyPartitionsDefinition(start_date=LIBRARY_ITEMS_START, end_offset=1)
+
+LIBRARY_ITEMS_PREFIX = layout.prefix("jellyfin_library_items")
+
+# Measured on 2026-09-15 against the real server: roughly [count withheld] non-movie items, so
+# the same one-in-five shrink threshold the movie snapshot uses is the right order of
+# magnitude here too -- a drop that size means a broken read, not an evening's changes.
+MAX_LIBRARY_ITEMS_SHRINK_RATIO = 0.20
+
+_LIBRARY_ITEMS_SCHEMA = pa.schema(
+    [
+        ("dt", pa.date32()),
+        ("item_id", pa.string()),
+        ("item_type", pa.string()),
+        ("title", pa.string()),
+        ("original_title", pa.string()),
+        ("production_year", pa.int32()),
+        ("premiere_date", pa.date32()),
+        # Populated on a Series only, and only once it has one -- an ongoing show
+        # has no end date yet, which is a real state and not a missing one.
+        ("end_date", pa.date32()),
+        ("status", pa.string()),
+        ("added_at", pa.timestamp("us", tz="UTC")),
+        ("community_rating", pa.float64()),
+        ("critic_rating", pa.float64()),
+        ("official_rating", pa.string()),
+        ("runtime_minutes", pa.int32()),
+        ("container", pa.string()),
+        ("video_codec", pa.string()),
+        ("video_height", pa.int32()),
+        ("video_width", pa.int32()),
+        ("resolution_class", pa.string()),
+        ("audio_codec", pa.string()),
+        ("audio_channels", pa.int32()),
+        ("tmdb_id", pa.string()),
+        ("imdb_id", pa.string()),
+        ("tvdb_id", pa.string()),
+        ("studio", pa.string()),
+        ("studios", pa.list_(pa.string())),
+        ("production_country", pa.string()),
+        ("production_countries", pa.list_(pa.string())),
+        # Not bridged the way the movie library's genres are: this is a snapshot
+        # fact, not a dimensional model, and [count withheld] items is not the volume that
+        # earns a second bridge-and-dimension pair. A list column is the honest,
+        # much cheaper shape for "what genres does this item carry".
+        ("genres", pa.list_(pa.string())),
+        ("sort_name", pa.string()),
+        ("overview", pa.string()),
+        ("tagline", pa.string()),
+        ("taglines", pa.list_(pa.string())),
+        ("tags", pa.list_(pa.string())),
+        # The library folder on a Series, Movie, BoxSet or standalone Video; the
+        # series on a Season; the season on an Episode. series_id/season_id below
+        # are the columns to use instead of working this out from item_type.
+        ("parent_id", pa.string()),
+        ("series_id", pa.string()),
+        ("series_name", pa.string()),
+        ("season_id", pa.string()),
+        ("season_name", pa.string()),
+        ("index_number", pa.int32()),
+        ("parent_index_number", pa.int32()),
+        ("stream_count", pa.int32()),
+        ("remote_trailer_count", pa.int32()),
+        ("external_urls", pa.list_(pa.struct([("name", pa.string()), ("url", pa.string())]))),
+        ("file_size_bytes", pa.int64()),
+        ("file_bitrate", pa.int64()),
+        ("media_source_count", pa.int32()),
+        ("_unmapped", pa.string()),
+    ]
+)
+
+CHECK_LIBRARY_ITEMS_NOT_SHRUNK = "library_items_have_not_shrunk_unexpectedly"
+CHECK_LIBRARY_ITEMS_NO_UNMAPPED = "no_unmapped_fields"
+
+
+def _previous_library_items_count(lake: LakeStorage, day: date) -> int | None:
+    """Items in the most recent earlier snapshot, or None if this is the first."""
+    import datetime as dt
+
+    for back in range(1, 8):
+        earlier = day - dt.timedelta(days=back)
+        key = f"{LIBRARY_ITEMS_PREFIX}/dt={earlier.isoformat()}/data.parquet"
+        count = lake.count_rows(key)
+        if count is not None:
+            return count
+    return None
+
+
+@asset(
+    partitions_def=library_items_partitions,
+    group_name="jellyfin",
+    compute_kind="python",
+    retry_policy=RetryPolicy(max_retries=3, delay=15),
+    check_specs=[
+        AssetCheckSpec(
+            name=CHECK_LIBRARY_ITEMS_NOT_SHRUNK,
+            asset="jellyfin_library_items_raw",
+            description=(
+                "Fails when the item count drops by more than a fifth against the "
+                "previous snapshot -- a broken mount or a partial read, not an "
+                "evening's changes."
+            ),
+        ),
+        AssetCheckSpec(
+            name=CHECK_LIBRARY_ITEMS_NO_UNMAPPED,
+            asset="jellyfin_library_items_raw",
+            description="Warns when Jellyfin returned a field nothing here reads.",
+        ),
+    ],
+    description=(
+        "A daily snapshot of everything in the library that is not a movie: series, "
+        "seasons, episodes, box sets and other videos. `People` is not requested -- "
+        "measured at thirty times the cost of every other field combined for no "
+        "question this warehouse answers -- see parsing/jellyfin.py."
+    ),
+)
+def jellyfin_library_items_raw(context: AssetExecutionContext, lake: LakeStorage):
+    day = date.fromisoformat(context.partition_key)
+
+    result = jellyfin_source.library_items_snapshot(day)
+    if not result.items:
+        raise ValueError(
+            f"Jellyfin returned no library items for {day}. An empty read is a broken "
+            "mount or an unreachable server, not a real state -- refusing to write it."
+        )
+
+    projected, unmapped = project(result.items, _LIBRARY_ITEMS_SCHEMA)
+    prefix = f"{LIBRARY_ITEMS_PREFIX}/dt={day.isoformat()}"
+    # Replaced, not merged -- the same reasoning as jellyfin_library_raw: this is a
+    # snapshot of the library now, and an item removed from it should be absent.
+    lake.delete_prefix(prefix)
+    written = lake.write_table(
+        f"{prefix}/data.parquet", pa.Table.from_pylist(projected, schema=_LIBRARY_ITEMS_SCHEMA)
+    )
+
+    previous = _previous_library_items_count(lake, day)
+    by_type: dict[str, int] = {}
+    for row in result.items:
+        by_type[row["item_type"]] = by_type.get(row["item_type"], 0) + 1
+
+    context.log.info(
+        "dt=%s %d library items (previous snapshot: %s): %s",
+        day, result.count, previous if previous is not None else "none", by_type,
+    )
+    if unmapped:
+        context.log.warning(
+            "dt=%s the export sent fields the schema does not name: %s",
+            day, ", ".join(sorted(unmapped)),
+        )
+
+    yield Output(
+        {"items": result.count},
+        metadata={
+            "items": result.count,
+            **{f"items_{name.lower()}": count for name, count in by_type.items()},
+            "pages_fetched": result.pages,
+            "bytes_written": written,
+            "unmapped_fields": MetadataValue.text(", ".join(sorted(unmapped)) or "none"),
+            "destination": MetadataValue.path(
+                f"{lake.describe()}/{prefix}/data.parquet"
+            ),
+        },
+    )
+
+    shrunk = previous is not None and result.count < previous * (1 - MAX_LIBRARY_ITEMS_SHRINK_RATIO)
+    yield AssetCheckResult(
+        check_name=CHECK_LIBRARY_ITEMS_NOT_SHRUNK,
+        passed=not shrunk,
+        severity=AssetCheckSeverity.ERROR,
+        metadata={"items": result.count, "previous": previous or 0},
+    )
+
+    yield AssetCheckResult(
+        check_name=CHECK_LIBRARY_ITEMS_NO_UNMAPPED,
+        passed=not unmapped,
+        severity=AssetCheckSeverity.WARN,
+        metadata={"fields": MetadataValue.text(", ".join(sorted(unmapped)) or "none")},
+    )
+
+
+# --------------------------------------------------------------------------------
 # playback: the Playback Reporting plugin, one hour at a time
 # --------------------------------------------------------------------------------
 #
