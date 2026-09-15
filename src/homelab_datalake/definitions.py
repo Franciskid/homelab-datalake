@@ -37,6 +37,7 @@ from dagster_dbt import DbtCliResource
 
 from homelab_datalake.alerting import alert_payload
 from homelab_datalake.assets import (
+    ai_platform,
     backup,
     camera,
     dbt_marts,
@@ -48,11 +49,12 @@ from homelab_datalake.assets import (
     warehouse,
 )
 from homelab_datalake.assets.npm_access import HOSTS, npm_partitions
+from homelab_datalake.parsing.ai_platform_registry import WINDOW_DAYS
 from homelab_datalake.resources import LakeStorage, NpmLogSources
 
 all_assets = load_assets_from_modules(
-    [npm_access, litellm_spend, jellyfin, camera, tmdb, dbt_marts, warehouse, publish,
-     backup]
+    [npm_access, litellm_spend, jellyfin, camera, tmdb, ai_platform, dbt_marts,
+     warehouse, publish, backup]
 )
 
 npm_daily_job = define_asset_job(
@@ -91,6 +93,95 @@ litellm_daily_job = define_asset_job(
 def litellm_daily_schedule(context: ScheduleEvaluationContext):
     day = context.scheduled_execution_time.date() - datetime.timedelta(days=1)
     yield RunRequest(run_key=f"litellm-{day.isoformat()}", partition_key=day.isoformat())
+
+
+# Snapshot tables (agents, applications, schedules, and every other config/entity
+# table in the registry) get one asset per day, same shape as jellyfin_daily below:
+# small enough to re-read whole, so there is nothing to re-extract later.
+ai_platform_snapshot_job = define_asset_job(
+    name="ai_platform_snapshot",
+    selection=AssetSelection.assets(*ai_platform.snapshot_asset_keys),
+    partitions_def=ai_platform.ai_platform_partitions,
+    description="Today's snapshot of every config/entity table in the AI platform's database.",
+)
+
+
+@schedule(
+    job=ai_platform_snapshot_job,
+    cron_schedule="0 5 * * *",
+    default_status=DefaultScheduleStatus.STOPPED,
+    description=(
+        "Today's snapshot of every AI-platform config/entity table at 05:00 UTC, "
+        "after the existing 03:xx sources and the 04:15 analytics build."
+    ),
+)
+def ai_platform_snapshot_schedule(context: ScheduleEvaluationContext):
+    day = context.scheduled_execution_time.date()
+    yield RunRequest(
+        run_key=f"ai-platform-snapshot-{day.isoformat()}", partition_key=day.isoformat()
+    )
+
+
+# Event-shaped tables (usage_events, runs, run_steps, messages, and so on) get a
+# trailing re-extraction window: every tick re-fires the last WINDOW_DAYS partitions,
+# each overwriting its own day idempotently, so a row that changed after it first
+# landed -- a run completing, an approval being decided -- is picked up on its next
+# re-run rather than frozen at its first-seen values. Same shape as
+# camera_late_arrival_schedule below, at a window sized for this platform's own
+# lifecycles rather than the camera's -- see ai_platform_registry.WINDOW_DAYS.
+ai_platform_window_job = define_asset_job(
+    name="ai_platform_window",
+    selection=AssetSelection.assets(*ai_platform.window_asset_keys),
+    partitions_def=ai_platform.ai_platform_partitions,
+    description="Re-extract one day of every event-shaped AI-platform table.",
+)
+
+
+@schedule(
+    job=ai_platform_window_job,
+    cron_schedule="10 5 * * *",
+    default_status=DefaultScheduleStatus.STOPPED,
+    description=(
+        f"Re-extracts the trailing {WINDOW_DAYS} days of every event-shaped "
+        "AI-platform table at 05:10 UTC, so a row that changes within that window "
+        "after it first lands -- a run completing, an approval being decided -- is "
+        "corrected rather than left at its first-seen values. Idempotent: each "
+        "day's re-run overwrites only that day's own partition."
+    ),
+)
+def ai_platform_window_schedule(context: ScheduleEvaluationContext):
+    today = context.scheduled_execution_time.date()
+    for back in range(WINDOW_DAYS):
+        day = today - datetime.timedelta(days=back)
+        yield RunRequest(
+            run_key=f"ai-platform-window-{day.isoformat()}-{context.scheduled_execution_time:%Y%m%d}",
+            partition_key=day.isoformat(),
+        )
+
+
+ai_platform_coverage_job = define_asset_job(
+    # Named distinctly from the asset it selects: `define_asset_job` derives an op
+    # inside the implicit `__ASSET_JOB` with the asset's own name, and giving this
+    # job the identical name collided with it -- "Conflicting definitions... Op/Graph
+    # definition names must be unique within a repository."
+    name="ai_platform_coverage",
+    selection=AssetSelection.assets(ai_platform.ai_platform_registry_coverage),
+    description="Check the registry against ai_platform's live schema.",
+)
+
+
+@schedule(
+    job=ai_platform_coverage_job,
+    cron_schedule="20 5 * * *",
+    default_status=DefaultScheduleStatus.STOPPED,
+    description=(
+        "Compares ai_platform_registry.REGISTRY against information_schema.tables at "
+        "05:20 UTC, so a table the platform adds later is caught rather than simply "
+        "never arriving."
+    ),
+)
+def ai_platform_coverage_schedule(context: ScheduleEvaluationContext):
+    yield RunRequest(run_key=f"ai-platform-coverage-{context.scheduled_execution_time:%Y-%m-%d}")
 
 
 jellyfin_daily_job = define_asset_job(
@@ -309,10 +400,12 @@ def notify_on_failure(context):
 
 defs = Definitions(
     assets=all_assets,
-    jobs=[npm_daily_job, npm_backfill_job, litellm_daily_job, jellyfin_daily_job,
+    jobs=[npm_daily_job, npm_backfill_job, litellm_daily_job, ai_platform_snapshot_job,
+          ai_platform_window_job, ai_platform_coverage_job, jellyfin_daily_job,
           camera_daily_job, camera_zones_job, analytics_job],
-    schedules=[npm_daily_schedule, litellm_daily_schedule, jellyfin_daily_schedule,
-               camera_daily_schedule, camera_late_arrival_schedule,
+    schedules=[npm_daily_schedule, litellm_daily_schedule, ai_platform_snapshot_schedule,
+               ai_platform_window_schedule, ai_platform_coverage_schedule,
+               jellyfin_daily_schedule, camera_daily_schedule, camera_late_arrival_schedule,
                camera_zones_schedule, analytics_daily_schedule],
     sensors=[notify_on_failure],
     resources={
