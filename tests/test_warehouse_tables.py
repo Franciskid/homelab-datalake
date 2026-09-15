@@ -18,7 +18,7 @@ from homelab_datalake.assets.warehouse import _SOURCES, empty_table_ddl
 
 
 def test_every_registered_raw_dataset_has_a_warehouse_table():
-    registered = {d.table for d in layout.RAW_DATASETS}
+    registered = {d.table for d in layout.RAW_DATASETS if not d.lake_only}
     loaded = {name for name, *_ in _SOURCES}
     missing = registered - loaded
     assert not missing, (
@@ -29,12 +29,24 @@ def test_every_registered_raw_dataset_has_a_warehouse_table():
 
 
 def test_no_warehouse_table_is_built_from_an_unregistered_prefix():
-    registered = {d.table for d in layout.RAW_DATASETS}
+    registered = {d.table for d in layout.RAW_DATASETS if not d.lake_only}
     loaded = {name for name, *_ in _SOURCES}
     assert not (loaded - registered), (
         f"{sorted(loaded - registered)} are loaded into the warehouse but not registered "
         "in layout, so nothing decides where they live in the lake"
     )
+
+
+def test_a_lake_only_dataset_is_never_loaded_into_the_warehouse():
+    """The flag is the reason a dataset is absent, so it must actually keep it out.
+
+    Prometheus samples are [count withheld] rows a day. Loaded by mistake, they would multiply the
+    warehouse file within a week, and analytics_daily rebuilds that file in full nightly.
+    """
+    lake_only = {d.table for d in layout.RAW_DATASETS if d.lake_only}
+    loaded = {name for name, *_ in _SOURCES}
+    assert lake_only, "expected the Prometheus samples to be lake-only"
+    assert not (lake_only & loaded), f"{sorted(lake_only & loaded)} are lake-only but loaded"
 
 
 def test_the_declared_prefix_is_the_one_the_layout_registry_gives():

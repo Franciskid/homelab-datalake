@@ -36,6 +36,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from homelab_datalake.parsing import media_pipeline as _media_pipeline
+
 LAYER_RAW = "raw"
 LAYER_CURATED = "curated"
 LAYER_MARTS = "marts"
@@ -45,7 +47,7 @@ LAYERS = (LAYER_RAW, LAYER_CURATED, LAYER_MARTS)
 # Domains. A domain answers "who asks questions about this", not "which container
 # produced it". Camera and reverse-proxy logs are both operational telemetry, but
 # nobody looks at them together, so they are not one domain.
-DOMAIN_INFRASTRUCTURE = "infrastructure"  # the edge: reverse proxy, request traffic
+DOMAIN_INFRASTRUCTURE = "infrastructure"  # the edge and the machines behind it: traffic, metrics, host logs, sign-ins
 DOMAIN_MEDIA = "media"                    # the film library and what describes it
 DOMAIN_MONITORING = "monitoring"          # cameras, zones, activity
 DOMAIN_AI = "ai"                          # model calls and what they cost
@@ -72,6 +74,12 @@ class Dataset:
     # can be re-run and can be checked, and so a deployment mid-migration can still
     # find its data. Remove these once every environment is on the new layout.
     legacy_prefix: str | None = None
+    # Why this dataset is NOT loaded into the DuckDB warehouse, or empty when it is.
+    # A dataset of tens of millions of rows a day (Prometheus samples, the journal)
+    # would grow a file that analytics_daily rebuilds in full every night; it stays
+    # queryable through the SQL API, which reads every lake dataset directly. A
+    # non-empty reason, not a bare flag, so the exclusion explains itself.
+    lake_only: str = ""
 
     @property
     def prefix(self) -> str:
@@ -87,11 +95,11 @@ class Dataset:
         return f"{self.layer}.{self.table}"
 
 
-def _raw(table, domain, source, name, description, partition_column="dt"):
+def _raw(table, domain, source, name, description, partition_column="dt", lake_only=""):
     return Dataset(
         table=table, layer=LAYER_RAW, domain=domain, source=source, name=name,
         description=description, partition_column=partition_column,
-        legacy_prefix=f"raw/{table}",
+        legacy_prefix=f"raw/{table}", lake_only=lake_only,
     )
 
 
@@ -240,6 +248,61 @@ MART_DATASETS: tuple[Dataset, ...] = (
     _mart("bridge_title_genre", DOMAIN_MEDIA, "bridge_title_genre",
           "The many-to-many between titles and genres.", "snapshot_date"),
 )
+
+# --------------------------------------------------------------------------------
+# raw, added 2026-09-15: metrics, the media request pipeline, host logs, sign-ins
+# --------------------------------------------------------------------------------
+#
+# Appended here rather than inside RAW_DATASETS above, so the sources other branches
+# add there merge without touching the same lines. See docs/METRICS_STREAMING_PLAN.md.
+
+_SAMPLES_ARE_TOO_MANY = (
+    "[count withheld] samples a day; analytics_daily rebuilds the warehouse in full from the lake "
+    "every night. Queried from the lake through the SQL API."
+)
+
+_STREAMED_RAW: tuple[Dataset, ...] = (
+    _raw("prometheus_samples", DOMAIN_INFRASTRUCTURE, "prometheus", "samples",
+         "Every raw sample Prometheus scraped: timestamp, series id, metric, job, instance, value.",
+         lake_only=_SAMPLES_ARE_TOO_MANY),
+    _raw("prometheus_series", DOMAIN_INFRASTRUCTURE, "prometheus", "series",
+         "The label set behind each series id, per day it was seen.",
+         lake_only="Only meaningful beside prometheus_samples, which is lake-only."),
+    _raw("prometheus_metadata", DOMAIN_INFRASTRUCTURE, "prometheus", "metadata",
+         "What each metric is: counter, gauge, histogram or summary, with help and unit.",
+         lake_only="Only meaningful beside prometheus_samples, which is lake-only."),
+    _raw("status_page_metric_samples", DOMAIN_INFRASTRUCTURE, "status_page", "metric_samples",
+         "Secondary's and Tertiary's cpu, memory and disk, every five minutes, as Sentinel reported them."),
+    _raw("status_page_observations", DOMAIN_INFRASTRUCTURE, "status_page", "observations",
+         "Every UP/DOWN/PENDING reading of each monitored server, about every [duration withheld]."),
+    _raw("status_page_incidents", DOMAIN_INFRASTRUCTURE, "status_page", "incidents",
+         "Outage incidents, every version from investigating to resolved.", partition_column=None),
+    _raw("status_page_transitions", DOMAIN_INFRASTRUCTURE, "status_page", "transitions",
+         "Each change of a server's Sentinel status.", partition_column=None),
+    _raw("status_page_services", DOMAIN_INFRASTRUCTURE, "status_page", "services",
+         "The monitored servers and their last known status.", partition_column=None),
+    _raw("host_journal", DOMAIN_INFRASTRUCTURE, "host", "journal",
+         "primary's systemd journal: every entry, every field.",
+         lake_only="[count withheld] entries a day, most of them the container platform chatter; rebuilt nightly it would dominate the warehouse."),
+    _raw("host_auth_log", DOMAIN_INFRASTRUCTURE, "host", "auth_log",
+         "primary's auth.log: SSH sign-ins, sudo, cron sessions."),
+    _raw("keycloak_events", DOMAIN_INFRASTRUCTURE, "keycloak", "events",
+         "Every Keycloak user event: logins, logouts, token exchanges and their errors."),
+    _raw("keycloak_admin_events", DOMAIN_INFRASTRUCTURE, "keycloak", "admin_events",
+         "Every change made through Keycloak's admin API."),
+    _raw("keycloak_users", DOMAIN_INFRASTRUCTURE, "keycloak", "users",
+         "Keycloak accounts, every version. No credentials.", partition_column=None),
+    _raw("keycloak_clients", DOMAIN_INFRASTRUCTURE, "keycloak", "clients",
+         "The applications that sign in through Keycloak. No secrets.", partition_column=None),
+    _raw("keycloak_realms", DOMAIN_INFRASTRUCTURE, "keycloak", "realms",
+         "Realms and their event settings.", partition_column=None),
+    *(
+        _raw(spec.table_name, DOMAIN_MEDIA, spec.app, spec.name, spec.description, partition_column=None)
+        for spec in _media_pipeline.ALL_TABLES
+    ),
+)
+
+RAW_DATASETS = RAW_DATASETS + _STREAMED_RAW
 
 ALL_DATASETS: tuple[Dataset, ...] = RAW_DATASETS + CURATED_DATASETS + MART_DATASETS
 

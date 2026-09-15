@@ -321,3 +321,32 @@ defs = Definitions(
         "dbt": DbtCliResource(project_dir=dbt_marts.dbt_project),
     },
 )
+
+
+# --------------------------------------------------------------------------------
+# Sources added 2026-09-15: the Prometheus stream, the status page, Radarr, Sonarr and
+# Jellyseerr, primary's host logs, Keycloak sign-ins. See docs/METRICS_STREAMING_PLAN.md.
+#
+# Merged in as a second Definitions rather than written into the lists above, so the
+# sources other branches add there do not collide with these lines.
+# --------------------------------------------------------------------------------
+
+from homelab_datalake.assets import (  # noqa: E402
+    host_logs,
+    keycloak,
+    media_pipeline,
+    prometheus,
+    status_page,
+)
+
+_added_sources = (prometheus, status_page, media_pipeline, host_logs, keycloak)
+
+defs = Definitions.merge(
+    defs,
+    Definitions(
+        assets=[a for module in _added_sources for a in module.ASSETS],
+        jobs=[j for module in _added_sources for j in module.JOBS],
+        schedules=[s for module in _added_sources for s in module.SCHEDULES],
+        sensors=prometheus.SENSORS,
+    ),
+)

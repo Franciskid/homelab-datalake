@@ -171,6 +171,13 @@ _RAW_INGEST_ASSET = {
     "jellyfin": "jellyfin_library_raw",
     "camera": "camera_events_raw",
     "tmdb": "tmdb_titles_raw",
+    "prometheus": "prometheus_samples_raw",
+    "status_page": "status_page_raw",
+    "host": "host_logs_raw",
+    "keycloak": "keycloak_raw",
+    "radarr": "radarr_raw",
+    "sonarr": "sonarr_raw",
+    "jellyseerr": "jellyseerr_raw",
 }
 
 
