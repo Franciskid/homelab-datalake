@@ -71,6 +71,9 @@ facts and summaries prepared for analysis.
 | Homelab Camera | Events, clip metadata, zone states, annotations, and observation coverage | When was activity highest, and was the camera observing then? |
 | Jellyfin | Library snapshots, titles, genres, people, and stream metadata | How has the library changed? |
 | TMDB and MaxMind, optional | Film information and coarse geographic/network context | How do titles or traffic compare by region? |
+| Prometheus | Every raw sample it scrapes, streamed a minute behind: host, containers, GPU, the LLM gateway, and the status page's view of the other machines | What were the machines doing while that job ran? |
+| Radarr, Sonarr, Jellyseerr | Requests, grabs, imports, and the files they produced, keeping every version of each row | How long does a request take to become watchable? |
+| Host logs and single sign-on | The server's journal and auth.log, and every sign-in across the single sign-on apps | Who signed in where, and what was the host doing? |
 
 Camera recordings stay in the camera application, and media files stay in
 Jellyfin. This public repository contains no production records or actual
