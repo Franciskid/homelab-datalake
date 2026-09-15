@@ -85,24 +85,41 @@ def test_extraction_is_idempotent(tmp_path):
     assert a.rows == b.rows
 
 
-def test_no_row_contains_a_raw_client_address(tmp_path):
-    """The guarantee that matters. Asserted over every value of every row."""
+def test_the_raw_address_lands_only_in_client_address(tmp_path):
+    """2026-09-14: the raw address is kept, but only in the one column meant for it.
+
+    Before that decision this test asserted the address appeared nowhere in the
+    row at all. It still must not leak into anything else -- path, user agent,
+    source_file -- and the derived columns must still be exactly as before; what
+    changed is that `client_address` itself is now allowed, and expected, to hold
+    it. See homelab_datalake.privacy for the decision.
+    """
     address = "198.51.100.77"
     _write(tmp_path, "proxy-host-1_access.log",
            [_proxy_line("27/Aug/2026:10:00:00 +0000", client=address)])
     r = extract_partition(str(tmp_path), date(2026, 8, 27), "test", SALT, NO_GEO)
     assert r.rows, "expected a row to check"
     for row in r.rows:
-        assert all(address not in str(v) for v in row.values())
+        assert row["client_address"] == address
+        other_values = {k: v for k, v in row.items() if k != "client_address"}
+        assert all(address not in str(v) for v in other_values.values())
         assert row["client_hash"] and row["client_network"] == "198.51.100.0/24"
 
 
-def test_query_strings_are_stripped_at_extraction(tmp_path):
+def test_query_strings_are_stripped_from_path_but_kept_raw(tmp_path):
+    """path loses the query string as before; query_string now keeps it, raw.
+
+    Before 2026-09-14 the value was dropped everywhere and this test asserted its
+    absence from the whole row. Now it survives in exactly one column -- see
+    homelab_datalake.privacy for the decision.
+    """
     _write(tmp_path, "proxy-host-1_access.log",
            [_proxy_line("27/Aug/2026:10:00:00 +0000", path="/reset?token=hunter2")])
     r = extract_partition(str(tmp_path), date(2026, 8, 27), "test", SALT, NO_GEO)
     assert r.rows[0]["path"] == "/reset"
-    assert all("hunter2" not in str(v) for v in r.rows[0].values())
+    assert r.rows[0]["query_string"] == "token=hunter2"
+    other_values = {k: v for k, v in r.rows[0].items() if k != "query_string"}
+    assert all("hunter2" not in str(v) for v in other_values.values())
 
 
 def test_unparseable_lines_are_recorded_as_rejects_not_dropped(tmp_path):
