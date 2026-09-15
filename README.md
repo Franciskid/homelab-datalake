@@ -16,7 +16,7 @@ which runs the data pipelines, also hosts the AI platform's automation jobs.
 
 | Source | What is collected | What I can learn from it |
 | --- | --- | --- |
-| Nginx Proxy Manager | Requests from the mounted reverse-proxy logs. | Traffic by application, response status, visitors, and patterns over time. |
+| Nginx Proxy Manager, and mcp.ai.fraserv.fr's own access log | Requests from the reverse-proxy logs -- mounted for one instance, mirrored hourly from the other, which cannot be mounted directly -- plus the MCP gateway's own log, which sits behind no proxy at all. | Traffic by application, response status, visitors, and patterns over time. |
 | LiteLLM | Model-call and spend records. | Which models and callers consume tokens, what requests cost, and how long they take. |
 | Homelab Camera | Structured camera events, analysis, and related activity records from its export API. | Camera activity, passage counts, state changes, and observation coverage. |
 | Jellyfin | Library snapshots and the metadata attached to titles. | What is in the library and how its composition changes. |
@@ -142,11 +142,19 @@ and failures, while their application logic stays in their own projects.
 
 ## Privacy and access
 
-Traffic ingestion removes raw client addresses before writing data to the lake.
-It keeps a keyed pseudonym, a coarse network, and a label indicating whether
-the address represented a visitor or a CDN edge. Geographic enrichment, when
-available, happens before the original address is discarded. This reduces the
-identifying information retained while keeping traffic analysis useful.
+Traffic ingestion derives a keyed pseudonym, a coarse network, geography and a
+CDN-edge-or-visitor label from every client address, before anything is written
+to the lake -- that part is unchanged. Since 14 September 2026 the raw address
+and the raw query string are kept too, alongside those derived columns rather
+than instead of them, because a warehouse meant to hold all available data
+should not throw away the one value a real investigation would need. Both stay
+inside the private warehouse: reachable only through the Keycloak-gated MCP
+server, workbench API, and dbt/notebook access on the deployed host, never
+through anything this public repository publishes, seeds or exports.
+
+Camera exports omit footage and zone geometry and pseudonymise creator
+identity. The datalake preserves the structured records it needs for analysis.
+Real datasets, credentials, and generated exports remain private.
 
 Camera exports omit footage and zone geometry and pseudonymise creator
 identity. The datalake preserves the structured records it needs for analysis.
