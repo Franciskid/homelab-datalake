@@ -104,6 +104,7 @@ jellyfin_daily_job = define_asset_job(
         - AssetSelection.assets(
             jellyfin.jellyfin_playback_raw, jellyfin.jellyfin_activity_raw,
             jellyfin.jellyfin_users_raw, jellyfin.jellyfin_library_items_raw,
+            jellyfin.jellyfin_activity_history_raw,
         )
     ),
     partitions_def=jellyfin.library_partitions,
@@ -115,6 +116,16 @@ jellyfin_library_items_job = define_asset_job(
     selection=AssetSelection.assets(jellyfin.jellyfin_library_items_raw),
     partitions_def=jellyfin.library_items_partitions,
     description="Snapshot today's series, seasons, episodes, box sets and other videos.",
+)
+
+# Unpartitioned, and deliberately without a schedule: this is a one-time load, run
+# once by hand after ACTIVITY_START moved back to the log's real first day. See
+# ACTIVITY_START's own comment in assets/jellyfin.py for why the history arrives
+# this way instead of a [count withheld]-partition backfill of jellyfin_activity_job below.
+jellyfin_activity_history_job = define_asset_job(
+    name="jellyfin_activity_history",
+    selection=AssetSelection.assets(jellyfin.jellyfin_activity_history_raw),
+    description="One-time, one-pass load of the full activity log history.",
 )
 
 jellyfin_playback_job = define_asset_job(
@@ -420,7 +431,8 @@ defs = Definitions(
     assets=all_assets,
     jobs=[npm_daily_job, npm_backfill_job, litellm_daily_job, jellyfin_daily_job,
           jellyfin_library_items_job, jellyfin_playback_job, jellyfin_activity_job,
-          jellyfin_users_job, camera_daily_job, camera_zones_job, analytics_job],
+          jellyfin_activity_history_job, jellyfin_users_job, camera_daily_job,
+          camera_zones_job, analytics_job],
     schedules=[npm_daily_schedule, litellm_daily_schedule, jellyfin_daily_schedule,
                jellyfin_library_items_schedule, jellyfin_playback_hourly_schedule,
                jellyfin_activity_schedule, jellyfin_users_schedule, camera_daily_schedule,
