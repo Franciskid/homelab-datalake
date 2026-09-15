@@ -535,7 +535,7 @@ def _parse_duration_seconds(value) -> int | None:
     if value is None:
         return None
     try:
-        return int(round(float(value)))
+        return round(float(value))
     except (TypeError, ValueError):
         return None
 

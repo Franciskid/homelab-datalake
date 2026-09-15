@@ -116,11 +116,11 @@ _SOURCES = (
     ("jellyfin_title_people", PEOPLE_PREFIX, _PEOPLE_SCHEMA, jellyfin_library_raw,
      "Cast and crew credits. Public film metadata, not library users."),
     ("jellyfin_playback", PLAYBACK_PREFIX, _PLAYBACK_SCHEMA, jellyfin_playback_raw,
-     "Every Playback Reporting plugin row: who watched what, for how long the "
-     "player was open."),
+     ("Every Playback Reporting plugin row: who watched what, for how long the "
+      "player was open.")),
     ("jellyfin_activity", ACTIVITY_PREFIX, _ACTIVITY_SCHEMA, jellyfin_activity_raw,
-     "The server activity log: sign-ins, playback starts and stops, library and "
-     "account changes."),
+     ("The server activity log: sign-ins, playback starts and stops, library and "
+      "account changes.")),
     ("jellyfin_users", USERS_PREFIX, _USERS_SCHEMA, jellyfin_users_raw,
      "Daily snapshot of the account list, name and two flags only."),
     ("camera_events", EVENT_PREFIX, _EVENT_SCHEMA, camera_events_raw,
