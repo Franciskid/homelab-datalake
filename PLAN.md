@@ -27,6 +27,15 @@ Nginx, Cloudflare, host and container metrics. Highest volume, closest analogue 
 Handling PII at the boundary rather than as an afterthought is exactly what a fintech screens
 for. That one design note does real work in an interview.
 
+**Amended 2026-09-14 (WS-41.E2):** the owner decided the warehouse should also keep the raw
+client address and the raw query string, alongside the hash/network/geo columns above rather
+than instead of them -- see `src/homelab_datalake/privacy.py` for the reasoning and the
+guarantees that still hold. This does not touch the design note above: hashing and truncation
+still happen at ingestion, unconditionally, and the raw columns are additive and
+private-warehouse-only -- never in `seed/`, never in anything `publish.py`/`serving.py` sends
+somewhere wider than the raw/curated/marts layers already reach. What changed is the answer to
+"does this warehouse throw the address away completely", and the answer is no longer yes.
+
 ### Source B — camera events
 Technically the most interesting. Semi-structured LLM JSON into structured event tables gives
 schema evolution, validation of untrusted model output, confidence handling, dedup.
