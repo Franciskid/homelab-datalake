@@ -155,16 +155,41 @@ def resolution_class(height: int | None) -> str | None:
 
 
 def _parse_timestamp(value: str | None) -> datetime | None:
-    """Jellyfin sends seven-digit fractional seconds; Python accepts at most six."""
+    """A Jellyfin API timestamp, with anywhere from zero to seven fractional digits.
+
+    .NET writes a timestamp's fraction in ticks, seven digits, but trims trailing
+    zeros -- so the same server sends `2023-11-22T15:22:08.1600312Z` for one entry and
+    `2023-11-22T15:22:08.16003Z` for the next. Python's `fromisoformat` wants at most
+    six, so the fraction is rebuilt to exactly six before parsing.
+
+    The fraction is the run of digits immediately after the `.`, stopping at the first
+    non-digit; everything after that run is the offset, kept as it is. That boundary is
+    the whole fix. The version before this one harvested *every* digit after the `.`
+    -- the offset's included -- so a fraction shorter than six digits borrowed its
+    padding from `+00:00` and then cut the offset in the wrong place:
+    `.16003+00:00` became `.160030:00`, which `fromisoformat` rejects. Seven-digit
+    fractions happened to slice correctly, which is why most entries survived. Measured
+    against the real server and the lake on 2026-09-15: of 293 activity log entries on
+    the server and missing from the lake, 291 failed here, spread over every month
+    from 2023-11 to 2026-09 and mostly playback and session events. An explicit
+    non-zero offset with a short fraction was worse than rejected: `.1+02:00` came back
+    as a *valid* timestamp two hours off, because the offset's digits had been eaten.
+
+    No offset at all is read as UTC, as it always has been: every timestamp this API
+    returns is UTC, marked with `Z`.
+    """
     if not value:
         return None
-    text = value.replace("Z", "+00:00")
-    if "." in text:
-        head, _, tail = text.partition(".")
-        digits = "".join(c for c in tail if c.isdigit())[:6]
-        offset = tail[len(digits):] if len(tail) > len(digits) else ""
-        offset = offset.lstrip("0123456789")
-        text = f"{head}.{digits:<06s}{offset}"
+    text = value.strip()
+    if text[-1:] in ("Z", "z"):
+        text = text[:-1] + "+00:00"
+    head, dot, tail = text.partition(".")
+    if dot:
+        run = len(tail) - len(tail.lstrip("0123456789"))
+        fraction, offset = tail[:run], tail[run:]
+        if not fraction:
+            return None
+        text = f"{head}.{fraction[:6].ljust(6, '0')}{offset}"
     try:
         parsed = datetime.fromisoformat(text)
     except ValueError:
@@ -766,18 +791,50 @@ def _parse_playback_timestamp(value) -> datetime | None:
 
 
 def _parse_duration_seconds(value) -> int | None:
-    """`PlayDuration` as whole seconds.
+    """`PlayDuration` as whole seconds, or `None` when the value cannot be a duration.
 
     Verified alongside the timestamp above, on the same Amadeus session: an elapsed
     6,762 seconds by the activity log's own start and stop produced
     `PlayDuration = 6761`. Seconds, not the `H:MM:SS` string some Playback Reporting
     installs are known to emit for this column -- checked, not assumed, here too.
+
+    A negative value is not a duration and comes back as `None`. Measured against the
+    real server on 2026-09-15: `min(PlayDuration)` over the whole table is
+    `-2147483648` -- exactly INT32_MIN, an overflow or sentinel the plugin wrote, not
+    a length of time -- on exactly one row, a Swiftfin iOS session of an episode with
+    `DateCreated 2025-08-19 20:48:00.6152916`. Loaded as-is, that single row takes
+    about 68 years off any `SUM(play_duration_seconds)`, which is exactly what every
+    watch-time report computes.
+
+    Negative is the whole rule; there is deliberately no upper bound. The same table's
+    `max(PlayDuration)` is 175,460 seconds, about 48.7 hours -- a player left open on a
+    paused title, not corruption, since this column measures how long the player was
+    open rather than how long anyone watched. A ceiling would discard real rows on a
+    guess.
+
+    Why the *field* is nulled rather than the row dropped: the session genuinely
+    happened. Who played what, on which client, at what time are all intact and all
+    still answer questions -- sessions per user, what was started and when -- and
+    dropping the row would remove a real session from every one of those answers to
+    fix a problem confined to one column.
+
+    Why null rather than a clamp to 0: a 0 is a claim, that the player was open for no
+    time at all, and nothing in the data supports it; it would also bury the defect
+    inside a plausible-looking value. `None` says the duration is unknown, which is
+    true, and `SUM` and `median` skip it instead of being poisoned by it.
+
+    Never silent: `parse_playback_rows` counts every value that was present and came
+    back `None` from here, and both playback assets report that count.
     """
     if value is None:
         return None
     try:
-        return round(float(value))
-    except (TypeError, ValueError):
+        seconds = float(value)
+        if seconds < 0:
+            return None
+        return round(seconds)
+    except (TypeError, ValueError, OverflowError):
+        # ValueError covers "not a number" and round(nan); OverflowError, round(inf).
         return None
 
 
@@ -800,7 +857,18 @@ def parse_series_name(item_name: str | None, item_type: str | None) -> str | Non
     return match.group("series") if match else None
 
 
-def parse_playback_rows(payload: dict, users_by_id_map: dict[str, str]) -> list[dict]:
+@dataclass
+class PlaybackRows:
+    rows: list[dict] = field(default_factory=list)
+    # Sessions whose PlayDuration arrived but could not be a duration -- negative, or
+    # not a number at all -- and were kept with `play_duration_seconds` null. Surfaced
+    # on both playback assets' Output metadata, never raised: one unusable field from
+    # a third-party plugin is a fact about one session, not about the partition. See
+    # `_parse_duration_seconds` for the real row this exists for.
+    play_durations_nulled: int = 0
+
+
+def parse_playback_rows(payload: dict, users_by_id_map: dict[str, str]) -> PlaybackRows:
     """The plugin's `{colums, results, message}` shape, turned into named rows.
 
     `message` is non-empty on a genuine query failure, and also on the legitimate
@@ -811,8 +879,9 @@ def parse_playback_rows(payload: dict, users_by_id_map: dict[str, str]) -> list[
     results = payload.get("results") or []
     message = str(payload.get("message") or "")
 
+    out = PlaybackRows()
     if not results and message.lower().startswith("query executed, no data returned"):
-        return []
+        return out
     if message:
         raise ValueError(f"Playback Reporting query failed: {message}")
     if columns and columns != list(_PLAYBACK_COLUMNS):
@@ -822,12 +891,19 @@ def parse_playback_rows(payload: dict, users_by_id_map: dict[str, str]) -> list[
         )
 
     index = {name: i for i, name in enumerate(_PLAYBACK_COLUMNS)}
-    rows = []
     for result in results:
         user_id = result[index["UserId"]]
         item_name = result[index["ItemName"]]
         item_type = result[index["ItemType"]]
-        rows.append(
+        raw_duration = result[index["PlayDuration"]]
+        play_duration_seconds = _parse_duration_seconds(raw_duration)
+        if raw_duration not in (None, "") and play_duration_seconds is None:
+            # A value was sent and discarded. An absent one -- null, or the empty
+            # string `_parse_playback_timestamp` also treats as absent -- is not
+            # counted: that is the plugin having nothing to say, not this parser
+            # overruling it.
+            out.play_durations_nulled += 1
+        out.rows.append(
             {
                 "started_at": _parse_playback_timestamp(result[index["DateCreated"]]),
                 "user_id": user_id,
@@ -839,15 +915,15 @@ def parse_playback_rows(payload: dict, users_by_id_map: dict[str, str]) -> list[
                 "playback_method": result[index["PlaybackMethod"]],
                 "client_name": result[index["ClientName"]],
                 "device_name": result[index["DeviceName"]],
-                "play_duration_seconds": _parse_duration_seconds(result[index["PlayDuration"]]),
+                "play_duration_seconds": play_duration_seconds,
             }
         )
-    return rows
+    return out
 
 
 def playback_window(start: datetime, end: datetime, base_url: str | None = None,
                     api_key: str | None = None, users_by_id_map: dict[str, str] | None = None,
-                    payload: dict | None = None) -> list[dict]:
+                    payload: dict | None = None) -> PlaybackRows:
     """Every PlaybackActivity row in `[start, end)`. `payload` is injectable for tests."""
     if payload is None:
         base_url = base_url or os.environ.get("JELLYFIN_URL", "")
@@ -862,7 +938,7 @@ def playback_window(start: datetime, end: datetime, base_url: str | None = None,
 
 def playback_history(base_url: str | None = None, api_key: str | None = None,
                      users_by_id_map: dict[str, str] | None = None,
-                     payload: dict | None = None) -> list[dict]:
+                     payload: dict | None = None) -> PlaybackRows:
     """Every row `PlaybackActivity` holds, the whole table, in one request.
 
     Measured against the real server on 2026-09-15: 2,887 rows, `DateCreated` running
@@ -1024,8 +1100,89 @@ def _activity_row(entry: dict, snapshot_day: date) -> dict:
     }
 
 
+# Both activity readers below walk the same endpoint the same way, newest first by
+# `startIndex`, and that walk has one property worth stating once. Jellyfin orders the
+# log by `DateCreated` descending and nothing else (`ActivityManager.
+# GetPagedResultAsync`), so an entry logged while the walk is under way lands at index
+# 0 and pushes every older entry one place further down. The next page, asked for at
+# the same `startIndex` as before, then starts with entries the previous page already
+# returned. Growth mid-walk therefore re-reads entries -- it never skips one, because
+# nothing already read moves *up* past the cursor -- and the newly logged entries
+# themselves are never reached, since they sit behind it. Without de-duplication a busy
+# evening would write the same entry twice; with it on `Id`, every entry that existed
+# when the walk started is read exactly once.
+#
+# Two things could still make a walk miss an entry, and neither is silent: an entry
+# deleted mid-walk (the server's activity log retention task) shifts older entries
+# *up*, and two entries sharing a `DateCreated` tick have no tie-break, so the
+# database is free to order them differently on two page queries. The history pass
+# reconciles against the server's own count for exactly that reason; see
+# `ActivityHistory` below.
+
+
+@dataclass
+class ActivityWindow:
+    rows: list[dict] = field(default_factory=list)
+    unmapped: set[str] = field(default_factory=set)
+    # Entries dropped because `Date` was missing or did not parse: there is no day to
+    # put them in. Counted over every entry the walk saw, so on the daily asset some
+    # may belong to a newer day than the partition. Surfaced, never raised.
+    unparseable_dates: int = 0
+    # Entries seen a second time by `Id` and skipped -- see the note above.
+    duplicates_skipped: int = 0
+
+
+@dataclass
+class ActivityHistory:
+    by_day: dict[date, list[dict]] = field(default_factory=dict)
+    unmapped: set[str] = field(default_factory=set)
+    unparseable_dates: int = 0
+    duplicates_skipped: int = 0
+    # `TotalRecordCount` as the server reported it on the walk's first page, and on
+    # its last. None when the pages were injected, or the server did not say.
+    #
+    # The invariant these support: by the note above, a walk that loses nothing reads
+    # every entry that existed when it started, and nothing logged after its first
+    # page, so its distinct `Id`s equal `total_at_start`. The one legitimate way to
+    # read *more* is Jellyfin computing the count and the page as two queries: an
+    # entry logged between them is on page one but not in the count. That can only
+    # add entries that also exist at the end, so `total_at_end` bounds it. Hence the
+    # check the asset runs: total_at_start <= distinct ids written <= total_at_end.
+    # A deletion mid-walk can push `total_at_end` below `total_at_start`, which fails
+    # the check too -- correctly, since the walk can no longer be shown complete.
+    total_at_start: int | None = None
+    total_at_end: int | None = None
+
+
+class _ActivityWalk:
+    """What both readers share per entry: unmapped fields, Id de-duplication and the
+    unparseable-date count. Each caller decides what to do with a dated entry."""
+
+    def __init__(self) -> None:
+        self.unmapped: set[str] = set()
+        self.unparseable_dates = 0
+        self.duplicates_skipped = 0
+        self._seen_ids: set = set()
+
+    def dated_entries(self, items: list[dict]):
+        for entry in items:
+            entry_id = entry.get("Id")
+            if entry_id is not None:
+                if entry_id in self._seen_ids:
+                    self.duplicates_skipped += 1
+                    continue
+                self._seen_ids.add(entry_id)
+            leftovers = {key: value for key, value in entry.items() if key not in _ACTIVITY_FIELDS}
+            self.unmapped.update(leftovers)
+            parsed_date = _parse_timestamp(entry.get("Date"))
+            if parsed_date is None:
+                self.unparseable_dates += 1
+                continue
+            yield entry, parsed_date
+
+
 def activity_window(day: date, base_url: str | None = None, api_key: str | None = None,
-                    pages: list[list[dict]] | None = None) -> tuple[list[dict], set[str]]:
+                    pages: list[list[dict]] | None = None) -> ActivityWindow:
     """One day of the activity log, read newest-first and stopped at the day's start.
 
     The endpoint takes `minDate` and a `startIndex`/`limit` page, and returns entries
@@ -1041,21 +1198,23 @@ def activity_window(day: date, base_url: str | None = None, api_key: str | None 
     start = datetime.combine(day, dtime.min, tzinfo=UTC)
     end = start + timedelta(days=1)
 
+    walk = _ActivityWalk()
     rows: list[dict] = []
-    unmapped: set[str] = set()
 
     def consume(items: list[dict]) -> None:
-        for entry in items:
-            leftovers = {key: value for key, value in entry.items() if key not in _ACTIVITY_FIELDS}
-            unmapped.update(leftovers)
-            parsed_date = _parse_timestamp(entry.get("Date"))
-            if parsed_date is not None and start <= parsed_date < end:
+        for entry, parsed_date in walk.dated_entries(items):
+            if start <= parsed_date < end:
                 rows.append(_activity_row(entry, day))
+
+    def result() -> ActivityWindow:
+        return ActivityWindow(rows=rows, unmapped=walk.unmapped,
+                              unparseable_dates=walk.unparseable_dates,
+                              duplicates_skipped=walk.duplicates_skipped)
 
     if pages is not None:
         for page in pages:
             consume(page)
-        return rows, unmapped
+        return result()
 
     if not base_url:
         raise ValueError("JELLYFIN_URL is required")
@@ -1069,11 +1228,11 @@ def activity_window(day: date, base_url: str | None = None, api_key: str | None 
         start_index += len(items)
         if len(items) < ACTIVITY_PAGE_SIZE:
             break
-    return rows, unmapped
+    return result()
 
 
 def activity_history(base_url: str | None = None, api_key: str | None = None,
-                     pages: list[list[dict]] | None = None) -> tuple[dict[date, list[dict]], set[str]]:
+                     pages: list[list[dict]] | None = None) -> ActivityHistory:
     """The entire activity log, bucketed by the UTC day each entry falls on.
 
     Verified against the real server on 2026-09-15: the log runs from
@@ -1089,26 +1248,30 @@ def activity_history(base_url: str | None = None, api_key: str | None = None,
     the cost once, which is the whole reason this function exists beside
     `activity_window` rather than `activity_window` simply being called in a loop.
 
-    Returns `{day: [rows]}` plus the usual unmapped-field set. `pages` is injectable
-    -- already-paginated `Items` batches -- so tests need no server.
+    Returns an `ActivityHistory`: `{day: [rows]}`, the usual unmapped-field set, the
+    dropped and de-duplicated counts, and the server's own `TotalRecordCount` at the
+    start and end of the walk for the asset to reconcile against. `pages` is
+    injectable -- already-paginated `Items` batches -- so tests need no server; the
+    server's counts are then unknown and left as None.
     """
-    by_day: dict[date, list[dict]] = {}
-    unmapped: set[str] = set()
+    walk = _ActivityWalk()
+    out = ActivityHistory()
 
     def consume(items: list[dict]) -> None:
-        for entry in items:
-            leftovers = {key: value for key, value in entry.items() if key not in _ACTIVITY_FIELDS}
-            unmapped.update(leftovers)
-            parsed_date = _parse_timestamp(entry.get("Date"))
-            if parsed_date is None:
-                continue
+        for entry, parsed_date in walk.dated_entries(items):
             day = parsed_date.date()
-            by_day.setdefault(day, []).append(_activity_row(entry, day))
+            out.by_day.setdefault(day, []).append(_activity_row(entry, day))
+
+    def result() -> ActivityHistory:
+        out.unmapped = walk.unmapped
+        out.unparseable_dates = walk.unparseable_dates
+        out.duplicates_skipped = walk.duplicates_skipped
+        return out
 
     if pages is not None:
         for page in pages:
             consume(page)
-        return by_day, unmapped
+        return result()
 
     base_url = base_url or os.environ.get("JELLYFIN_URL", "")
     api_key = api_key or os.environ.get("JELLYFIN_API_KEY", "")
@@ -1118,6 +1281,10 @@ def activity_history(base_url: str | None = None, api_key: str | None = None,
     start_index = 0
     while True:
         payload = fetch_activity_page(base_url, api_key, start_index, PAGE_SIZE)
+        reported = payload.get("TotalRecordCount")
+        if start_index == 0:
+            out.total_at_start = reported
+        out.total_at_end = reported
         items = payload.get("Items") or []
         if not items:
             break
@@ -1125,4 +1292,4 @@ def activity_history(base_url: str | None = None, api_key: str | None = None,
         start_index += len(items)
         if len(items) < PAGE_SIZE:
             break
-    return by_day, unmapped
+    return result()

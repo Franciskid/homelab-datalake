@@ -644,7 +644,8 @@ def jellyfin_playback_raw(context: AssetExecutionContext, lake: LakeStorage):
     if not base_url or not api_key:
         raise ValueError("JELLYFIN_URL and JELLYFIN_API_KEY are required")
 
-    offered = jellyfin_source.playback_window(start, end, base_url, api_key)
+    parsed = jellyfin_source.playback_window(start, end, base_url, api_key)
+    offered = parsed.rows
     source_count = len(offered)
 
     extracted_at = datetime.now(UTC)
@@ -668,6 +669,13 @@ def jellyfin_playback_raw(context: AssetExecutionContext, lake: LakeStorage):
         "(was %d, %d kept that the plugin no longer offers)",
         start, end, source_count, len(merged), len(existing), retained,
     )
+    if parsed.play_durations_nulled:
+        # A warning and a metadata field, not a failed check -- see PlaybackRows.
+        context.log.warning(
+            "hour=%s..%s %d sessions had a PlayDuration that cannot be a duration "
+            "(negative or not a number) and were kept with play_duration_seconds null",
+            start, end, parsed.play_durations_nulled,
+        )
 
     yield Output(
         {"sessions": len(merged)},
@@ -676,6 +684,7 @@ def jellyfin_playback_raw(context: AssetExecutionContext, lake: LakeStorage):
             "sessions_offered_by_plugin": source_count,
             "sessions_before_merge": len(existing),
             "sessions_only_in_lake": retained,
+            "play_durations_nulled": parsed.play_durations_nulled,
             "watch_seconds": sum(r.get("play_duration_seconds") or 0 for r in merged),
             "bytes_written": written,
             "extracted_at": MetadataValue.text(str(extracted_at)),
@@ -800,7 +809,8 @@ def jellyfin_playback_history_raw(context: AssetExecutionContext, lake: LakeStor
     if not base_url or not api_key:
         raise ValueError("JELLYFIN_URL and JELLYFIN_API_KEY are required")
 
-    rows = jellyfin_source.playback_history(base_url, api_key)
+    parsed = jellyfin_source.playback_history(base_url, api_key)
+    rows = parsed.rows
     if not rows:
         raise ValueError(
             "The Playback Reporting plugin returned no sessions at all -- an "
@@ -866,6 +876,13 @@ def jellyfin_playback_history_raw(context: AssetExecutionContext, lake: LakeStor
         context.log.warning(
             "%d sessions had no parseable DateCreated and could not be bucketed", undateable
         )
+    if parsed.play_durations_nulled:
+        # A warning and a metadata field, not a failed check -- see PlaybackRows.
+        context.log.warning(
+            "%d sessions had a PlayDuration that cannot be a duration (negative or not "
+            "a number) and were kept with play_duration_seconds null",
+            parsed.play_durations_nulled,
+        )
 
     yield Output(
         {"sessions": collected, "hours": len(by_hour)},
@@ -875,6 +892,9 @@ def jellyfin_playback_history_raw(context: AssetExecutionContext, lake: LakeStor
             "sessions_returned_by_plugin": len(rows),
             "sessions_bucketed": collected,
             "sessions_without_a_timestamp": undateable,
+            # Kept, not dropped: these rows are in the counts above, with only their
+            # duration unknown. Counted over everything the plugin returned.
+            "play_durations_nulled": parsed.play_durations_nulled,
             # And these two describe the lake afterwards, which is legitimately larger
             # than what this pass offered -- see the check's description.
             "sessions_in_lake": total_in_lake,
@@ -988,7 +1008,8 @@ def jellyfin_activity_raw(context: AssetExecutionContext, lake: LakeStorage):
     if not base_url or not api_key:
         raise ValueError("JELLYFIN_URL and JELLYFIN_API_KEY are required")
 
-    rows, unmapped = jellyfin_source.activity_window(day, base_url, api_key)
+    read = jellyfin_source.activity_window(day, base_url, api_key)
+    rows, unmapped = read.rows, read.unmapped
     collected_count = len(rows)
     extracted_at = datetime.now(UTC)
     for row in rows:
@@ -1008,11 +1029,20 @@ def jellyfin_activity_raw(context: AssetExecutionContext, lake: LakeStorage):
             "dt=%s the activity log sent fields the schema does not name: %s",
             day, ", ".join(sorted(unmapped)),
         )
+    if read.unparseable_dates:
+        context.log.warning(
+            "dt=%s %d activity log entries had a Date that did not parse and were not "
+            "written (counted over every entry paged past, so some may belong to a "
+            "newer day)",
+            day, read.unparseable_dates,
+        )
 
     yield Output(
         {"entries": len(projected)},
         metadata={
             "entries": len(projected),
+            "entries_with_unparseable_date": read.unparseable_dates,
+            "duplicate_entries_skipped": read.duplicates_skipped,
             "bytes_written": written,
             "unmapped_fields": MetadataValue.text(", ".join(sorted(unmapped)) or "none"),
             "extracted_at": MetadataValue.text(str(extracted_at)),
@@ -1035,6 +1065,27 @@ def jellyfin_activity_raw(context: AssetExecutionContext, lake: LakeStorage):
 
 
 CHECK_ACTIVITY_HISTORY_RECONCILED = "activity_history_matches_what_was_read"
+CHECK_ACTIVITY_HISTORY_MATCHES_SERVER = "activity_history_matches_the_servers_count"
+
+
+def activity_history_reconciles(
+    distinct_ids_written: int, total_at_start: int | None, total_at_end: int | None
+) -> bool:
+    """`total_at_start <= distinct ids written <= total_at_end`.
+
+    See `ActivityHistory` in parsing.jellyfin for the ordering argument. In short: a
+    newest-first walk that grows mid-way re-reads entries rather than skipping them,
+    and never reaches the ones logged after it started, so a lossless walk writes
+    exactly the entries counted on its first page. The only legitimate surplus is an
+    entry logged between that page's count query and its item query, which the last
+    page's count also includes. Anything under the first count is an entry lost --
+    unparseable, skipped by the walk, or dropped on the way to the lake.
+
+    A missing count fails: with nothing to reconcile against, the check cannot pass.
+    """
+    if total_at_start is None or total_at_end is None:
+        return False
+    return total_at_start <= distinct_ids_written <= total_at_end
 
 
 def _write_activity_history_day(lake: LakeStorage, day: date, rows: list[dict]) -> tuple[int, int, set[str]]:
@@ -1082,6 +1133,23 @@ def _write_activity_history_day(lake: LakeStorage, day: date, rows: list[dict]) 
                 "day across the whole pass."
             ),
         ),
+        AssetCheckSpec(
+            name=CHECK_ACTIVITY_HISTORY_MATCHES_SERVER,
+            asset="jellyfin_activity_history_raw",
+            description=(
+                "Fails unless the distinct entry ids written satisfy "
+                "`TotalRecordCount on the first page <= written <= TotalRecordCount "
+                "on the last page`. The walk is newest first, so entries logged while "
+                "it pages are never reached and only cause re-reads, which are "
+                "de-duplicated on Id; a walk that loses nothing therefore writes "
+                "exactly the first page's count. The only legitimate surplus is an "
+                "entry logged between the server's count query and its page query, "
+                "which the last page's count includes. Fewer than the first count means "
+                "entries were lost: an unparseable date, a page the walk skipped, or a "
+                "write that dropped rows. The per-day check above compares written "
+                "against collected and cannot see any of those."
+            ),
+        ),
     ],
     description=(
         "A one-time, one-pass load of the entire server activity log: every entry "
@@ -1097,7 +1165,8 @@ def jellyfin_activity_history_raw(context: AssetExecutionContext, lake: LakeStor
     if not base_url or not api_key:
         raise ValueError("JELLYFIN_URL and JELLYFIN_API_KEY are required")
 
-    by_day, unmapped = jellyfin_source.activity_history(base_url, api_key)
+    read = jellyfin_source.activity_history(base_url, api_key)
+    by_day, unmapped = read.by_day, read.unmapped
     if not by_day:
         raise ValueError(
             "Jellyfin returned no activity log entries at all -- an unreachable "
@@ -1107,6 +1176,7 @@ def jellyfin_activity_history_raw(context: AssetExecutionContext, lake: LakeStor
     total_written = 0
     total_rows = 0
     mismatched: list[str] = []
+    ids_written: set = set()
     for day in sorted(by_day):
         rows = by_day[day]
         collected_count = len(rows)
@@ -1116,22 +1186,48 @@ def jellyfin_activity_history_raw(context: AssetExecutionContext, lake: LakeStor
         total_rows += row_count
         if row_count != collected_count:
             mismatched.append(day.isoformat())
+        else:
+            # Only a day whose write accounted for every row contributes its ids: a
+            # short write must not be papered over by counting what was handed to it.
+            ids_written.update(row["id"] for row in rows if row.get("id") is not None)
 
     first_day, last_day = min(by_day), max(by_day)
     context.log.info(
-        "history pass: %d entries across %d days (%s .. %s), %d bytes written",
+        "history pass: %d entries across %d days (%s .. %s), %d bytes written; "
+        "server reported %s entries at the start of the walk and %s at the end",
         total_rows, len(by_day), first_day, last_day, total_written,
+        read.total_at_start, read.total_at_end,
     )
     if unmapped:
         context.log.warning(
             "the activity log sent fields the schema does not name: %s",
             ", ".join(sorted(unmapped)),
         )
+    if read.unparseable_dates:
+        context.log.warning(
+            "%d activity log entries had a Date that did not parse and were not written",
+            read.unparseable_dates,
+        )
+
+    reconciles = activity_history_reconciles(
+        len(ids_written), read.total_at_start, read.total_at_end
+    )
+    if not reconciles:
+        context.log.warning(
+            "%d distinct entries written, but the server reported %s at the start of "
+            "the walk and %s at the end",
+            len(ids_written), read.total_at_start, read.total_at_end,
+        )
 
     yield Output(
         {"entries": total_rows, "days": len(by_day)},
         metadata={
             "entries": total_rows,
+            "distinct_ids_written": len(ids_written),
+            "server_total_at_start": read.total_at_start,
+            "server_total_at_end": read.total_at_end,
+            "entries_with_unparseable_date": read.unparseable_dates,
+            "duplicate_entries_skipped": read.duplicates_skipped,
             "days": len(by_day),
             "first_day": MetadataValue.text(first_day.isoformat()),
             "last_day": MetadataValue.text(last_day.isoformat()),
@@ -1145,6 +1241,19 @@ def jellyfin_activity_history_raw(context: AssetExecutionContext, lake: LakeStor
         passed=not mismatched,
         severity=AssetCheckSeverity.ERROR,
         metadata={"mismatched_days": MetadataValue.text(", ".join(mismatched) or "none")},
+    )
+
+    yield AssetCheckResult(
+        check_name=CHECK_ACTIVITY_HISTORY_MATCHES_SERVER,
+        passed=reconciles,
+        severity=AssetCheckSeverity.ERROR,
+        metadata={
+            "distinct_ids_written": len(ids_written),
+            "server_total_at_start": read.total_at_start,
+            "server_total_at_end": read.total_at_end,
+            "entries_with_unparseable_date": read.unparseable_dates,
+            "duplicate_entries_skipped": read.duplicates_skipped,
+        },
     )
 
 

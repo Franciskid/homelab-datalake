@@ -667,7 +667,9 @@ The physical device or browser the client ran on.
 {% docs pb_play_duration_seconds %}
 How long the player was open, in whole seconds -- verified against a real session's
 own start and stop in the activity log, not assumed. This is not proof a title was
-watched to completion; it is how long the player stayed open.
+watched to completion; it is how long the player stayed open. Null when the plugin
+recorded a value that cannot be a duration -- one real row holds INT32_MIN -- so the
+session is kept but its length is unknown; `sum` skips it rather than losing 68 years.
 {% enddocs %}
 
 {% docs pb_is_episode %}
