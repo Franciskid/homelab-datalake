@@ -14,8 +14,24 @@ from TMDB during the scan: the community rating *is* TMDB's vote average, and th
 original title and production country come back at [rate withheld] and [rate withheld]. Only figures
 Jellyfin has no field for -- budget, revenue, popularity, vote count -- need the API.
 
-Deliberately not requested: `/Sessions` and `/Users`. Playback history is personal and
-adds nothing the metadata does not. `Path` is requested and dropped -- see `NOT_STORED`.
+Playback history was deliberately not requested here until 2026-09-14, on the grounds
+that it is personal and adds nothing the metadata does not. The owner reversed that
+decision that day: asked for "this weekend's Jellyfin usage" with a graph of watch time
+per user, the platform's own Datalake Analyst correctly refused, because the warehouse
+held the library catalogue and nothing else -- while the household's daily recap email
+was, at that moment, already reading the same watch time live from the Playback
+Reporting plugin. A warehouse that cannot answer a question its own household already
+gets answered elsewhere is a gap, not a boundary, so the rule became: the warehouse
+holds everything the Jellyfin API and its plugins offer. `Path` is still requested and
+dropped -- see `NOT_STORED` -- because filesystem topology was never part of this
+decision and still is not.
+
+Playback, the server activity log and the account list are read by the functions at the
+bottom of this file, and are not folded into `snapshot()` above because they are a
+different shape of problem: three different APIs (the Playback Reporting plugin's own
+SQL endpoint, the standard activity log, and the standard user list), landing through
+their own assets in `assets.jellyfin` on their own partitioning -- hourly for playback,
+so a question asked on Sunday evening about Sunday gets an answer, daily for the rest.
 
 Three objects per snapshot became five. A title has many genres, many media streams and
 many people, and the honest shape for each is a row rather than a column: keeping only
@@ -27,8 +43,10 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from dataclasses import dataclass, field
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
+from datetime import time as dtime
 
 from homelab_datalake.useragent import USER_AGENT
 
@@ -407,3 +425,369 @@ def snapshot(snapshot_day: date, base_url: str | None = None, api_key: str | Non
             out.genres.append({"dt": snapshot_day, "item_id": item.get("Id"), "genre": name})
 
     return out
+
+
+# --------------------------------------------------------------------------------
+# playback: the Playback Reporting plugin's `submit_custom_query`
+# --------------------------------------------------------------------------------
+
+
+def _sqlite_literal(value: datetime) -> str:
+    """A `datetime` formatted the way the plugin's SQLite comparisons expect it.
+
+    `submit_custom_query` takes one raw SQL string with nowhere to bind a parameter --
+    the request body *is* the query -- so the safety here has to live in what is
+    allowed to reach this function rather than in how the result is escaped. It
+    accepts a `datetime` and nothing else: there is no string path in, which is what
+    makes it true that the only two values that ever reach this are the partition's
+    own hour bounds, computed from the partition key, never from a caller.
+    """
+    if not isinstance(value, datetime):
+        raise TypeError(f"expected a datetime, got {type(value).__name__}")
+    return value.astimezone(UTC).strftime("%Y-%m-%d %H:%M:%S")
+
+
+# The exact column list asked for, in this order, and checked against what comes
+# back. `submit_custom_query` runs the SQL text as written and the plugin answers
+# with whatever `res.get("colums")` says -- misspelled in the API itself, not here --
+# so reading fields out by position without checking that list first would silently
+# swap two columns the day a plugin update reorders them, rather than fail loudly.
+_PLAYBACK_COLUMNS = (
+    "DateCreated", "UserId", "ItemId", "ItemType", "ItemName",
+    "PlaybackMethod", "ClientName", "DeviceName", "PlayDuration",
+)
+
+_RESULT_COLUMNS_KEY = "colums"  # the plugin's own spelling, not a typo here
+
+
+def _playback_query(start: datetime, end: datetime) -> str:
+    """SQL text for one half-open `[start, end)` window over `PlaybackActivity`."""
+    columns = ", ".join(_PLAYBACK_COLUMNS)
+    return (
+        f"SELECT {columns} FROM PlaybackActivity "  # noqa: S608 - see _sqlite_literal
+        f"WHERE datetime(DateCreated) >= datetime('{_sqlite_literal(start)}') "
+        f"AND datetime(DateCreated) < datetime('{_sqlite_literal(end)}') "
+        "ORDER BY DateCreated"
+    )
+
+
+def fetch_playback_query(base_url: str, api_key: str, query: str) -> dict:
+    import urllib.request
+
+    url = f"{base_url.rstrip('/')}/user_usage_stats/submit_custom_query"
+    if not url.startswith(("http://", "https://")):
+        raise ValueError(f"JELLYFIN_URL must be http(s), got {base_url!r}")
+    body = json.dumps({"CustomQueryString": query, "ReplaceUserId": False}).encode()
+    request = urllib.request.Request(  # noqa: S310 - scheme checked immediately above
+        url,
+        data=body,
+        headers={
+            "Authorization": f'MediaBrowser Token="{api_key}"',
+            "Content-Type": "application/json",
+            "User-Agent": USER_AGENT,
+        },
+    )
+    with urllib.request.urlopen(request, timeout=60) as response:  # noqa: S310
+        return json.loads(response.read().decode("utf-8"))
+
+
+def _parse_playback_timestamp(value) -> datetime | None:
+    """`DateCreated` from the plugin's SQLite table. Always UTC on this server.
+
+    Verified on 2026-09-14 by lining a PlaybackActivity row up against the standard
+    API's activity log, which *is* UTC and says so with a `Z`. One example, of several
+    checked: the activity log timed a session `viewer` played "Example Movie" from
+    `2026-09-12T18:00:01.6169626Z` to `2026-09-12T19:52:43.1572661Z` -- [duration withheld]
+    by the wall clock. The matching PlaybackActivity row has
+    `DateCreated = '2026-09-12 18:00:21.6180609'`, twenty seconds after the activity
+    log's own start and in the *same* hour, not the two hours away a Europe/Paris
+    local-time reading would put it in September (UTC+2). The plugin is documented to
+    sometimes store server-local time; on this installation, checked rather than
+    assumed, it does not.
+
+    No zone suffix ever arrives on this value, which is why it gets its own function
+    instead of reusing `_parse_timestamp` above: that one's other input, Jellyfin's
+    own API, really is UTC but marks it with `Z`, and defaulting a naive read to
+    system-local time would be the wrong default specifically for this source.
+    """
+    if not value:
+        return None
+    text = str(value).replace(" ", "T", 1)
+    if "." in text:
+        head, _, tail = text.partition(".")
+        digits = "".join(c for c in tail if c.isdigit())[:6]
+        text = f"{head}.{digits:<06s}"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    return parsed.replace(tzinfo=UTC)
+
+
+def _parse_duration_seconds(value) -> int | None:
+    """`PlayDuration` as whole seconds.
+
+    Verified alongside the timestamp above, on the same Example Movie session: an elapsed
+    [duration withheld] by the activity log's own start and stop produced
+    `PlayDuration = 6761`. Seconds, not the `H:MM:SS` string some Playback Reporting
+    installs are known to emit for this column -- checked, not assumed, here too.
+    """
+    if value is None:
+        return None
+    try:
+        return int(round(float(value)))
+    except (TypeError, ValueError):
+        return None
+
+
+# Verified against this installation on 2026-09-14: every `Episode` row's `ItemName`
+# follows Jellyfin's own display convention, "<series> - sNNeNN - <episode title>" --
+# checked across "1883", "1899", "24 Heures chrono", "A Knight of the Seven Kingdoms"
+# and "American Horror Story", all matching exactly. This is the join the mart uses
+# for an episode's series, and it needs no extra API call: the library snapshot never
+# requests series or episode items (`IncludeItemTypes=Movie` in FIELDS above), so
+# there is no series-grain row anywhere in the warehouse to look a real `SeriesId` up
+# against even if the plugin offered one on this query, which it does not -- the
+# query above only carries the episode's own `ItemId`.
+_SERIES_PATTERN = re.compile(r"^(?P<series>.+?) - s\d{2}e\d{2} - .+$")
+
+
+def parse_series_name(item_name: str | None, item_type: str | None) -> str | None:
+    if item_type != "Episode" or not item_name:
+        return None
+    match = _SERIES_PATTERN.match(item_name)
+    return match.group("series") if match else None
+
+
+def parse_playback_rows(payload: dict, users_by_id_map: dict[str, str]) -> list[dict]:
+    """The plugin's `{colums, results, message}` shape, turned into named rows.
+
+    `message` is non-empty on a genuine query failure, and also on the legitimate
+    "nothing in this window" case -- the plugin's own wording for that is "query
+    executed, no data returned", which must not be treated as an error.
+    """
+    columns = [str(c) for c in (payload.get(_RESULT_COLUMNS_KEY) or [])]
+    results = payload.get("results") or []
+    message = str(payload.get("message") or "")
+
+    if not results and message.lower().startswith("query executed, no data returned"):
+        return []
+    if message:
+        raise ValueError(f"Playback Reporting query failed: {message}")
+    if columns and columns != list(_PLAYBACK_COLUMNS):
+        raise ValueError(
+            f"Playback Reporting returned columns {columns}, expected "
+            f"{list(_PLAYBACK_COLUMNS)} -- the query or the plugin's schema changed"
+        )
+
+    index = {name: i for i, name in enumerate(_PLAYBACK_COLUMNS)}
+    rows = []
+    for result in results:
+        user_id = result[index["UserId"]]
+        item_name = result[index["ItemName"]]
+        item_type = result[index["ItemType"]]
+        rows.append(
+            {
+                "started_at": _parse_playback_timestamp(result[index["DateCreated"]]),
+                "user_id": user_id,
+                "user_name": users_by_id_map.get(user_id),
+                "item_id": result[index["ItemId"]],
+                "item_type": item_type,
+                "item_name": item_name,
+                "series_name": parse_series_name(item_name, item_type),
+                "playback_method": result[index["PlaybackMethod"]],
+                "client_name": result[index["ClientName"]],
+                "device_name": result[index["DeviceName"]],
+                "play_duration_seconds": _parse_duration_seconds(result[index["PlayDuration"]]),
+            }
+        )
+    return rows
+
+
+def playback_window(start: datetime, end: datetime, base_url: str | None = None,
+                    api_key: str | None = None, users_by_id_map: dict[str, str] | None = None,
+                    payload: dict | None = None) -> list[dict]:
+    """Every PlaybackActivity row in `[start, end)`. `payload` is injectable for tests."""
+    if payload is None:
+        base_url = base_url or os.environ.get("JELLYFIN_URL", "")
+        api_key = api_key or os.environ.get("JELLYFIN_API_KEY", "")
+        if not base_url or not api_key:
+            raise ValueError("JELLYFIN_URL and JELLYFIN_API_KEY are required")
+        if users_by_id_map is None:
+            users_by_id_map = users_by_id(fetch_users(base_url, api_key))
+        payload = fetch_playback_query(base_url, api_key, _playback_query(start, end))
+    return parse_playback_rows(payload, users_by_id_map or {})
+
+
+# --------------------------------------------------------------------------------
+# the account list: `/Users`
+# --------------------------------------------------------------------------------
+
+# Everything this reads from a `/Users` object.
+_USER_CONSUMED = frozenset({"Id", "Name", "Policy", "LastLoginDate", "LastActivityDate"})
+
+# Deliberately dropped, and therefore never reported as unmapped: authentication
+# state (`HasPassword`, `HasConfiguredPassword`, `HasConfiguredEasyPassword`,
+# `EnableAutoLogin`), the id of the *server* rather than the account, and the two
+# large blocks -- `Configuration` (playback and UI preferences) and the rest of
+# `Policy` beyond the two flags actually asked for. The instruction behind this list
+# was explicit: nothing from configuration or password policy beyond admin and
+# disabled.
+_USER_NOT_STORED = frozenset(
+    {"HasPassword", "HasConfiguredPassword", "HasConfiguredEasyPassword",
+     "EnableAutoLogin", "ServerId", "Configuration"}
+)
+
+
+def user_rows(raw_users: list[dict], snapshot_day: date) -> tuple[list[dict], set[str]]:
+    """`/Users` turned into the account snapshot. `Policy` is read from, not kept."""
+    rows = []
+    unmapped: set[str] = set()
+    for user in raw_users:
+        leftovers = {
+            key: value for key, value in user.items()
+            if key not in _USER_CONSUMED and key not in _USER_NOT_STORED
+        }
+        unmapped.update(leftovers)
+        policy = user.get("Policy") or {}
+        rows.append(
+            {
+                "dt": snapshot_day,
+                "id": user.get("Id"),
+                "name": user.get("Name"),
+                "is_administrator": policy.get("IsAdministrator"),
+                "is_disabled": policy.get("IsDisabled"),
+                "last_login": _parse_timestamp(user.get("LastLoginDate")),
+                "last_activity": _parse_timestamp(user.get("LastActivityDate")),
+            }
+        )
+    return rows, unmapped
+
+
+def users_by_id(raw_users: list[dict]) -> dict[str, str]:
+    """id -> name, for resolving playback's raw `UserId` without a second endpoint.
+
+    `/user_usage_stats/user_list` offers the same mapping -- measured to agree with
+    `/Users` exactly on this installation -- but `/Users` is used because
+    `jellyfin_users_raw` already has to fetch it for the account snapshot, and a
+    second endpoint for the same fourteen names would be a second thing to keep
+    working.
+    """
+    return {u.get("Id"): u.get("Name") for u in raw_users if u.get("Id")}
+
+
+def fetch_users(base_url: str, api_key: str) -> list[dict]:
+    import urllib.request
+
+    url = f"{base_url.rstrip('/')}/Users"
+    if not url.startswith(("http://", "https://")):
+        raise ValueError(f"JELLYFIN_URL must be http(s), got {base_url!r}")
+    request = urllib.request.Request(  # noqa: S310 - scheme checked immediately above
+        url,
+        headers={
+            "Authorization": f'MediaBrowser Token="{api_key}"',
+            "User-Agent": USER_AGENT,
+        },
+    )
+    with urllib.request.urlopen(request, timeout=60) as response:  # noqa: S310
+        return json.loads(response.read().decode("utf-8"))
+
+
+# --------------------------------------------------------------------------------
+# the server activity log: `/System/ActivityLog/Entries`
+# --------------------------------------------------------------------------------
+
+ACTIVITY_PAGE_SIZE = 200
+
+_ACTIVITY_FIELDS = frozenset(
+    {"Id", "Date", "Type", "Name", "Overview", "ShortOverview", "UserId", "ItemId", "Severity"}
+)
+
+
+def fetch_activity_page(base_url: str, api_key: str, start_index: int, limit: int,
+                        min_date: datetime) -> dict:
+    import urllib.parse
+    import urllib.request
+
+    query = urllib.parse.urlencode(
+        {
+            "startIndex": start_index,
+            "limit": limit,
+            "minDate": min_date.astimezone(UTC).isoformat().replace("+00:00", "Z"),
+        }
+    )
+    url = f"{base_url.rstrip('/')}/System/ActivityLog/Entries?{query}"
+    if not url.startswith(("http://", "https://")):
+        raise ValueError(f"JELLYFIN_URL must be http(s), got {base_url!r}")
+    request = urllib.request.Request(  # noqa: S310 - scheme checked immediately above
+        url,
+        headers={
+            "Authorization": f'MediaBrowser Token="{api_key}"',
+            "User-Agent": USER_AGENT,
+        },
+    )
+    with urllib.request.urlopen(request, timeout=60) as response:  # noqa: S310
+        return json.loads(response.read().decode("utf-8"))
+
+
+def _activity_row(entry: dict, snapshot_day: date) -> dict:
+    return {
+        "dt": snapshot_day,
+        "id": entry.get("Id"),
+        "date": _parse_timestamp(entry.get("Date")),
+        "type": entry.get("Type"),
+        "name": entry.get("Name"),
+        "overview": entry.get("Overview"),
+        "short_overview": entry.get("ShortOverview"),
+        "user_id": entry.get("UserId"),
+        "item_id": entry.get("ItemId"),
+        "severity": entry.get("Severity"),
+    }
+
+
+def activity_window(day: date, base_url: str | None = None, api_key: str | None = None,
+                    pages: list[list[dict]] | None = None) -> tuple[list[dict], set[str]]:
+    """One day of the activity log, read newest-first and stopped at the day's start.
+
+    The endpoint takes `minDate` and a `startIndex`/`limit` page, and returns entries
+    newest first with no way to ask for an upper bound. So landing day *D* means
+    paging from "now" down through every entry newer than *D* before reaching it --
+    cheap for the daily schedule, which only ever asks for yesterday, and a one-off
+    cost for a backfill of an old day. There is no cheaper path through an API that
+    offers a floor and no ceiling.
+
+    `pages` is injectable -- already-paginated `Items` batches, oldest page last -- so
+    tests exercise the stopping condition directly, with no server.
+    """
+    start = datetime.combine(day, dtime.min, tzinfo=UTC)
+    end = start + timedelta(days=1)
+
+    rows: list[dict] = []
+    unmapped: set[str] = set()
+
+    def consume(items: list[dict]) -> None:
+        for entry in items:
+            leftovers = {key: value for key, value in entry.items() if key not in _ACTIVITY_FIELDS}
+            unmapped.update(leftovers)
+            parsed_date = _parse_timestamp(entry.get("Date"))
+            if parsed_date is not None and start <= parsed_date < end:
+                rows.append(_activity_row(entry, day))
+
+    if pages is not None:
+        for page in pages:
+            consume(page)
+        return rows, unmapped
+
+    if not base_url:
+        raise ValueError("JELLYFIN_URL is required")
+    start_index = 0
+    while True:
+        payload = fetch_activity_page(base_url, api_key, start_index, ACTIVITY_PAGE_SIZE, start)
+        items = payload.get("Items") or []
+        if not items:
+            break
+        consume(items)
+        start_index += len(items)
+        if len(items) < ACTIVITY_PAGE_SIZE:
+            break
+    return rows, unmapped

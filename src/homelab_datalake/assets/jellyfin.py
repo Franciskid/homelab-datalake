@@ -6,9 +6,18 @@ Two objects per partition rather than one: titles, and the title-to-genre pairs.
 title has many genres, so flattening them into the title row would mean either a
 delimited string nobody can filter on or `genre_1, genre_2, genre_3`. The pair table is
 the honest shape and becomes the bridge in the mart.
+
+Three more assets live in this module since 2026-09-14: `jellyfin_playback_raw`,
+`jellyfin_activity_raw` and `jellyfin_users_raw`. See `parsing.jellyfin` for why they
+exist now and did not before. They read different endpoints on their own partitioning
+-- hourly for playback, daily for the other two -- but they are the same source,
+reached with the same `JELLYFIN_URL`/`JELLYFIN_API_KEY`, so they stay beside the
+library assets rather than in a module of their own, the way every camera export
+endpoint stays in one `assets/camera.py`.
 """
 
-from datetime import date
+import os
+from datetime import UTC, date, datetime
 
 import pyarrow as pa
 from dagster import (
@@ -17,6 +26,7 @@ from dagster import (
     AssetCheckSpec,
     AssetExecutionContext,
     DailyPartitionsDefinition,
+    HourlyPartitionsDefinition,
     MetadataValue,
     Output,
     RetryPolicy,
@@ -24,6 +34,7 @@ from dagster import (
 )
 
 from homelab_datalake import layout
+from homelab_datalake.parsing import jellyfin as jellyfin_source
 from homelab_datalake.parsing.jellyfin import snapshot
 from homelab_datalake.projection import project
 from homelab_datalake.resources import LakeStorage
@@ -196,8 +207,8 @@ CHECK_NO_UNMAPPED = "no_unmapped_fields"
         ),
     ],
     description=(
-        "A daily snapshot of the movie library: metadata, codecs and ratings. No "
-        "playback history, no file paths."
+        "A daily snapshot of the movie library: metadata, codecs and ratings. No file "
+        "paths. Playback history is `jellyfin_playback_raw`, further down this module."
     ),
 )
 def jellyfin_library_raw(context: AssetExecutionContext, lake: LakeStorage):
@@ -289,3 +300,398 @@ def _previous_count(lake: LakeStorage, day: date) -> int | None:
         if count is not None:
             return count
     return None
+
+
+# --------------------------------------------------------------------------------
+# playback: the Playback Reporting plugin, one hour at a time
+# --------------------------------------------------------------------------------
+#
+# Hourly, not daily, so a question asked Sunday evening about Sunday gets an answer
+# rather than waiting for a job that runs after midnight. Full history is
+# backfillable from 2025-02-14, the earliest row the plugin holds on this server.
+#
+# end_offset=1 makes the current hour a valid partition for the same reason camera's
+# does: `jellyfin_playback_late_arrival_schedule` in definitions.py re-triggers the
+# last few hours on every tick, because a session the plugin has not committed yet is
+# invisible to a read that runs while it is still open -- a two-hour film started at
+# minute five of its hour is still playing when that hour's own run executes. The
+# re-read happens by re-materialising past hourly partitions, the same mechanism
+# `camera_late_arrival_schedule` uses for days; there is no separate "read a wider
+# window" path inside this asset, because a partition's own contract has to stay
+# exactly its own hour for the reconciliation check below to mean anything.
+PLAYBACK_START = "2025-02-14-00:00"
+playback_partitions = HourlyPartitionsDefinition(start_date=PLAYBACK_START, end_offset=1)
+
+PLAYBACK_PREFIX = layout.prefix("jellyfin_playback")
+
+_PLAYBACK_SCHEMA = pa.schema(
+    [
+        # The partition's own hour, as a column: a reader who globs the prefix still
+        # sees it, the same reason every other partition column here is stored rather
+        # than left in the path alone.
+        ("partition_hour", pa.timestamp("us", tz="UTC")),
+        ("dt", pa.date32()),
+        ("_extracted_at", pa.timestamp("us", tz="UTC")),
+        ("started_at", pa.timestamp("us", tz="UTC")),
+        ("user_id", pa.string()),
+        ("user_name", pa.string()),
+        ("item_id", pa.string()),
+        ("item_type", pa.string()),
+        ("item_name", pa.string()),
+        # Parsed out of item_name for an Episode row -- see parse_series_name for why
+        # this needs no join and no extra API call. Null for everything else.
+        ("series_name", pa.string()),
+        ("playback_method", pa.string()),
+        ("client_name", pa.string()),
+        ("device_name", pa.string()),
+        ("play_duration_seconds", pa.int64()),
+    ]
+)
+
+CHECK_PLAYBACK_RECONCILED = "playback_matches_the_plugins_own_count"
+
+
+def _playback_key(row: dict):
+    started_at = row.get("started_at")
+    if started_at is None:
+        return None
+    # PlaybackActivity carries no id at all -- not even a rowid the API exposes -- so
+    # this triple is the closest thing to a natural key: two genuinely different
+    # sessions sharing a start timestamp, a user and an item does not happen.
+    return (started_at, row.get("user_id"), row.get("item_id"))
+
+
+def _playback_row_is_newer(candidate: dict, incumbent: dict) -> bool:
+    new_at, old_at = candidate.get("_extracted_at"), incumbent.get("_extracted_at")
+    if new_at is None:
+        return False
+    return old_at is None or new_at > old_at
+
+
+def _merge_playback(
+    existing: list[dict], incoming: list[dict], schema: pa.Schema
+) -> tuple[list[dict], int]:
+    """Union two reads of one hour, newest `_extracted_at` per (started_at, user, item).
+
+    Same shape as `_merge` in `assets/camera.py`, generalised from a single `id`
+    column to the composite key above because the plugin's table has no id to key on.
+    A session's own row can legitimately change between two reads of the same hour:
+    the plugin does not expose whether a session is still open, so an early read can
+    see a small PlayDuration for a film that is still playing, and a later read the
+    final one once it ends.
+    """
+    names = [f.name for f in schema]
+    incoming_keys = {_playback_key(row) for row in incoming}
+    merged: dict = {}
+
+    for row in list(existing) + list(incoming):
+        normalised = {name: row.get(name) for name in names}
+        key = _playback_key(normalised)
+        if key is None:
+            continue
+        incumbent = merged.get(key)
+        if incumbent is None or _playback_row_is_newer(normalised, incumbent):
+            merged[key] = normalised
+
+    retained_only_in_lake = sum(1 for key in merged if key not in incoming_keys)
+    return list(merged.values()), retained_only_in_lake
+
+
+def _read_raw_rows(lake: LakeStorage, key: str, schema: pa.Schema) -> list[dict]:
+    table = lake.read_table(key)
+    return table.to_pylist() if table is not None else []
+
+
+@asset(
+    partitions_def=playback_partitions,
+    group_name="jellyfin",
+    compute_kind="python",
+    retry_policy=RetryPolicy(max_retries=3, delay=15),
+    check_specs=[
+        AssetCheckSpec(
+            name=CHECK_PLAYBACK_RECONCILED,
+            asset="jellyfin_playback_raw",
+            description=(
+                "Fails when the row count this run wrote for its own hour does not "
+                "match what the plugin's own query just returned for that same hour. "
+                "The two are computed from the same read, so a mismatch means the "
+                "write or the merge dropped or duplicated something -- not that a "
+                "session is still in progress, which is invisible to both sides of "
+                "the comparison equally and only shows up once a later run re-reads "
+                "the hour."
+            ),
+        ),
+    ],
+    description=(
+        "One hour of Playback Reporting plugin rows: who watched what, on what "
+        "device, for how long the player was open. Merged into the partition, never "
+        "replaced -- see the module docstring on why a later read of the same hour "
+        "can legitimately add rows a first read could not see."
+    ),
+)
+def jellyfin_playback_raw(context: AssetExecutionContext, lake: LakeStorage):
+    start, end = context.partition_time_window
+
+    base_url = os.environ.get("JELLYFIN_URL", "")
+    api_key = os.environ.get("JELLYFIN_API_KEY", "")
+    if not base_url or not api_key:
+        raise ValueError("JELLYFIN_URL and JELLYFIN_API_KEY are required")
+
+    offered = jellyfin_source.playback_window(start, end, base_url, api_key)
+    source_count = len(offered)
+
+    extracted_at = datetime.now(UTC)
+    for row in offered:
+        row["partition_hour"] = start
+        row["dt"] = row["started_at"].date() if row["started_at"] else start.date()
+        row["_extracted_at"] = extracted_at
+
+    projected, _unmapped = project(offered, _PLAYBACK_SCHEMA)
+
+    prefix = f"{PLAYBACK_PREFIX}/partition_hour={start:%Y-%m-%dT%H:00:00}"
+    key = f"{prefix}/data.parquet"
+    existing = _read_raw_rows(lake, key, _PLAYBACK_SCHEMA)
+    merged, retained = _merge_playback(existing, projected, _PLAYBACK_SCHEMA)
+
+    lake.delete_prefix(prefix)
+    written = lake.write_table(key, pa.Table.from_pylist(merged, schema=_PLAYBACK_SCHEMA))
+
+    context.log.info(
+        "hour=%s..%s %d sessions offered by the plugin, %d in the partition "
+        "(was %d, %d kept that the plugin no longer offers)",
+        start, end, source_count, len(merged), len(existing), retained,
+    )
+
+    yield Output(
+        {"sessions": len(merged)},
+        metadata={
+            "sessions": len(merged),
+            "sessions_offered_by_plugin": source_count,
+            "sessions_before_merge": len(existing),
+            "sessions_only_in_lake": retained,
+            "watch_seconds": sum(r.get("play_duration_seconds") or 0 for r in merged),
+            "bytes_written": written,
+            "extracted_at": MetadataValue.text(str(extracted_at)),
+        },
+    )
+
+    yield AssetCheckResult(
+        check_name=CHECK_PLAYBACK_RECONCILED,
+        passed=len(merged) == source_count,
+        severity=AssetCheckSeverity.ERROR,
+        metadata={"warehouse_rows": len(merged), "plugin_count": source_count},
+    )
+
+
+# --------------------------------------------------------------------------------
+# the server activity log
+# --------------------------------------------------------------------------------
+
+# Collection starts here rather than backfilling to the dawn of the log: nothing in
+# the brief asked for the full [count withheld]-entry history, and a backfill of an API that
+# offers only a floor (`minDate`) and no ceiling gets more expensive the further back
+# it reaches -- see `activity_window` in parsing.jellyfin. Daily, and not end_offset=1:
+# an activity day, like a log day, has to be over before it is complete.
+ACTIVITY_START = "2026-09-14"
+activity_partitions = DailyPartitionsDefinition(start_date=ACTIVITY_START)
+
+ACTIVITY_PREFIX = layout.prefix("jellyfin_activity")
+
+_ACTIVITY_SCHEMA = pa.schema(
+    [
+        ("dt", pa.date32()),
+        ("_extracted_at", pa.timestamp("us", tz="UTC")),
+        ("id", pa.int64()),
+        ("date", pa.timestamp("us", tz="UTC")),
+        ("type", pa.string()),
+        ("name", pa.string()),
+        ("overview", pa.string()),
+        ("short_overview", pa.string()),
+        ("user_id", pa.string()),
+        ("item_id", pa.string()),
+        ("severity", pa.string()),
+        ("_unmapped", pa.string()),
+    ]
+)
+
+CHECK_ACTIVITY_RECONCILED = "activity_row_count_matches_what_was_read"
+CHECK_ACTIVITY_NO_UNMAPPED = "no_unmapped_fields"
+
+
+@asset(
+    partitions_def=activity_partitions,
+    group_name="jellyfin",
+    compute_kind="python",
+    retry_policy=RetryPolicy(max_retries=3, delay=15),
+    check_specs=[
+        AssetCheckSpec(
+            name=CHECK_ACTIVITY_RECONCILED,
+            asset="jellyfin_activity_raw",
+            description=(
+                "Fails when the row count written does not match the row count "
+                "`activity_window` determined belongs to the day while paginating. "
+                "The activity log API offers no single 'count for this day' endpoint "
+                "-- only a floor (minDate) and a page -- so this cannot catch a "
+                "pagination bug that skips a page; what it catches is the write or "
+                "the schema projection silently dropping a row after it was counted."
+            ),
+        ),
+        AssetCheckSpec(
+            name=CHECK_ACTIVITY_NO_UNMAPPED,
+            asset="jellyfin_activity_raw",
+            description="Warns when the activity log sent a field the schema does not name.",
+        ),
+    ],
+    description=(
+        "One day of the server activity log: sign-ins, playback starts and stops, "
+        "library and account changes. Replaced on every run -- the log is append-only "
+        "at the source, so there is nothing to merge that a plain re-read would not "
+        "already have."
+    ),
+)
+def jellyfin_activity_raw(context: AssetExecutionContext, lake: LakeStorage):
+    day = date.fromisoformat(context.partition_key)
+    base_url = os.environ.get("JELLYFIN_URL", "")
+    api_key = os.environ.get("JELLYFIN_API_KEY", "")
+    if not base_url or not api_key:
+        raise ValueError("JELLYFIN_URL and JELLYFIN_API_KEY are required")
+
+    rows, unmapped = jellyfin_source.activity_window(day, base_url, api_key)
+    collected_count = len(rows)
+    extracted_at = datetime.now(UTC)
+    for row in rows:
+        row["_extracted_at"] = extracted_at
+
+    projected, _more_unmapped = project(rows, _ACTIVITY_SCHEMA)
+
+    prefix = f"{ACTIVITY_PREFIX}/dt={day.isoformat()}"
+    lake.delete_prefix(prefix)
+    written = lake.write_table(
+        f"{prefix}/data.parquet", pa.Table.from_pylist(projected, schema=_ACTIVITY_SCHEMA)
+    )
+
+    context.log.info("dt=%s %d activity log entries", day, len(projected))
+    if unmapped:
+        context.log.warning(
+            "dt=%s the activity log sent fields the schema does not name: %s",
+            day, ", ".join(sorted(unmapped)),
+        )
+
+    yield Output(
+        {"entries": len(projected)},
+        metadata={
+            "entries": len(projected),
+            "bytes_written": written,
+            "unmapped_fields": MetadataValue.text(", ".join(sorted(unmapped)) or "none"),
+            "extracted_at": MetadataValue.text(str(extracted_at)),
+        },
+    )
+
+    yield AssetCheckResult(
+        check_name=CHECK_ACTIVITY_RECONCILED,
+        passed=len(projected) == collected_count,
+        severity=AssetCheckSeverity.ERROR,
+        metadata={"written": len(projected), "collected": collected_count},
+    )
+
+    yield AssetCheckResult(
+        check_name=CHECK_ACTIVITY_NO_UNMAPPED,
+        passed=not unmapped,
+        severity=AssetCheckSeverity.WARN,
+        metadata={"fields": MetadataValue.text(", ".join(sorted(unmapped)) or "none")},
+    )
+
+
+# --------------------------------------------------------------------------------
+# the account list
+# --------------------------------------------------------------------------------
+#
+# A daily snapshot, like camera_zones_raw: an account list has no history at the
+# API, asking for it returns how accounts stand *now*, so a partition before
+# collection began cannot be honestly filled and end_offset=1 makes today valid.
+USERS_START = "2026-09-14"
+users_partitions = DailyPartitionsDefinition(start_date=USERS_START, end_offset=1)
+
+USERS_PREFIX = layout.prefix("jellyfin_users")
+
+_USERS_SCHEMA = pa.schema(
+    [
+        ("dt", pa.date32()),
+        ("id", pa.string()),
+        ("name", pa.string()),
+        ("is_administrator", pa.bool_()),
+        ("is_disabled", pa.bool_()),
+        ("last_login", pa.timestamp("us", tz="UTC")),
+        ("last_activity", pa.timestamp("us", tz="UTC")),
+        ("_unmapped", pa.string()),
+    ]
+)
+
+CHECK_USERS_NO_UNMAPPED = "no_unmapped_fields"
+
+
+@asset(
+    partitions_def=users_partitions,
+    group_name="jellyfin",
+    compute_kind="python",
+    retry_policy=RetryPolicy(max_retries=3, delay=15),
+    check_specs=[
+        AssetCheckSpec(
+            name=CHECK_USERS_NO_UNMAPPED,
+            asset="jellyfin_users_raw",
+            description="Warns when `/Users` sent a field neither read nor declared not-stored.",
+        ),
+    ],
+    description=(
+        "Today's account list: name, admin flag, disabled flag, last seen. Nothing "
+        "from configuration or password policy beyond those two flags."
+    ),
+)
+def jellyfin_users_raw(context: AssetExecutionContext, lake: LakeStorage):
+    day = date.fromisoformat(context.partition_key)
+    base_url = os.environ.get("JELLYFIN_URL", "")
+    api_key = os.environ.get("JELLYFIN_API_KEY", "")
+    if not base_url or not api_key:
+        raise ValueError("JELLYFIN_URL and JELLYFIN_API_KEY are required")
+
+    raw_users = jellyfin_source.fetch_users(base_url, api_key)
+    if not raw_users:
+        raise ValueError(
+            f"Jellyfin returned no users for {day}. An empty account list is an "
+            "unreachable server, not a real state -- refusing to write it."
+        )
+    rows, unmapped = jellyfin_source.user_rows(raw_users, day)
+    projected, _more_unmapped = project(rows, _USERS_SCHEMA)
+
+    prefix = f"{USERS_PREFIX}/dt={day.isoformat()}"
+    # Replaced, not merged: a snapshot describes the account list at a moment, and an
+    # account removed from it should be absent rather than preserved.
+    lake.delete_prefix(prefix)
+    written = lake.write_table(
+        f"{prefix}/data.parquet", pa.Table.from_pylist(projected, schema=_USERS_SCHEMA)
+    )
+
+    context.log.info("dt=%s %d accounts", day, len(projected))
+    if unmapped:
+        context.log.warning(
+            "dt=%s /Users sent fields the schema does not name: %s",
+            day, ", ".join(sorted(unmapped)),
+        )
+
+    yield Output(
+        {"accounts": len(projected)},
+        metadata={
+            "accounts": len(projected),
+            "administrators": sum(1 for r in rows if r.get("is_administrator")),
+            "disabled": sum(1 for r in rows if r.get("is_disabled")),
+            "bytes_written": written,
+            "unmapped_fields": MetadataValue.text(", ".join(sorted(unmapped)) or "none"),
+        },
+    )
+
+    yield AssetCheckResult(
+        check_name=CHECK_USERS_NO_UNMAPPED,
+        passed=not unmapped,
+        severity=AssetCheckSeverity.WARN,
+        metadata={"fields": MetadataValue.text(", ".join(sorted(unmapped)) or "none")},
+    )
