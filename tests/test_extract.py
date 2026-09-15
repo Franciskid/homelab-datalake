@@ -6,11 +6,19 @@ whole design exists to survive.
 """
 
 import gzip
+import json
 import os
 from datetime import UTC, date
 
 from homelab_datalake.geo import GeoEnricher
-from homelab_datalake.parsing.extract import discover_logs, extract_partition
+from homelab_datalake.parsing.extract import (
+    discover_logs,
+    extract_mcp_api_partition,
+    extract_partition,
+    extract_partition_from_lake,
+    reconciles,
+)
+from homelab_datalake.resources import LakeStorage
 
 SALT = "test-salt"
 NO_GEO = GeoEnricher(None, None)
@@ -187,3 +195,193 @@ def test_a_directory_with_no_access_logs_is_distinguishable_from_a_quiet_day(tmp
     assert discover_logs(str(tmp_path))
     r = extract_partition(str(tmp_path), date(2026, 8, 27), "test", SALT, NO_GEO)
     assert r.rows == [] and r.out_of_partition == 1
+
+
+# --- the lake inbox (secondary, WS-41.E2 part B) --------------------------------------
+#
+# Same NPM line formats and the same redaction, only sourced through
+# LakeStorage.list_keys/read_bytes instead of the filesystem -- so what is worth
+# pinning here is specifically that indirection: plain and gzipped objects both
+# read correctly, and a line repeated across what the hourly mirror leaves behind
+# after a rotation still counts once.
+
+
+def _lake(tmp_path) -> LakeStorage:
+    return LakeStorage(local_root=str(tmp_path / "lake"))
+
+
+def test_inbox_reads_a_plain_object(tmp_path):
+    lake = _lake(tmp_path)
+    lake.write_bytes(
+        "inbox/npm/secondary/proxy-host-1_access.log",
+        _proxy_line("27/Aug/2026:10:00:00 +0000", path="/plain").encode(),
+    )
+    r = extract_partition_from_lake(lake, "inbox/npm/secondary", date(2026, 8, 27), "secondary", SALT, NO_GEO)
+    assert [row["path"] for row in r.rows] == ["/plain"]
+    assert r.rows[0]["host_source"] == "secondary"
+
+
+def test_inbox_reads_a_gzipped_object(tmp_path):
+    lake = _lake(tmp_path)
+    payload = gzip.compress(_proxy_line("27/Aug/2026:10:00:00 +0000", path="/rotated").encode())
+    lake.write_bytes("inbox/npm/secondary/proxy-host-1_access.log.1.gz", payload)
+    r = extract_partition_from_lake(lake, "inbox/npm/secondary", date(2026, 8, 27), "secondary", SALT, NO_GEO)
+    assert [row["path"] for row in r.rows] == ["/rotated"]
+
+
+def test_inbox_reads_plain_and_gzipped_objects_together(tmp_path):
+    """The case a rotation landing between two hourly syncs produces."""
+    lake = _lake(tmp_path)
+    lake.write_bytes(
+        "inbox/npm/secondary/proxy-host-1_access.log",
+        _proxy_line("27/Aug/2026:20:00:00 +0000", path="/live").encode(),
+    )
+    lake.write_bytes(
+        "inbox/npm/secondary/proxy-host-1_access.log.1.gz",
+        gzip.compress(_proxy_line("27/Aug/2026:08:00:00 +0000", path="/rotated").encode()),
+    )
+    r = extract_partition_from_lake(lake, "inbox/npm/secondary", date(2026, 8, 27), "secondary", SALT, NO_GEO)
+    assert {row["path"] for row in r.rows} == {"/live", "/rotated"}
+
+
+def test_inbox_ignores_error_logs_and_objects_outside_the_prefix(tmp_path):
+    lake = _lake(tmp_path)
+    lake.write_bytes(
+        "inbox/npm/secondary/proxy-host-1_access.log",
+        _proxy_line("27/Aug/2026:10:00:00 +0000").encode(),
+    )
+    lake.write_bytes("inbox/npm/secondary/proxy-host-1_error.log", b"some nginx error\n")
+    lake.write_bytes(
+        "inbox/npm/primary/proxy-host-1_access.log",
+        _proxy_line("27/Aug/2026:10:00:00 +0000", path="/wrong-host").encode(),
+    )
+    r = extract_partition_from_lake(lake, "inbox/npm/secondary", date(2026, 8, 27), "secondary", SALT, NO_GEO)
+    assert len(r.rows) == 1
+    assert r.rows[0]["path"] == "/"
+
+
+def test_secondary_dedupe_across_repeated_mirrors(tmp_path):
+    """The hourly mirror overwrites objects in place, but a rotation can leave the
+    same broken line sitting under two keys at once -- the live file's last sync
+    before it rotated, and the rotated copy that appeared under a new key. That is
+    one problem, not two, exactly as it is for the mounted primary directory (see
+    test_identical_rejects_in_live_and_rotated_files_count_once above)."""
+    lake = _lake(tmp_path)
+    lake.write_bytes("inbox/npm/secondary/proxy-host-1_access.log", b"garbage\n")
+    lake.write_bytes(
+        "inbox/npm/secondary/proxy-host-1_access.log.1.gz", gzip.compress(b"garbage\n")
+    )
+    r = extract_partition_from_lake(lake, "inbox/npm/secondary", date(2026, 8, 27), "secondary", SALT, NO_GEO)
+    assert len(r.rejects) == 1
+    assert r.duplicate_rejects == 1
+    assert reconciles(r)
+
+
+def test_an_inbox_object_that_vanishes_mid_read_is_skipped_not_fatal(tmp_path):
+    """list_keys sees a key, then the object is gone by the time it is read --
+    the mirror overwrote it between the two calls. Not an error: the caller loses
+    that one object's lines for this run, and the next sync brings it back."""
+    lake = _lake(tmp_path)
+    lake.write_bytes(
+        "inbox/npm/secondary/proxy-host-1_access.log",
+        _proxy_line("27/Aug/2026:10:00:00 +0000").encode(),
+    )
+    assert lake.read_bytes("inbox/npm/secondary/missing_access.log") is None
+
+
+# --- mcp.ai's own access log (WS-41.E2 part C) ----------------------------------
+
+
+def _mcp_api_line(time="2026-09-14T10:00:00Z", client="203.0.113.9", uri="/mcp/tools/call", status=200):
+    return json.dumps(
+        {
+            "time": time,
+            "remote_addr": client,
+            "method": "POST",
+            "host": "mcp.ai.example.test",
+            "request_uri": uri,
+            "status": status,
+            "body_bytes_sent": 128,
+            "request_length": 400,
+            "request_time": "0.02",
+            "upstream_status": "200",
+            "upstream_response_time": "0.018",
+            "user_agent": "litellm/1.0",
+            "referer": "-",
+        }
+    ) + "\n"
+
+
+def test_mcp_api_partition_extracts_and_redacts_like_any_other_host(tmp_path):
+    (tmp_path / "access-2026-09-14.log").write_text(
+        _mcp_api_line(uri="/mcp/tools/call?tool=web_traffic")
+    )
+    r = extract_mcp_api_partition(str(tmp_path), date(2026, 9, 14), SALT, NO_GEO)
+    assert len(r.rows) == 1
+    row = r.rows[0]
+    assert row["host_source"] == "mcp-api"
+    assert row["log_format"] == "mcp_api_json"
+    assert row["path"] == "/mcp/tools/call"
+    assert row["query_string"] == "tool=web_traffic"
+    assert row["client_address"] == "203.0.113.9"
+    assert row["client_hash"] and row["client_network"] == "203.0.113.0/24"
+
+
+def test_mcp_api_partition_filters_by_day_like_every_other_source(tmp_path):
+    (tmp_path / "access-2026-09-14.log").write_text(
+        _mcp_api_line(time="2026-09-13T23:59:59Z") + _mcp_api_line(time="2026-09-14T00:00:01Z")
+    )
+    r = extract_mcp_api_partition(str(tmp_path), date(2026, 9, 14), SALT, NO_GEO)
+    assert len(r.rows) == 1
+    assert r.out_of_partition == 1
+
+
+def test_mcp_api_partition_with_no_file_for_the_day_is_a_quiet_day_not_an_error(tmp_path):
+    (tmp_path / "access-2026-09-13.log").write_text(_mcp_api_line())
+    r = extract_mcp_api_partition(str(tmp_path), date(2026, 9, 14), SALT, NO_GEO)
+    assert r.rows == [] and r.rejects == [] and r.stats.total == 0
+    assert r.files_read == 0
+
+
+def test_mcp_api_rejects_are_recorded_like_any_other_source(tmp_path):
+    (tmp_path / "access-2026-09-14.log").write_text(_mcp_api_line() + "not json\n")
+    r = extract_mcp_api_partition(str(tmp_path), date(2026, 9, 14), SALT, NO_GEO)
+    assert len(r.rows) == 1
+    assert len(r.rejects) == 1
+    assert r.rejects[0]["host"] == "mcp-api"
+
+
+# --- the reconciliation check ----------------------------------------------------
+
+
+def test_a_real_extraction_always_reconciles(tmp_path):
+    _write(tmp_path, "proxy-host-1_access.log", [
+        _proxy_line("27/Aug/2026:10:00:00 +0000", path="/a"),
+        _proxy_line("26/Aug/2026:10:00:00 +0000", path="/out-of-partition"),
+        "garbage one\n",
+    ])
+    _write(tmp_path, "proxy-host-1_access.log.1.gz", ["garbage one\n"], gzipped=True)
+    r = extract_partition(str(tmp_path), date(2026, 8, 27), "test", SALT, NO_GEO)
+    assert len(r.rows) == 1 and r.out_of_partition == 1 and r.duplicate_rejects == 1
+    assert reconciles(r)
+
+
+def test_reconciliation_fails_when_a_line_goes_unaccounted_for():
+    """The failure this check exists to catch: pinned with a result built by hand
+    rather than through real extraction, since correct code never produces one."""
+    from homelab_datalake.parsing.extract import ExtractResult
+    from homelab_datalake.parsing.npm_log import ParseStats
+
+    stats = ParseStats(total=10, parsed=10, rejected=0)
+    result = ExtractResult(rows=[{}] * 5, rejects=[], stats=stats, out_of_partition=2)
+    # [count withheld] rows + 0 rejects + 0 duplicates + 2 out_of_partition = 7, not the 10 read.
+    assert not reconciles(result)
+
+
+def test_reconciliation_accounts_for_duplicate_rejects():
+    from homelab_datalake.parsing.extract import ExtractResult
+    from homelab_datalake.parsing.npm_log import ParseStats
+
+    stats = ParseStats(total=3, parsed=0, rejected=3)
+    result = ExtractResult(rows=[], rejects=[{}], stats=stats, duplicate_rejects=2)
+    assert reconciles(result)
