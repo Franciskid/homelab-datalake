@@ -125,7 +125,14 @@ def _int_or_none(value: object) -> int | None:
 
 
 def _none_if_blank(value: object) -> str | None:
+    """None for anything that is not a real value: absent, blank, or nginx's "-".
+
+    nginx's logging modules write "-" for an unset variable regardless of the log
+    format they are feeding -- json_log included -- so a referer or user agent that
+    was genuinely absent comes through as the literal string "-", not JSON null.
+    Same convention npm_log._dash_to_none uses for the same reason.
+    """
     if not isinstance(value, str):
         return None
     value = value.strip()
-    return value or None
+    return None if value in ("", "-") else value
