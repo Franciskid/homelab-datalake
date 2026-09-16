@@ -778,7 +778,11 @@ class SessionCache:
     and only swaps it in -- atomically, under the lock -- once that build
     finishes. The one exception is the very first call with no session at all
     (a cold start): there is nothing to answer from, so that caller pays for the
-    build, on whatever thread called `get()`.
+    build, on whatever thread called `get()` -- unless `start_background_warming`
+    is running, in which case it almost always wins that race instead (see its
+    docstring): a deploy or a container restart is also a cold start, and a
+    caller here is the platform's `DatalakeClient`, whose 45s timeout is shorter
+    than a cold build with no `single_schema` datasets to help it.
 
     **Why answering from the previous session while the replacement binds is
     correct, not merely convenient.** Two things had to be checked before
@@ -883,14 +887,18 @@ class SessionCache:
                 handle.session.close()
 
     def maybe_warm(self) -> None:
-        """Notice a republish and start rebinding, without blocking or counting
-        a reference.
+        """Notice a republish and start rebinding, without ever blocking.
 
-        This is what `start_background_warming` polls, and it is also safe to
-        call directly from the event loop -- unlike `get()` -- because it never
-        builds a session inline. A cold cache (no session at all yet) is left
-        alone: warming exists to keep an already-warm session warm, not to
-        race the first real caller for the cold-start build.
+        This is what `start_background_warming`'s poll loop calls on every
+        tick, and it is also safe to call directly from the event loop --
+        unlike `get()` -- because it never builds a session inline: a cold
+        cache (no session at all yet) is left alone here. That is deliberate
+        for *this* method specifically, not for warming as a whole -- a
+        caller of `maybe_warm()` might be on the event loop (a future `/health`
+        hook, say), and it must never pay for a ~105s cold build. The cold
+        case is instead handled once, eagerly, by `start_background_warming`
+        itself, in its own thread, before this method's polling ever starts --
+        see there for why leaving it to `maybe_warm()` was not enough.
         """
         with self._lock:
             if self._current is not None:
@@ -899,20 +907,45 @@ class SessionCache:
     def start_background_warming(
         self, interval: float = DEFAULT_WARM_INTERVAL_SECONDS
     ) -> threading.Thread:
-        """Poll the publish stamp on a timer, so a republish starts rebinding
-        before any caller asks a question that needs it.
+        """Build a session immediately if the cache is cold, then poll the
+        publish stamp on a timer so a later republish starts rebinding before
+        any caller asks a question that needs it.
 
-        Without this, nothing notices a republish until the next `get()` --
-        which means the *caller* of that `get()` is the one whose request
-        happens to land first after the nightly build, and there is no reason
-        that has to be a query rather than, say, the automated report itself.
-        Polling independently of traffic means the rebuild is already running
-        (or done) by the time any request arrives. See `DEFAULT_WARM_INTERVAL_
-        SECONDS` for why 60s specifically. Returns the thread so a caller that
-        wants to (tests, mainly) can join or inspect it; production code does
-        not need to.
+        **The eager build matters on its own, separately from the polling.**
+        A cold cache is not only the process's first moment alive -- it is
+        also every deploy and every container restart, and without this the
+        first real caller after one of those pays for the ~105s cold build
+        (measured pre-`single_schema`) inline. `maybe_warm()` deliberately
+        will not do that build for a caller that might be on the event loop,
+        but this method runs entirely in its own thread, so there is nothing
+        wrong with it blocking *that* thread on the same cold-start path
+        `get()` uses -- `self.get()` immediately followed by `self.release()`,
+        which builds under `self._lock` exactly as a real caller's cold
+        `get()` would, then drops the reference since nobody is actually
+        querying. A real caller's `get()` arriving mid-build simply blocks on
+        that same lock -- on its own worker thread, per `run_in_threadpool`,
+        never the event loop -- and then receives the session this thread just
+        finished, rather than racing to build a second one; measured against
+        that, it can only be a shorter wait than building it itself, never a
+        longer one.
+
+        **Then it polls**, independently of traffic, so a *later* republish
+        does not wait for `get()` to notice it either -- the *caller* of that
+        `get()` would otherwise be whichever request happens to land first
+        after the nightly build, and there is no reason that has to be a
+        query rather than, say, the automated report itself. See
+        `DEFAULT_WARM_INTERVAL_SECONDS` for why 60s specifically. Returns the
+        thread so a caller that wants to (tests, mainly) can join or inspect
+        it; production code does not need to.
         """
         def loop() -> None:
+            try:
+                session = self.get()
+                self.release(session)
+            except Exception:
+                logger.exception(
+                    "eager session warm-up failed; the first caller will build it"
+                )
             while True:
                 time.sleep(interval)
                 try:

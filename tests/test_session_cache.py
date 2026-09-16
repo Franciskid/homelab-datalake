@@ -325,6 +325,105 @@ def test_background_warming_notices_a_republish_without_any_query(lake):
     pool.close()
 
 
+def test_background_warming_builds_a_cold_cache_without_any_caller(lake, monkeypatch):
+    """The gap that made every deploy and every container restart a guaranteed
+    502: `maybe_warm()` on its own skips a cold cache on purpose (see its
+    docstring), so before this, nothing built the first session until a real
+    caller's `get()` paid for it -- up to the ~105s cold build the platform's
+    45s DatalakeClient timeout does not survive. `start_background_warming`
+    now builds eagerly, in its own thread, before it starts polling. This test
+    never calls `get()` at all: the session must exist anyway.
+    """
+    real_build = q.LakeSession._build
+    built = threading.Event()
+
+    def tracked_build(self):
+        result = real_build(self)
+        built.set()
+        return result
+
+    monkeypatch.setattr(q.LakeSession, "_build", tracked_build)
+    pool = q.SessionCache(lake=lake, stamp=lambda: (1, 1))
+
+    # A long poll interval, deliberately: if this passed only because the
+    # *poll loop* happened to tick, it would not be testing the eager build.
+    pool.start_background_warming(interval=60.0)
+    assert built.wait(timeout=2.0), "the cold cache was never built without a caller"
+    pool.close()
+
+
+def test_a_caller_arriving_during_the_eager_warm_build_waits_and_shares_it(lake, monkeypatch):
+    """No double build, and no busy-wait: a `get()` landing while the warming
+    thread's cold build is still running blocks on the same lock the build
+    holds -- on its own worker thread, never the event loop -- and comes back
+    with the one session that build produced.
+    """
+    real_build = q.LakeSession._build
+    build_count: list[int] = []
+    build_started = threading.Event()
+    release_build = threading.Event()
+
+    def slow_build(self):
+        build_count.append(1)
+        build_started.set()
+        release_build.wait(timeout=5.0)
+        return real_build(self)
+
+    monkeypatch.setattr(q.LakeSession, "_build", slow_build)
+    pool = q.SessionCache(lake=lake, stamp=lambda: (1, 1))
+
+    pool.start_background_warming(interval=60.0)
+    assert build_started.wait(timeout=2.0), "the eager warm build never started"
+
+    result: dict = {}
+
+    def hit_get():
+        result["session"] = pool.get()
+
+    caller = threading.Thread(target=hit_get)
+    caller.start()
+    time.sleep(0.1)  # let the caller reach and block on the lock the build holds
+    assert caller.is_alive(), "get() returned before the blocked build released the lock"
+
+    release_build.set()
+    caller.join(timeout=5.0)
+
+    assert build_count == [1], "a second session was built instead of sharing the first"
+    assert result.get("session") is not None
+    pool.release(result["session"])
+    pool.close()
+
+
+def test_health_answers_promptly_while_the_eager_warm_build_runs(lake, monkeypatch):
+    """The same event-loop check as the other build/query cases, for the new
+    code path: the eager cold build runs in the warmer's own thread, started
+    from `create_app`, and must not touch the loop that /health answers on.
+    """
+    real_build = q.LakeSession._build
+    build_started = threading.Event()
+
+    def slow_build(self):
+        build_started.set()
+        time.sleep(1.0)
+        return real_build(self)
+
+    monkeypatch.setattr(q.LakeSession, "_build", slow_build)
+    pool = q.SessionCache(lake=lake, stamp=lambda: (1, 1))
+    app = create_app(
+        sessions=pool, audit=AuditLog(path="/dev/null"), warm_interval_seconds=60.0
+    )
+
+    with TestClient(app) as client:
+        assert build_started.wait(timeout=2.0), "the eager warm build never started"
+        began = time.perf_counter()
+        health = client.get("/health")
+        elapsed = time.perf_counter() - began
+
+    assert health.status_code == 200
+    assert elapsed < 0.5, f"/health took {elapsed:.2f}s while the eager warm build was running"
+    pool.close()
+
+
 # --------------------------------------------------------------------------------
 # single_schema: binds without reading every file's footer
 # --------------------------------------------------------------------------------
