@@ -14,7 +14,9 @@ import pytest
 from homelab_datalake.mcp.semantic import (
     DATASETS,
     GRAINS,
+    describe_entry,
     get_dataset,
+    measure_entry,
     missing_columns,
     validate,
     validation_statements,
@@ -150,6 +152,81 @@ def coverage_of(con, dataset):
     finally:
         module.DATASETS.clear()
         module.DATASETS.update(original)
+
+
+# --------------------------------------------------------------------------------
+# describe_dataset must never show a name a SQL writer cannot use
+# --------------------------------------------------------------------------------
+#
+# Measured against production on 2026-09-16: 10 of 128 dimensions across the two
+# Jellyfin datasets carried a `name` that is not a column of the mart (`person` is
+# `user_name`, `series` is `series_name`, and so on), and describe_dataset showed
+# only the name. An agent asked to chart Jellyfin watch time called describe_dataset,
+# wrote `SELECT person FROM marts.fct_jellyfin_playback`, hit `Binder Error:
+# Referenced column "person" not found` twice, and told the owner it could not send
+# the mail it had been asked for.
+#
+# describe_dataset's fix is to show the `sql` expression whenever it differs from
+# `name` (see `describe_entry`/`measure_entry`), and to show it always for measures.
+# The guard below is what stops that contract from silently going false again: for
+# every dimension or attribute shown *bare* (no `sql` key, because `sql == name`),
+# `name` has to actually be a column of the mart the dataset points at. It uses the
+# same `con` fixture -- a DuckDB shaped like the real marts -- that `test_every_
+# mart_column_is_either_exposed_or_declared` above already relies on for the mirror
+# check (a mart column with no dataset entry at all). This is its complement: a
+# dataset entry whose bare name has no mart column behind it.
+
+
+@pytest.mark.parametrize("dataset", DATASETS.values(), ids=lambda d: d.name)
+def test_a_bare_name_is_always_a_real_column(dataset, con):
+    """A dimension or attribute shown without a `sql` key must bind as its own name.
+
+    `sql == name` is describe_dataset's decision to omit the `sql` key -- it is a
+    promise that writing `name` into SQL just works. This checks the promise against
+    the same fixture shape production is validated against, so a dataset that renames
+    a mart column without giving the affected entry an explicit `sql` fails here
+    instead of at the next Binder Error.
+    """
+    table = dataset.table.rpartition(".")[2]
+    columns = {
+        row[0].lower() for row in con.execute(
+            "SELECT column_name FROM duckdb_columns() WHERE table_name = ?", [table]
+        ).fetchall()
+    }
+    assert columns, f"the fixture has no {table}"
+    for item in (*dataset.dimensions, *dataset.attributes):
+        if item.sql != item.name:
+            continue  # shown with an explicit `sql` key -- not a bare-name claim
+        assert item.name.lower() in columns, (
+            f"{dataset.name}.{item.name} is shown to a SQL writer as a bare column "
+            f"name (its sql == its name), but {item.name!r} is not a column of "
+            f"{dataset.table}. Give it an explicit `sql` expression naming the real "
+            "column, or, if the mart genuinely has a column by this name, the "
+            "fixture in tests/conftest.py is out of date."
+        )
+
+
+def test_describe_entry_omits_sql_only_when_it_says_nothing_new():
+    dataset = get_dataset("media_playback")
+    person = describe_entry(dataset.dimension("person"))
+    assert person == {
+        "name": "person", "sql": "user_name",
+        "description": dataset.dimension("person").description,
+    }
+    title = describe_entry(dataset.dimension("title"))
+    assert "sql" not in title
+    assert title == {"name": "title", "description": dataset.dimension("title").description}
+
+
+def test_measure_entry_always_carries_sql():
+    """A measure is never a bare column, so there is no bare case to omit `sql` in."""
+    dataset = get_dataset("media_playback")
+    watch_hours = measure_entry(dataset.measure("watch_hours"))
+    assert watch_hours["sql"] == "round((sum(play_duration_seconds) / 3600.0)::numeric, 2)"
+    assert watch_hours["name"] == "watch_hours"
+    for dataset in DATASETS.values():
+        for measure in dataset.measures:
+            assert "sql" in measure_entry(measure)
 
 
 # --------------------------------------------------------------------------------

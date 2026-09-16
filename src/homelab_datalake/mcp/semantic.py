@@ -157,6 +157,43 @@ class Dataset:
         return self.dimension(name)
 
 
+# --- what describe_dataset shows for one name ----------------------------------
+#
+# A dimension or attribute whose `sql` is literally its `name` -- most of them, in
+# ten of the twelve datasets -- is shown bare: name and description, nothing else.
+# That absence is a claim: "write this name into your own SQL and it will bind".
+# Whenever `sql` says something the name does not, the claim would be false, so the
+# expression travels with it instead. This is what failed on 2026-09-16: `person` in
+# media_playback is `user_name` on the mart, describe_dataset showed only `person`,
+# and the model that wrote `SELECT person FROM marts.fct_jellyfin_playback` got a
+# Binder Error twice and gave up on a chart the owner had asked for by name.
+
+
+def describe_entry(item: Dimension | Attribute) -> dict:
+    """{name, description}, plus `sql` whenever it is not just `name` again.
+
+    Used for both dimensions and attributes -- and so for `fields` too, since a field
+    is one or the other. A caller selecting a field directly in SQL needs the same
+    warning a caller filtering on a dimension does.
+    """
+    entry: dict[str, str] = {"name": item.name, "description": item.description}
+    if item.sql != item.name:
+        entry["sql"] = item.sql
+    return entry
+
+
+def measure_entry(measure: Measure) -> dict:
+    """A measure's SQL is never omitted: a measure is always computed, never a bare
+    column, so there is no "same as the name" case for it to be bare in.
+    """
+    return {
+        "name": measure.name,
+        "sql": measure.sql,
+        "description": measure.description,
+        "unit": measure.unit,
+    }
+
+
 # --- LLM spend ----------------------------------------------------------------
 # The headline dataset: small, dense, no PII, and the question it answers is one
 # sentence long -- "what did I spend on Claude in August?"
