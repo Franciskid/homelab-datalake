@@ -105,6 +105,15 @@ SQL API also has an explicit writable mode, gated by deployment settings;
 statement checks and audit records
 belong to the datalake rather than being reimplemented in each client.
 
+### Grafana
+
+Grafana reads the lake through the same API, as an Infinity datasource with its
+own Keycloak client. Prometheus stays the live datasource there: it answers in
+milliseconds and holds a month. The lake datasource holds everything since the
+stream started, runs about a minute behind, and can join metrics to playback,
+proxy requests, sign-ins and download history. Panels ask for `format: records`
+so each row arrives keyed by column name.
+
 ## Keeping history useful
 
 The source collectors run on schedules, followed by a job that builds and
