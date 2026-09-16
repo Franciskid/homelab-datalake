@@ -29,7 +29,7 @@ practice, and is an operational setting for whoever deploys this, not a line of
 code that belongs here.
 """
 
-from datetime import date
+from datetime import date, datetime, timedelta
 
 import pyarrow as pa
 from dagster import (
@@ -50,6 +50,7 @@ from homelab_datalake.parsing.ai_platform_registry import (
     MODE_SNAPSHOT,
     MODE_WINDOW,
     REGISTRY,
+    WINDOW_DAYS,
     TableSpec,
     registry_coverage,
 )
@@ -63,7 +64,42 @@ from homelab_datalake.resources import LakeStorage
 # choice litellm_spend.py makes for SPEND_START.
 AI_PLATFORM_START = "2026-07-02"
 
-ai_platform_partitions = DailyPartitionsDefinition(start_date=AI_PLATFORM_START)
+# end_offset=1 makes *today* a valid partition. Both schedules in definitions.py ask for
+# it, and without the offset today is not a partition until midnight: Dagster raises
+# DagsterUnknownPartitionError, and one unknown key fails the whole tick, so the 05:00
+# snapshot never launched and neither did any of the seven 05:10 window runs.
+#
+# A today partition read at five in the morning is honest in both modes, for different
+# reasons:
+#
+# * A MODE_WINDOW table's today is partial -- it holds the rows created before the tick
+#   -- but it is not left that way. The trailing window re-extracts it on each of the
+#   next WINDOW_DAYS - 1 ticks, and the first of those, tomorrow's, already reads the
+#   whole day. That is camera_partitions' reasoning at a longer window. A log day is
+#   read once and never again, which is why the log partitions carry no offset.
+# * A MODE_SNAPSHOT table's today is not partial at all: it is the whole table as it
+#   stands when it is read, dated the day it was read, the same reason
+#   jellyfin.library_partitions and camera.zone_partitions carry the offset. Dating it
+#   yesterday instead would record a configuration that day never had.
+ai_platform_partitions = DailyPartitionsDefinition(start_date=AI_PLATFORM_START, end_offset=1)
+
+
+def snapshot_partition_keys(scheduled_execution_time: datetime) -> list[str]:
+    """The partitions `ai_platform_snapshot_schedule` asks for at one tick: the day
+    the snapshot is taken on, and nothing else.
+
+    Pulled out of the schedule so it can be checked against `ai_platform_partitions`
+    without a repository: importing `definitions` needs the dbt executable on PATH.
+    """
+    return [scheduled_execution_time.date().isoformat()]
+
+
+def window_partition_keys(scheduled_execution_time: datetime) -> list[str]:
+    """The partitions `ai_platform_window_schedule` asks for at one tick: today and
+    the `WINDOW_DAYS - 1` days before it, newest first."""
+    today = scheduled_execution_time.date()
+    return [(today - timedelta(days=back)).isoformat() for back in range(WINDOW_DAYS)]
+
 
 CHECK_ROW_COUNT = "extracted_rows_match_landed_rows"
 CHECK_FRAME_COUNT = "frame_count_matches_objects_written"

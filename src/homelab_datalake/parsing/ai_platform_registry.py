@@ -52,7 +52,7 @@ still changes."
 A `MODE_WINDOW` table is not read one day at a time. Each scheduled tick re-extracts
 the **trailing `WINDOW_DAYS` days** -- today back through six days ago -- as
 `WINDOW_DAYS` separate partition runs, each overwriting exactly one day's object
-idempotently (see `homelab_datalake.assets.ai_platform.ai_platform_daily_schedule`).
+idempotently (see `homelab_datalake.definitions.ai_platform_window_schedule`).
 That is what makes "a run goes pending -> completed" and "a conversation is
 soft-deleted" land correctly without a stateful CDC feed: the row's `change_column`
 places it on the day it was *created*, and if anything about it changes within the
