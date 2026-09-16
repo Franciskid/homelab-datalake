@@ -33,7 +33,14 @@ from homelab_datalake.api.catalogue import DEFAULT_MANIFEST_PATH
 from homelab_datalake.mcp import query as q
 from homelab_datalake.mcp.auth import verifier_from_env
 from homelab_datalake.mcp.deliverables import ExportError, write_workbook
-from homelab_datalake.mcp.semantic import ALL_GRAINS, DATASETS, TOTAL_GRAIN, get_dataset
+from homelab_datalake.mcp.semantic import (
+    ALL_GRAINS,
+    DATASETS,
+    TOTAL_GRAIN,
+    describe_entry,
+    get_dataset,
+    measure_entry,
+)
 from homelab_datalake.mcp.warehouse import Warehouse
 
 # How many distinct values describe_dataset will list for one dimension. Enough to
@@ -180,6 +187,12 @@ def list_datasets() -> dict:
             "instead of aggregating them. Use it whenever the question is 'each' or "
             "'every' or asks for an exact time; the other grains cannot express that."
         ),
+        "sql_note": (
+            "The dimensions, measures and fields named above are this layer's "
+            "vocabulary, not necessarily the mart's column names. Before writing your "
+            "own SQL against `table`, call describe_dataset(dataset) -- it shows the "
+            "exact SQL for every name that is not literally a column."
+        ),
     }
 
 
@@ -211,8 +224,10 @@ def describe_schema() -> dict:
 @server.tool(
     description=(
         "Describe one dataset: every dimension and measure with what it means, the "
-        "dates it covers, and the actual values each low-cardinality dimension takes. "
-        "Use the listed values when building filters rather than guessing at them."
+        "dates it covers, the actual values each low-cardinality dimension takes, and "
+        "the exact SQL behind any name that is not itself a column -- read this before "
+        "writing SQL by hand, not just before filtering. Use the listed values when "
+        "building filters rather than guessing at them."
     )
 )
 def describe_dataset(
@@ -228,7 +243,7 @@ def describe_dataset(
             lo, hi = q.available_range(cursor, spec)
             dimensions = []
             for dim in spec.dimensions:
-                entry: dict[str, Any] = {"name": dim.name, "description": dim.description}
+                entry: dict[str, Any] = describe_entry(dim)
                 # One extra, so "there are more than we are showing" is known rather
                 # than inferred from hitting the cap exactly.
                 rows = cursor.execute(
@@ -259,22 +274,22 @@ def describe_dataset(
         # half of it.
         "table": spec.table,
         "sql_note": (
-            f"Writing SQL yourself? Query {spec.table}. The name above is this "
-            "layer's name for it and is not a table. Use the dimension values "
-            "listed below verbatim -- they are the values the column actually holds."
+            f"Writing SQL yourself? Query {spec.table} directly -- {spec.name!r} above "
+            "is this layer's name for it, not a table name. Below, a dimension or "
+            "field with a `sql` key must be written using that exact expression; one "
+            "with no `sql` key is spelled exactly as its `name`. Every measure carries "
+            "`sql` and is always computed -- a measure is never a bare column. Use the "
+            "dimension `values` listed below verbatim; they are the values that "
+            "dimension's SQL expression actually returns."
         ),
         "covers": {"from": lo, "to": hi},
         "dimensions": dimensions,
-        "measures": [
-            {"name": m.name, "description": m.description, "unit": m.unit}
-            for m in spec.measures
-        ],
+        "measures": [measure_entry(m) for m in spec.measures],
         "default_measures": list(spec.default_measures),
         "fields": [
-            {"name": a.name, "description": a.description} for a in spec.attributes
+            describe_entry(a) for a in spec.attributes
         ] + [
-            {"name": d.name, "description": d.description}
-            for d in spec.dimensions if d.name not in set(spec.attribute_names)
+            describe_entry(d) for d in spec.dimensions if d.name not in set(spec.attribute_names)
         ],
         "default_fields": list(spec.default_fields),
         "record_order": spec.record_order,

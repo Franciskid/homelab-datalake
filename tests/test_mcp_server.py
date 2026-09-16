@@ -71,6 +71,56 @@ def test_describe_lists_the_values_a_dimension_takes(tools):
     assert values["started_hour_of_day"] == list(range(24))
 
 
+def test_describe_shows_the_sql_behind_a_renamed_dimension(tools):
+    """The regression this whole change exists for.
+
+    `person` on media_playback is `user_name` on the mart. Production shipped this
+    dataset showing only `person`, an agent wrote `SELECT person FROM
+    marts.fct_jellyfin_playback`, and got a Binder Error twice. The `sql` key is what
+    makes the real column visible without a second tool call.
+    """
+    payload = call(tools, "describe_dataset", {"dataset": "media_playback"})
+    dims = {d["name"]: d for d in payload["dimensions"]}
+    assert dims["person"]["sql"] == "user_name"
+    assert dims["series"]["sql"] == "series_name"
+    assert dims["media_type"]["sql"] == "item_type"
+    # A name that is already the column is left bare -- no `sql` key to wade through.
+    assert "sql" not in dims["title"]
+    assert "sql" not in dims["genre"]
+
+
+def test_describe_always_shows_a_measures_sql(tools):
+    """A measure is never a bare column, so its SQL is never omitted."""
+    payload = call(tools, "describe_dataset", {"dataset": "media_playback"})
+    measures = {m["name"]: m for m in payload["measures"]}
+    assert measures["watch_hours"]["sql"] == (
+        "round((sum(play_duration_seconds) / 3600.0)::numeric, 2)"
+    )
+    assert all("sql" in m for m in payload["measures"])
+
+
+def test_describe_shows_sql_on_a_renamed_field_too(tools):
+    """`fields` (grain='event' columns) is dimensions-plus-attributes, and a renamed
+    dimension used as a field needs the same warning it gets as a dimension."""
+    payload = call(tools, "describe_dataset", {"dataset": "media_playback"})
+    fields = {f["name"]: f for f in payload["fields"]}
+    assert fields["person"]["sql"] == "user_name"
+    # An attribute's sql is always its own name, so it is always shown bare.
+    assert "sql" not in fields["playback_key"]
+
+
+def test_sql_note_explains_the_sql_key(tools):
+    payload = call(tools, "describe_dataset", {"dataset": "media_playback"})
+    note = payload["sql_note"]
+    assert "marts.fct_jellyfin_playback" in note
+    assert "sql" in note
+
+
+def test_list_datasets_points_at_describe_dataset_for_sql(tools):
+    payload = call(tools, "list_datasets")
+    assert "describe_dataset" in payload["sql_note"]
+
+
 def test_a_high_cardinality_dimension_is_summarised_not_dumped(tools):
     """A column with hundreds of values would fill the context with a list nobody reads."""
     payload = call(tools, "describe_dataset", {"dataset": "media_library"})
