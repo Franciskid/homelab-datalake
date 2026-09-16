@@ -460,6 +460,21 @@ def test_the_route_answers_a_select(lake):
     assert body["statement_type"] == "SELECT"
 
 
+def test_the_route_can_answer_with_named_rows(lake):
+    # A chart tool addresses a field by name; a positional array gives it nothing to
+    # name. Column order and types stay in the response either way.
+    body = _client(lake).post(
+        "/query", json={"sql": "SELECT 42 AS answer, 'x' AS label", "format": "records"}).json()
+    assert body["rows"] == [{"answer": 42, "label": "x"}]
+    assert body["columns"] == ["answer", "label"]
+
+
+def test_the_route_refuses_a_format_it_does_not_know(lake):
+    response = _client(lake).post("/query", json={"sql": "SELECT 1", "format": "csv"})
+    assert response.status_code == 400
+    assert "format" in response.json()["detail"]
+
+
 def test_the_route_refuses_a_write_with_a_message_for_the_person_typing(lake):
     response = _client(lake).post("/query", json={"sql": "DROP VIEW marts.agg_traffic_daily"})
     assert response.status_code == 400
