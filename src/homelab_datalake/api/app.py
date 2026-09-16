@@ -173,6 +173,11 @@ def create_app(
         # the switch on: the direction a mistake falls in is the whole point of a
         # default.
         read_only = body.get("read_only", True) is not False
+        # "records" gives each row as an object keyed by column name, for callers that
+        # address fields by name rather than by position.
+        fmt = body.get("format", "columns")
+        if fmt not in ("columns", "records"):
+            return _refused('`format` must be "columns" or "records".')
         # 0 means "no cap", which is the default. A caller may still ask for one, and
         # the deployment may impose one with DATALAKE_API_MAX_ROWS -- but the ceiling is
         # only applied when there is a ceiling, or every request would be clamped to
@@ -206,7 +211,7 @@ def create_app(
             outcome="ok", rows=result.row_count, truncated=result.truncated,
             elapsed_ms=result.elapsed_ms,
         ))
-        return JSONResponse(result.as_dict())
+        return JSONResponse(result.as_dict(records=fmt == "records"))
 
     return Starlette(
         routes=[

@@ -283,11 +283,20 @@ class Result:
     sql: str
     notes: list[str] = field(default_factory=list)
 
-    def as_dict(self) -> dict:
+    def as_dict(self, records: bool = False) -> dict:
+        """The result as JSON.
+
+        `records` turns each row into an object keyed by column name. The default
+        stays the pair of arrays, which is smaller and keeps column order, but a
+        chart tool reading the response over HTTP -- Grafana's Infinity datasource,
+        say -- can only map fields it can name, and cannot read a value out of a
+        positional array without being told the position of every column.
+        """
         return {
             "columns": self.columns,
             "types": self.types,
-            "rows": self.rows,
+            "rows": [dict(zip(self.columns, row, strict=True)) for row in self.rows]
+            if records else self.rows,
             "row_count": self.row_count,
             "truncated": self.truncated,
             "elapsed_ms": round(self.elapsed_ms, 1),

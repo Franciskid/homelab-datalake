@@ -48,7 +48,15 @@ REALM="${REALM:-homelab}"
 CONTAINER="${KEYCLOAK_CONTAINER:-keycloak}"
 SERVER="${KEYCLOAK_URL:-http://localhost:8282}"
 
+# Another consumer needs its own client, not a second copy of this one: they are then
+# revoked separately, and the datalake's audit log records client_id, so afterwards you
+# can still tell a Grafana panel from a workbench query.
+#
+#   CLIENT_ID=grafana-datalake CLIENT_NAME='Grafana -> datalake' \
+#     bash scripts/setup-keycloak-datalake-api.sh
 CLIENT_ID="${CLIENT_ID:-ai-platform-datalake}"
+CLIENT_NAME="${CLIENT_NAME:-AI platform -> datalake}"
+CLIENT_DESCRIPTION="${CLIENT_DESCRIPTION:-A service account reaching the datalake workbench API.}"
 # The client that *defines* the role, and whose name the datalake looks the role up
 # under. Changing this means changing MCP_OIDC_CLIENT_ID in the datalake's .env too.
 ROLE_CLIENT_ID="${ROLE_CLIENT_ID:-datalake-mcp}"
@@ -97,8 +105,8 @@ if [ -n "$(uuid_of "$CLIENT_ID")" ]; then
 else
   kc create clients -r "$REALM" \
     -s "clientId=$CLIENT_ID" \
-    -s 'name=AI platform -> datalake' \
-    -s 'description=The ai.fraserv.fr gateway, reaching the datalake workbench API on a person'"'"'s behalf.' \
+    -s "name=$CLIENT_NAME" \
+    -s "description=$CLIENT_DESCRIPTION" \
     -s 'protocol=openid-connect' \
     -s 'publicClient=false' \
     -s 'serviceAccountsEnabled=true' \
@@ -129,15 +137,17 @@ kc add-roles -r "$REALM" --uid "$SA_USER" --cclientid "$ROLE_CLIENT_ID" --rolena
 echo "  done."
 
 echo
-echo "Client secret for $CLIENT_ID -- put it in the ai-platform environment as"
-echo "DATALAKE_OIDC_CLIENT_SECRET, and nowhere in a repository:"
+echo "Client secret for $CLIENT_ID -- put it in the consumer's environment, and"
+echo "nowhere in a repository:"
 SECRET=$(kc get "clients/$CLIENT_UUID/client-secret" -r "$REALM" --fields value --format csv --noquotes | tr -d '\r')
 echo
 echo "    $SECRET"
 
 cat <<NEXT
 
-Then set these three on the ai-platform api service and restart it:
+Then set these three on the service that will call the API, and restart it. For the
+ai-platform api they are named exactly this; Grafana reads the secret as
+GRAFANA_DATALAKE_CLIENT_SECRET instead, from its own .env.production:
 
     DATALAKE_API_URL=http://datalake-api:3444
     DATALAKE_OIDC_CLIENT_ID=$CLIENT_ID
