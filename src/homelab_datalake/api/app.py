@@ -31,6 +31,7 @@ import logging
 import os
 
 from starlette.applications import Starlette
+from starlette.concurrency import run_in_threadpool
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
@@ -103,24 +104,44 @@ def create_app(
     audit: AuditLog | None = None,
     verifier: KeycloakTokenVerifier | None = None,
     manifest_path: str = DEFAULT_MANIFEST_PATH,
+    warm_interval_seconds: float | None = None,
 ) -> Starlette:
     """Build the application.
 
     Every collaborator is an argument rather than a module global so the tests can run
     the real routes against a lake in a temporary directory and no Keycloak.
+
+    `warm_interval_seconds` starts `sessions.start_background_warming()` when set.
+    It defaults to off here -- not to q.DEFAULT_WARM_INTERVAL_SECONDS -- so that
+    building an app in a test never spins up a real polling thread unless the test
+    asks for one; `main()` passes the real interval for the deployed service.
+
+    Nothing in this module runs a slow call (a session build, a query, a catalogue
+    build) directly on the event loop: every route here is `async def` because
+    `authenticate()` awaits the token verifier, and Starlette only auto-threads a
+    *sync* route function -- an `async def` one that then calls blocking code
+    inline blocks the loop for everyone, which is exactly how the 2026-09-16
+    incident's health check went from instant to 11.4s. Each blocking call below
+    is wrapped in `run_in_threadpool` for that reason; see `q.SessionCache` for
+    why the session ones are cheap after the first request even so.
     """
     cache = catalogue or CatalogueCache()
     # Built on first use, then held: the manifest ships in the image.
     _relations: dict | None = None
     pool = sessions or q.SessionCache()
     log = audit or AuditLog()
+    if warm_interval_seconds:
+        pool.start_background_warming(warm_interval_seconds)
 
     async def health(request: Request) -> Response:
         """Liveness only, and deliberately unauthenticated.
 
         It reports whether the process is up, not whether the lake is reachable --
         building the catalogue to answer a health check would make a slow MinIO
-        look like a dead API and restart something that was working.
+        look like a dead API and restart something that was working. That is also
+        why this does not itself poll the publish stamp: `start_background_warming`
+        already does, on its own timer, so a slow lake cannot make even a liveness
+        check late.
         """
         return JSONResponse({"status": "ok"})
 
@@ -128,14 +149,16 @@ def create_app(
         caller = await authenticate(request, verifier)
         if isinstance(caller, Response):
             return caller
-        return JSONResponse(cache.get().as_dict())
+        built = await run_in_threadpool(cache.get)
+        return JSONResponse(built.as_dict())
 
     async def get_relations(request: Request) -> Response:
         """How the tables connect, so a caller does not have to guess.
 
         Cached for the process lifetime rather than per request: the manifest is baked
         into the image, so it cannot change without a restart, and rebuilding the graph
-        per call would be work with no possible new answer.
+        per call would be work with no possible new answer. Not threaded: it is one
+        local JSON file read, already fast, and never touches the lake or MinIO.
         """
         caller = await authenticate(request, verifier)
         if isinstance(caller, Response):
@@ -150,7 +173,8 @@ def create_app(
         if isinstance(caller, Response):
             return caller
         logger.info("catalogue refresh requested by %s", caller)
-        return JSONResponse(cache.refresh().as_dict())
+        refreshed = await run_in_threadpool(cache.refresh)
+        return JSONResponse(refreshed.as_dict())
 
     async def run_query(request: Request) -> Response:
         caller = await authenticate(request, verifier)
@@ -188,9 +212,12 @@ def create_app(
         if q.MAX_ROWS > 0:
             max_rows = min(max_rows, q.MAX_ROWS) if max_rows > 0 else q.MAX_ROWS
 
-        session = pool.get() if read_only else pool.writable()
+        # Both branches can cost a full LakeSession._build() -- get() only if this
+        # is the very first request the process has ever served, writable() every
+        # time -- so both go through the threadpool rather than the event loop.
+        session = await run_in_threadpool(pool.get if read_only else pool.writable)
         try:
-            result = q.run(session, sql, read_only=read_only, max_rows=max_rows)
+            result = await run_in_threadpool(q.run, session, sql, read_only=read_only, max_rows=max_rows)
         except q.QueryRefused as error:
             log.write(Entry(
                 client_id=caller.client_id, user=caller.user, sql=sql,
@@ -201,9 +228,13 @@ def create_app(
         finally:
             # A writable session is built for one statement and closed after it, so
             # a temporary table or a changed setting cannot outlive the statement
-            # that made it. The read-only session is shared and stays open.
+            # that made it. The read-only session is shared and stays open -- it is
+            # released, not closed, so SessionCache can tell when a session it has
+            # already retired is finally safe to close.
             if not read_only:
-                session.close()
+                await run_in_threadpool(session.close)
+            else:
+                await run_in_threadpool(pool.release, session)
 
         log.write(Entry(
             client_id=caller.client_id, user=caller.user, sql=result.sql,
@@ -244,7 +275,7 @@ def main() -> None:
         )
 
     uvicorn.run(
-        create_app(verifier=verifier),
+        create_app(verifier=verifier, warm_interval_seconds=q.DEFAULT_WARM_INTERVAL_SECONDS),
         host=os.environ.get("DATALAKE_API_HOST", "0.0.0.0"),  # noqa: S104 - see above
         port=int(os.environ.get("DATALAKE_API_PORT", "3444")),
         log_level=os.environ.get("DATALAKE_API_LOG_LEVEL", "info"),

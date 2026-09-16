@@ -416,6 +416,35 @@ def guard_settings(lake: LakeStorage) -> dict[str, str]:
     return settings
 
 
+def view_create_statement(lake: LakeStorage, dataset: layout.Dataset) -> str:
+    """The `CREATE OR REPLACE VIEW` statement `LakeSession._build()` runs for one
+    dataset. Factored out so the choice it makes -- `union_by_name` or not -- can
+    be tested directly against a handful of files, without paying for a full
+    session over all of `layout.ALL_DATASETS`.
+
+    `union_by_name` reads every matching file's Parquet footer before the
+    statement returns, to compute the union schema -- measured at 18.0s across
+    1,805 files for raw.jellyfin_playback alone on 2026-09-16, the single most
+    expensive dataset in that incident. Skipped when `dataset.single_schema` is
+    set (see that field's docstring for which datasets qualify and why): DuckDB
+    then takes the schema from one file and binds without touching the rest,
+    which is what a fixed writer schema makes safe. Kept everywhere else,
+    because that is what lets a dataset with a genuinely evolving schema --
+    dbt output, the ai_platform registry -- bind at all rather than raising the
+    moment two files disagree on a column.
+    """
+    pattern = lake.duckdb_scan_target(dataset.prefix).replace("'", "''")
+    read = (
+        f"read_parquet('{pattern}')"
+        if dataset.single_schema
+        else f"read_parquet('{pattern}', union_by_name=true)"
+    )
+    return (
+        f'CREATE OR REPLACE VIEW "{dataset.layer}"."{dataset.table}" AS '  # noqa: S608
+        f"SELECT * FROM {read}"
+    )
+
+
 class LakeSession:
     """A DuckDB connection with the whole lake mounted as raw, curated and marts.
 
@@ -455,12 +484,8 @@ class LakeSession:
             con.execute(f"CREATE SCHEMA IF NOT EXISTS {layer};")
 
         for dataset in layout.ALL_DATASETS:
-            pattern = self.lake.duckdb_scan_target(dataset.prefix).replace("'", "''")
             try:
-                con.execute(
-                    f'CREATE OR REPLACE VIEW "{dataset.layer}"."{dataset.table}" AS '  # noqa: S608
-                    f"SELECT * FROM read_parquet('{pattern}', union_by_name=true)"
-                )
+                con.execute(view_create_statement(self.lake, dataset))
                 self.mounted.append(dataset.qualified_name)
             except duckdb.Error as error:
                 # A dataset with nothing landed yet is the ordinary case here, not a
@@ -699,8 +724,46 @@ def _jsonable(value):
     return value
 
 
+# How often the background warmer checks the publish stamp. Justified by the
+# actual incident, not a round number picked for looks: the nightly publish
+# finishes by about 04:20 UTC and the first automated report queries at 05:00 --
+# a 40-minute cushion -- while the 2026-09-16 incident was an *ad hoc* republish
+# at 17:56:46 UTC that a query hit only six minutes later. A 60s poll notices
+# either kind of republish with minutes to spare: in the ad hoc case, the
+# rebuild would already have been running for close to five of those six
+# minutes by the time the real query arrived. The cost of polling this often is
+# one os.stat() a minute -- the same call CatalogueCache already makes on every
+# request -- so there is nothing to trade off against a shorter interval except
+# a log line nobody reads; 60s was not narrowed further because there is no
+# measured benefit to being more aggressive than the margin already is.
+DEFAULT_WARM_INTERVAL_SECONDS = float(
+    os.environ.get("DATALAKE_API_WARM_INTERVAL_SECONDS", "60") or 60
+)
+
+
+class _Handle:
+    """One LakeSession plus how many callers currently hold a reference to it.
+
+    Needed because a cached session outlives any single request: between one
+    republish and the next, `get()` hands the *same* LakeSession to every
+    concurrent caller, so closing it the instant a replacement is ready would
+    close it out from under a query that checked it out a moment earlier.
+    `refs` counts `get()` calls not yet matched by a `release()`; `retiring`
+    marks a handle that has already been superseded and is only waiting for
+    `refs` to reach zero before `close()` runs.
+    """
+
+    __slots__ = ("refs", "retiring", "session")
+
+    def __init__(self, session: LakeSession) -> None:
+        self.session = session
+        self.refs = 0
+        self.retiring = False
+
+
 class SessionCache:
-    """The read-only session, kept open, rebuilt when the lake changes underneath it.
+    """The read-only session, kept open, rebuilt in the background when the lake
+    changes underneath it.
 
     The stamp is the same one the catalogue watches: the nightly job renames a new
     serving copy into place as its last step, so its identity changing is the one
@@ -708,6 +771,69 @@ class SessionCache:
     this, a session opened on Monday would keep answering from the schema it bound on
     Monday until the container was restarted -- and nothing would error, which is the
     worst way for this to be wrong.
+
+    **A republish does not make a caller wait for the rebind.** `get()` always
+    returns immediately from whatever session is already serving; when the stamp
+    has changed it also starts a background thread that builds the replacement,
+    and only swaps it in -- atomically, under the lock -- once that build
+    finishes. The one exception is the very first call with no session at all
+    (a cold start): there is nothing to answer from, so that caller pays for the
+    build, on whatever thread called `get()`.
+
+    **Why answering from the previous session while the replacement binds is
+    correct, not merely convenient.** Two things had to be checked before
+    relying on this, not assumed:
+
+    1. *Is the previous session's own serving file (`serving.duckdb`) still
+       attached underneath it?* No -- `LakeSession` never attaches it.
+       `serving.duckdb` is the MCP layer's artifact (`homelab_datalake.serving`,
+       read by `mcp/warehouse.py`); `LakeSession._build()` mounts views
+       straight over the lake's own `raw/curated/marts` prefixes via
+       `lake.duckdb_scan_target(...)`. The publish stamp this class watches is
+       only a *signal* -- the same file `CatalogueCache` watches, renamed into
+       place as the nightly job's last step -- borrowed because its identity
+       changing is the one reliable marker that the whole job, including the
+       lake publish, has finished. So there is no scenario where the old
+       session has a serving copy swapped out from under it: it was never
+       attached to one.
+    2. *Can the previous session end up reading a file that publish deleted or
+       renamed?* `assets/publish.py` and `resources.py` were read to check
+       this rather than assumed. A republish writes every new partition object
+       first and only removes what was not rewritten afterwards
+       (`_remove_stale`), and every write is a single atomic operation -- one
+       PUT on S3, a write-to-temp-then-`rename()` on disk (`LakeStorage.
+       write_table`). Confirmed empirically (not just read): a DuckDB view
+       created over `read_parquet(glob, union_by_name=...)` is not a frozen
+       snapshot of the files that matched at CREATE VIEW time -- every query
+       against it re-globs and re-reads whatever is on disk *at query time*.
+       Adding a file, removing one, or adding one with an extra column, all
+       change what a query against an already-created view returns on the
+       next call, with no error and no stale rows. So a query against the old
+       session after `_remove_stale` has already run does not see a deleted
+       file (the glob no longer matches it) and cannot see a half-written one
+       (writes are atomic) -- it already sees the republished data for any
+       table whose files existed before this run. The one real gap is a table
+       that had *zero* objects when the old session was built: `LakeSession`
+       records that as `missing` rather than creating a view for it (see
+       `_build()`), so if this run is the table's first-ever publish, the old
+       session still reports it missing until the swap completes -- the same
+       "table not found" 400 the API already returns correctly for an empty
+       dataset (`test_a_missing_table_comes_back_as_the_caller_s_mistake`),
+       not a hang, and it clears itself within one rebuild.
+
+    So "serving the previous session for about two minutes" understates it: for
+    curated and marts tables, republished before the stamp itself changes, most
+    queries during that window already see the *new* data through the old
+    session's live views -- rebuilding is not what makes them current. What the
+    rebuild concretely buys is a session that has a view at all for a table
+    whose first-ever objects landed in this run, and a `_stamped` value that
+    matches reality again, so the next stamp check is not a wasted rebuild.
+
+    **The old session is closed only once nothing is still using it.** `get()`
+    and `release()` (called by every caller in `api/app.py`, symmetrically) hold
+    a per-session reference count; a superseded session moves to `_retiring` and
+    is closed the moment its count reaches zero, whether that happens during the
+    swap (nobody was mid-query) or later, from `release()`.
 
     Writable sessions are deliberately *not* cached. One is built for the statement
     and closed after it, so nothing a write left behind -- a temporary table, a
@@ -720,26 +846,151 @@ class SessionCache:
         self._lake = lake
         self._stamp = stamp or publish_stamp
         self._lock = threading.Lock()
-        self._session: LakeSession | None = None
+        self._current: _Handle | None = None
         self._stamped: tuple[int, int] | None = None
+        self._retiring: list[_Handle] = []
+        self._rebuilding = False
 
     def get(self) -> LakeSession:
+        """A session to query against. Never blocks on a rebuild once warm.
+
+        Must never be called from the event loop: the cold-start path builds a
+        session inline, which is the same expensive `LakeSession._build()` this
+        module exists to keep off it. Every caller in this codebase reaches
+        `get()` through `starlette.concurrency.run_in_threadpool` -- see
+        `api/app.py`. Pair every call with `release()`.
+        """
         with self._lock:
-            stamp = self._stamp()
-            if self._session is None or stamp != self._stamped:
-                if self._session is not None:
-                    logger.info("the lake was republished; rebinding the query session")
-                    self._session.close()
-                self._session = LakeSession(lake=self._lake, writable=False)
-                self._stamped = stamp
-            return self._session
+            if self._current is None:
+                # Cold start: nothing to answer from while this builds, so this
+                # caller -- and only this one -- pays for it.
+                self._current = _Handle(LakeSession(lake=self._lake, writable=False))
+                self._stamped = self._stamp()
+            else:
+                self._maybe_start_rebuild()
+            self._current.refs += 1
+            return self._current.session
+
+    def release(self, session: LakeSession) -> None:
+        """Match a `get()`. Closes a retired session once nobody still holds it."""
+        with self._lock:
+            handle = self._handle_for(session)
+            if handle is None:
+                return  # already closed, or not a session this cache issued
+            handle.refs -= 1
+            if handle.retiring and handle.refs <= 0 and handle in self._retiring:
+                self._retiring.remove(handle)
+                handle.session.close()
+
+    def maybe_warm(self) -> None:
+        """Notice a republish and start rebinding, without blocking or counting
+        a reference.
+
+        This is what `start_background_warming` polls, and it is also safe to
+        call directly from the event loop -- unlike `get()` -- because it never
+        builds a session inline. A cold cache (no session at all yet) is left
+        alone: warming exists to keep an already-warm session warm, not to
+        race the first real caller for the cold-start build.
+        """
+        with self._lock:
+            if self._current is not None:
+                self._maybe_start_rebuild()
+
+    def start_background_warming(
+        self, interval: float = DEFAULT_WARM_INTERVAL_SECONDS
+    ) -> threading.Thread:
+        """Poll the publish stamp on a timer, so a republish starts rebinding
+        before any caller asks a question that needs it.
+
+        Without this, nothing notices a republish until the next `get()` --
+        which means the *caller* of that `get()` is the one whose request
+        happens to land first after the nightly build, and there is no reason
+        that has to be a query rather than, say, the automated report itself.
+        Polling independently of traffic means the rebuild is already running
+        (or done) by the time any request arrives. See `DEFAULT_WARM_INTERVAL_
+        SECONDS` for why 60s specifically. Returns the thread so a caller that
+        wants to (tests, mainly) can join or inspect it; production code does
+        not need to.
+        """
+        def loop() -> None:
+            while True:
+                time.sleep(interval)
+                try:
+                    self.maybe_warm()
+                except Exception:
+                    logger.exception("background session warm check failed")
+
+        thread = threading.Thread(
+            target=loop, daemon=True, name="datalake-session-warmer"
+        )
+        thread.start()
+        return thread
+
+    # -- internals, only ever called with self._lock held ------------------------
+
+    def _maybe_start_rebuild(self) -> None:
+        stamp = self._stamp()
+        if stamp == self._stamped or self._rebuilding:
+            return
+        self._rebuilding = True
+        threading.Thread(
+            target=self._rebuild, args=(stamp,), daemon=True,
+            name="datalake-session-rebind",
+        ).start()
+
+    def _rebuild(self, stamp) -> None:
+        """Build the replacement with the lock released, then swap it in under it.
+
+        Building is the slow part -- a footer read per file for every dataset
+        without `single_schema`, 104.7s measured across 168 datasets on
+        2026-09-16 -- and it runs off the lock so every `get()` and `release()`
+        in the meantime is served by the session already running, rather than
+        queued behind a build nobody asked to wait for.
+        """
+        try:
+            replacement = LakeSession(lake=self._lake, writable=False)
+        except Exception:
+            logger.exception(
+                "background session rebind failed; still serving the previous session"
+            )
+            with self._lock:
+                self._rebuilding = False
+            return
+
+        with self._lock:
+            old = self._current
+            self._current = _Handle(replacement)
+            self._stamped = stamp
+            self._rebuilding = False
+            logger.info("the lake was republished; rebound the query session")
+            if old is not None:
+                old.retiring = True
+                if old.refs > 0:
+                    self._retiring.append(old)
+                else:
+                    old.session.close()
+
+    def _handle_for(self, session: LakeSession) -> _Handle | None:
+        if self._current is not None and self._current.session is session:
+            return self._current
+        return next((h for h in self._retiring if h.session is session), None)
 
     def writable(self) -> LakeSession:
-        """A fresh session that may write. The caller closes it."""
+        """A fresh session that may write. The caller closes it.
+
+        Building this is exactly as expensive as the read-only rebuild above --
+        same `LakeSession._build()` -- so a caller on the event loop must run
+        this through `run_in_threadpool` too.
+        """
         return LakeSession(lake=self._lake, writable=True)
 
     def close(self) -> None:
+        """Close everything, regardless of outstanding references. For shutdown
+        and test teardown, not for the request path."""
         with self._lock:
-            if self._session is not None:
-                self._session.close()
-                self._session = None
+            if self._current is not None:
+                self._current.session.close()
+                self._current = None
+            for handle in self._retiring:
+                handle.session.close()
+            self._retiring = []

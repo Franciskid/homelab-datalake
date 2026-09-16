@@ -59,6 +59,86 @@ def test_migration_moves_every_legacy_prefix():
     assert moved == {f"raw/{d.table}" for d in layout.RAW_DATASETS}
 
 
+# --------------------------------------------------------------------------------
+# single_schema: a per-dataset promise LakeSession trusts to skip union_by_name
+# (homelab_datalake.api.query.view_create_statement). Wrong in either direction is
+# a real failure mode -- flagged and evolving raises a schema-mismatch error mid
+# publish; unflagged and fixed just costs a footer read it did not need to -- so
+# both the *set* of flagged datasets and each writer's actual behaviour are
+# checked here, not only the flag.
+# --------------------------------------------------------------------------------
+
+
+def test_only_datasets_with_a_provably_fixed_writer_schema_are_flagged():
+    """Enumerated explicitly so adding one is a deliberate, reviewed decision.
+
+    jellyfin_playback and jellyfin_activity qualify because every partition is
+    built through project(..., _PLAYBACK_SCHEMA) / project(..., _ACTIVITY_SCHEMA)
+    in assets/jellyfin.py -- Python code with one hardcoded pyarrow schema, not a
+    dbt model or a registry that gains columns. See the next test for the writer
+    side of this claim.
+    """
+    flagged = {d.table for d in layout.ALL_DATASETS if d.single_schema}
+    assert flagged == {"jellyfin_playback", "jellyfin_activity"}
+
+
+@pytest.mark.parametrize("function_name, schema_name", [
+    # jellyfin_playback_history_raw (the backfill asset) does not build the
+    # Arrow table itself -- it delegates each hour to this helper, "written
+    # exactly the way jellyfin_playback_raw writes a partition" per its own
+    # docstring -- so this is the function whose schema argument actually
+    # matters, not the asset that calls it.
+    ("jellyfin_playback_raw", "_PLAYBACK_SCHEMA"),
+    ("_write_playback_history_hour", "_PLAYBACK_SCHEMA"),
+    ("jellyfin_activity_raw", "_ACTIVITY_SCHEMA"),
+    ("_write_activity_history_day", "_ACTIVITY_SCHEMA"),
+])
+def test_every_writer_of_a_flagged_dataset_still_uses_the_declared_schema(
+    function_name, schema_name
+):
+    """The regression this guards against: single_schema=True is a promise that
+    LakeSession relies on without checking it itself (checking it would mean
+    reading every footer, which is the cost the flag exists to avoid). If a
+    writer changed to project onto a different schema, or none, a flagged
+    dataset could grow a file union_by_name would have caught and single_schema
+    silently will not.
+
+    Every function that actually builds the Arrow table for a jellyfin_playback
+    or jellyfin_activity partition -- the two per-partition assets, and the two
+    helpers their backfill counterparts delegate to -- is inspected for the
+    schema object it hands `pa.Table.from_pylist`: not run, just read, so this
+    needs no MinIO and no Dagster context. Must still be the one shared
+    module-level constant. A schema built inline, or a second constant that
+    happens to look the same, would not be caught by this same-name check and
+    is exactly why the datasets above are also cross-checked against the *set*
+    of flagged tables instead of trusted alone.
+    """
+    import ast
+    import inspect
+
+    from homelab_datalake.assets import jellyfin as jellyfin_assets
+
+    # Not inspect.getsource(getattr(module, name)) -- these are @asset/@multi_asset
+    # functions, so the module attribute is a Dagster AssetsDefinition wrapping the
+    # original function, not the function itself, and inspect cannot find source
+    # for that. Parsing the module's own source and pulling out the one FunctionDef
+    # sidesteps the decorator entirely.
+    module_source = inspect.getsource(jellyfin_assets)
+    tree = ast.parse(module_source)
+    node = next(
+        (n for n in ast.walk(tree)
+         if isinstance(n, ast.FunctionDef) and n.name == function_name),
+        None,
+    )
+    assert node is not None, f"no function named {function_name} in {jellyfin_assets.__name__}"
+    source = ast.get_source_segment(module_source, node)
+    assert f"schema={schema_name}" in source, (
+        f"{function_name} no longer writes with {schema_name}; either restore it "
+        "or set single_schema=False on the corresponding dataset in layout.py, "
+        "because LakeSession trusts the flag without checking it at bind time."
+    )
+
+
 def test_plan_keeps_the_partition_path():
     key = "raw/npm_access/host=fraserv/dt=2026-08-27/data.parquet"
     plan = migrate_layout.plan({key: 100})

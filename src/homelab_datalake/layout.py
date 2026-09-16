@@ -88,6 +88,37 @@ class Dataset:
     # assumed -- see the note beside `_AI_PLATFORM_RAW` below -- and the real number
     # did not support it. Left in place for the next table that actually earns it.
     lake_only: str = ""
+    # True when every object under this prefix is written from one fixed pyarrow
+    # schema -- the writer builds the Arrow table with an explicit `schema=`
+    # constant on every call, not from whatever columns happened to be present that
+    # day. `homelab_datalake.api.query.LakeSession` uses this to skip
+    # `union_by_name` when it binds the dataset's view: measured on the production
+    # incident of 2026-09-16, `union_by_name=true` reads every matching file's
+    # Parquet footer *at bind time* to compute the union schema -- 18.0s across
+    # 1,805 files for raw.jellyfin_playback alone -- while a plain `read_parquet`
+    # over a glob whose files are already known to share one schema binds from a
+    # single file and defers the rest to query time. Verified directly (not
+    # inferred from documentation): a `CREATE VIEW ... read_parquet(glob,
+    # union_by_name=true)` over a glob containing one corrupt file fails at CREATE
+    # VIEW time, because it opens every file's footer before the statement
+    # returns; the same statement without `union_by_name` succeeds, because it
+    # does not.
+    #
+    # This is true for `jellyfin_playback` and `jellyfin_activity` today -- both
+    # are written exclusively through `project(..., _PLAYBACK_SCHEMA)` /
+    # `project(..., _ACTIVITY_SCHEMA)` in `homelab_datalake.assets.jellyfin`, and
+    # `project()` conforms every row to that schema before the Arrow table is ever
+    # built, so a partition with an extra or missing column cannot reach the lake.
+    # It is deliberately NOT set for anything dbt builds (every curated and marts
+    # dataset): a dbt model's output columns change when the model changes, a
+    # publish rewrites every partition of a table in one run, and a query can land
+    # mid-run, while dbt has rewritten some of that table's partition files under
+    # the new column set and not yet reached the rest -- `union_by_name` is what
+    # keeps that transient mix queryable instead of raising a schema-mismatch
+    # error. It is also not set for `ai_platform`'s registry tables, which gain
+    # columns as the platform grows. Flip it only for a dataset whose writer is
+    # Python code with one hardcoded pyarrow schema, never for one built by SQL.
+    single_schema: bool = False
 
     @property
     def prefix(self) -> str:
@@ -103,11 +134,12 @@ class Dataset:
         return f"{self.layer}.{self.table}"
 
 
-def _raw(table, domain, source, name, description, partition_column="dt", lake_only=""):
+def _raw(table, domain, source, name, description, partition_column="dt", lake_only="",
+         single_schema=False):
     return Dataset(
         table=table, layer=LAYER_RAW, domain=domain, source=source, name=name,
         description=description, partition_column=partition_column,
-        legacy_prefix=f"raw/{table}", lake_only=lake_only,
+        legacy_prefix=f"raw/{table}", lake_only=lake_only, single_schema=single_schema,
     )
 
 
@@ -152,12 +184,17 @@ RAW_DATASETS: tuple[Dataset, ...] = (
     # platform's own Datalake Analyst had just refused a weekend watch-time question
     # for data the warehouse simply did not have. See parsing/jellyfin.py for what
     # changed and why.
+    # single_schema=True for both: every partition is built through project(...,
+    # _PLAYBACK_SCHEMA) / project(..., _ACTIVITY_SCHEMA) in assets/jellyfin.py, so
+    # the writer cannot land a file with a different column set. See
+    # Dataset.single_schema for what that buys LakeSession.
     _raw("jellyfin_playback", DOMAIN_MEDIA, "jellyfin", "playback",
          "Every Playback Reporting plugin row: who watched what, on what, for how "
-         "long the player was open.", partition_column="partition_hour"),
+         "long the player was open.", partition_column="partition_hour",
+         single_schema=True),
     _raw("jellyfin_activity", DOMAIN_MEDIA, "jellyfin", "activity",
          "The server activity log: sign-ins, playback starts and stops, library and "
-         "account changes."),
+         "account changes.", single_schema=True),
     _raw("jellyfin_users", DOMAIN_MEDIA, "jellyfin", "users",
          "Daily snapshot of the account list: name, admin flag, disabled flag, last "
          "seen. Nothing from configuration or password policy beyond those."),

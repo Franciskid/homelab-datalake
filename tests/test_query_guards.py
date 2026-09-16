@@ -13,6 +13,7 @@ each enough to get past a pattern, and the last one *executes* -- measured on Du
 
 import json
 import threading
+import time
 
 import duckdb
 import pyarrow as pa
@@ -541,11 +542,27 @@ def test_the_route_audits_what_it_ran_and_what_it_refused(lake, tmp_path):
 
 
 def test_the_session_is_rebound_when_the_lake_is_republished(lake):
+    """The rebind itself now runs on a background thread (see SessionCache), so
+    the swap does not necessarily land before the next `get()` -- this polls
+    rather than assuming timing, the same way a caller waiting out a nightly
+    republish would. The narrower claims (old session served meanwhile, closed
+    only once released) are in tests/test_session_cache.py.
+    """
     stamp = [(1, 1)]
     pool = q.SessionCache(lake=lake, stamp=lambda: stamp[0])
     first = pool.get()
-    assert pool.get() is first
+    pool.release(first)
+    again = pool.get()
+    assert again is first
+    pool.release(again)
 
     stamp[0] = (2, 2)  # warehouse_serving renamed a new copy into place
-    assert pool.get() is not first
+    deadline = time.monotonic() + 5.0
+    second = first
+    while second is first and time.monotonic() < deadline:
+        second = pool.get()
+        pool.release(second)
+        if second is first:
+            time.sleep(0.01)
+    assert second is not first
     pool.close()
