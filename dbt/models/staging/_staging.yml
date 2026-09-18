@@ -847,6 +847,152 @@ models:
       - name: is_series
         description: '{{ doc("lit_is_series") }}'
 
+  - name: stg_jellyfin_searches
+    description: >
+      Search requests, typed. One row per request the AI Search plugin logged:
+      the server's own /Items, /Search/Hints, /Persons and /Artists searches,
+      and the plugin's own AI popup searches (kind = 'ai').
+    columns:
+      - name: partition_date
+        description: '{{ doc("sch_partition_date") }}'
+        tests: [not_null]
+      - name: partition_hour
+        description: '{{ doc("sch_partition_hour") }}'
+        tests: [not_null]
+      - name: extracted_at
+        description: '{{ doc("sch_extracted_at") }}'
+        tests: [not_null]
+      - name: search_id
+        description: '{{ doc("sch_search_id") }}'
+        tests: [not_null, unique]
+      - name: searched_at
+        description: '{{ doc("sch_searched_at") }}'
+        tests: [not_null]
+      - name: kind
+        description: '{{ doc("sch_kind") }}'
+        tests:
+          - accepted_values: {values: ['search', 'ai']}
+      - name: endpoint
+        description: '{{ doc("sch_endpoint") }}'
+      - name: method
+        description: '{{ doc("sch_method") }}'
+      - name: status_code
+        description: '{{ doc("sch_status_code") }}'
+      - name: duration_ms
+        description: '{{ doc("sch_duration_ms") }}'
+      - name: search_term
+        description: '{{ doc("sch_search_term") }}'
+      - name: user_id
+        description: '{{ doc("sch_user_id") }}'
+      - name: user_name
+        description: '{{ doc("sch_user_name") }}'
+      - name: is_api_key
+        description: '{{ doc("sch_is_api_key") }}'
+      - name: client
+        description: '{{ doc("sch_client") }}'
+      - name: client_version
+        description: '{{ doc("sch_client_version") }}'
+      - name: device
+        description: '{{ doc("sch_device") }}'
+      - name: device_id
+        description: '{{ doc("sch_device_id") }}'
+      - name: remote_address
+        description: '{{ doc("sch_remote_address") }}'
+      - name: client_hash
+        description: '{{ doc("client_hash") }}'
+      - name: client_network
+        description: '{{ doc("client_network") }}'
+      - name: client_trust
+        description: '{{ doc("client_trust") }}'
+      - name: user_agent
+        description: '{{ doc("sch_user_agent") }}'
+      - name: parameters_json
+        description: '{{ doc("sch_parameters_json") }}'
+      - name: parent_id
+        description: '{{ doc("sch_parent_id") }}'
+      - name: parent_name
+        description: '{{ doc("sch_parent_name") }}'
+      - name: result_count
+        description: '{{ doc("sch_result_count") }}'
+      - name: total_record_count
+        description: '{{ doc("sch_total_record_count") }}'
+      - name: results_logged
+        description: '{{ doc("sch_results_logged") }}'
+      - name: semantic_enabled
+        description: '{{ doc("sch_semantic_enabled") }}'
+      - name: semantic_ran
+        description: '{{ doc("sch_semantic_ran") }}'
+      - name: semantic_skipped_reason
+        description: '{{ doc("sch_semantic_skipped_reason") }}'
+      - name: semantic_mode
+        description: '{{ doc("sch_semantic_mode") }}'
+      - name: semantic_duration_ms
+        description: '{{ doc("sch_semantic_duration_ms") }}'
+      - name: semantic_raw_hits
+        description: '{{ doc("sch_semantic_raw_hits") }}'
+      - name: semantic_matches
+        description: '{{ doc("sch_semantic_matches") }}'
+      - name: semantic_error
+        description: '{{ doc("sch_semantic_error") }}'
+      - name: mode
+        description: '{{ doc("sch_mode") }}'
+      - name: answer
+        description: '{{ doc("sch_answer") }}'
+      - name: unmapped_json
+        description: >
+          JSON, or null. Any field the plugin sent that this schema does not
+          name, dotted for a field nested inside semantic or one of the results.
+      - name: is_ai_search
+        description: Whether kind is 'ai'.
+      - name: had_no_results
+        description: Whether result_count was zero.
+
+  - name: stg_jellyfin_search_results
+    description: >
+      Search results, typed. One row per item a logged search returned, capped
+      at 250 per search by the plugin.
+    columns:
+      - name: partition_date
+        description: The UTC calendar date of searched_at.
+        tests: [not_null]
+      - name: partition_hour
+        description: The start of the hourly partition this row was read for, in UTC.
+        tests: [not_null]
+      - name: extracted_at
+        description: When this pipeline read the row.
+        tests: [not_null]
+      - name: search_id
+        description: '{{ doc("schr_search_id") }}'
+        tests: [not_null]
+      - name: searched_at
+        description: '{{ doc("schr_searched_at") }}'
+        tests: [not_null]
+      - name: position
+        description: '{{ doc("schr_position") }}'
+        tests: [not_null]
+      - name: item_id
+        description: '{{ doc("schr_item_id") }}'
+      - name: name
+        description: '{{ doc("schr_name") }}'
+      - name: type
+        description: '{{ doc("schr_type") }}'
+      - name: year
+        description: '{{ doc("schr_year") }}'
+      - name: series_name
+        description: '{{ doc("schr_series_name") }}'
+      - name: season_number
+        description: '{{ doc("lit_season_number") }}'
+      - name: episode_number
+        description: '{{ doc("lit_episode_number") }}'
+      - name: semantic
+        description: '{{ doc("schr_semantic") }}'
+      - name: semantic_score
+        description: '{{ doc("schr_semantic_score") }}'
+      - name: semantic_rank
+        description: '{{ doc("schr_semantic_rank") }}'
+      - name: reason
+        description: '{{ doc("schr_reason") }}'
+
   - name: stg_tmdb_titles
     description: >
       The few TMDB figures Jellyfin has no field for, one row per id. Optional: empty

@@ -879,6 +879,158 @@ sources:
               JSON. Any field Jellyfin returned that nothing here reads, kept rather
               than dropped -- the same convention as jellyfin_titles._unmapped.
 
+      - name: jellyfin_searches
+        description: >
+          Every search request the AI Search plugin logged: the server's own
+          /Items, /Search/Hints, /Persons and /Artists searches, and the plugin's
+          own AI popup searches. Hourly partitions, merged rather than replaced --
+          entries reach the log through an async queue, so a later read of an hour
+          can add rows a first read could not see, the same reasoning
+          jellyfin_playback's own merge documents. Landed when the plugin reached
+          AiSearch/1.2.0.0; there is nothing on the server from before that.
+        columns:
+          - name: partition_hour
+            description: The start of the hourly partition this row was read for, in UTC.
+          - name: dt
+            description: The UTC calendar date of searched_at. A convenience for joining to daily-grain tables.
+          - name: _extracted_at
+            description: >
+              When this pipeline read the row. What lets the merge pick the newest
+              version of an entry the plugin's queue had not yet committed on an
+              earlier read.
+          - name: id
+            description: The plugin's own id for the request.
+          - name: searched_at
+            description: When the request was made, in UTC, as the plugin recorded it.
+          - name: kind
+            description: '"search" for one of Jellyfin''s own endpoints, or "ai" for the plugin''s own AI popup search.'
+          - name: endpoint
+            description: The request path that was searched, for example /Items or /Search/Hints.
+          - name: method
+            description: The HTTP method of the request.
+          - name: status_code
+            description: The HTTP status the server answered with.
+          - name: duration_ms
+            description: How long the server took to answer, in milliseconds.
+          - name: search_term
+            description: The text that was searched. Null for a request with no searchTerm parameter.
+          - name: user_id
+            description: The account's Jellyfin id, when the request was made by a signed-in user.
+          - name: user_name
+            description: The account's name, logged by the plugin at request time -- no join required.
+          - name: is_api_key
+            description: Whether the request was authenticated with an API key rather than a user session.
+          - name: client
+            description: The Jellyfin client that made the request -- Jellyfin Web, Android TV, Swiftfin, and so on.
+          - name: client_version
+            description: The client's own self-reported version string.
+          - name: device
+            description: The physical device or browser the client ran on.
+          - name: device_id
+            description: The client's stable device id, as Jellyfin assigns it.
+          - name: remote_address
+            description: >
+              The client address exactly as the server logged it, raw -- the same
+              2026-09-14 decision homelab_datalake.privacy documents for
+              raw.npm_access. Private-warehouse-only.
+          - name: client_hash
+            description: >
+              Salted HMAC-SHA256 of the client address, truncated to 16 bytes,
+              same derivation as raw.npm_access.client_hash -- see
+              homelab_datalake.privacy.redact_client.
+          - name: client_network
+            description: The client address truncated to its /24 (IPv4) or /48 (IPv6).
+          - name: client_trust
+            description: >
+              Whether the logged address named a visitor ("resolved") or a
+              Cloudflare machine standing in for one ("cdn_edge"); "unknown" when
+              there was no usable address.
+          - name: user_agent
+            description: The requesting client's User-Agent header, exactly as sent.
+          - name: parameters
+            description: JSON. The request's own query string, minus credentials, values kept as strings.
+          - name: parent_id
+            description: The library folder or parent item the search was scoped to, when named.
+          - name: parent_name
+            description: The name of parent_id, when the request named one.
+          - name: result_count
+            description: The true number of results the search matched, whether or not every one was logged.
+          - name: total_record_count
+            description: The total record count the underlying Jellyfin query reported, before paging.
+          - name: results_logged
+            description: How many of result_count actually have a row in jellyfin_search_results -- capped at 250 per search by the plugin.
+          - name: semantic_enabled
+            description: Whether the semantic search provider is configured on the server at all.
+          - name: semantic_ran
+            description: Whether the semantic provider actually ran for this request.
+          - name: semantic_skipped_reason
+            description: Why the semantic provider did not run, when it is enabled but did not. Null otherwise.
+          - name: semantic_mode
+            description: How the semantic provider was reached, for example "remote" or "local". Null when it did not run.
+          - name: semantic_duration_ms
+            description: How long the semantic provider took to answer, in milliseconds. Null when it did not run.
+          - name: semantic_raw_hits
+            description: How many candidates the semantic provider returned before this search's own filters and ranking were applied.
+          - name: semantic_matches
+            description: How many of the semantic provider's candidates survived into the final result set.
+          - name: semantic_error
+            description: What the semantic provider reported, when it ran and failed. Null otherwise.
+          - name: mode
+            description: '"normal" or "surprise", for an ai search. Null for kind = "search".'
+          - name: answer
+            description: The model's own summary of the results, for an ai search that produced one. Null otherwise.
+          - name: _unmapped
+            description: >
+              JSON. Any field the plugin sent that this schema does not name --
+              dotted paths for a field nested inside semantic (semantic.x) or one
+              of the results (results[].x). Kept rather than dropped.
+
+      - name: jellyfin_search_results
+        description: >
+          One row per result a logged search returned, capped at 250 per search by
+          the plugin -- result_count on the parent search is always the true
+          count, results_logged how many landed here. Same hourly partitions and
+          merge-not-replace as jellyfin_searches, keyed on (search_id, position).
+        columns:
+          - name: partition_hour
+            description: The start of the hourly partition this row was read for, in UTC.
+          - name: dt
+            description: The UTC calendar date of searched_at.
+          - name: _extracted_at
+            description: When this pipeline read the row.
+          - name: search_id
+            description: The search this result belongs to. Joins to jellyfin_searches.id.
+          - name: searched_at
+            description: When the parent search was made, in UTC -- carried onto the result row so it needs no join to answer "when".
+          - name: position
+            description: Where this result sat in the search's own ranking, one-based.
+          - name: item_id
+            description: The Jellyfin item this result points at, when the search matched a library item.
+          - name: name
+            description: The result's display name, as the plugin recorded it.
+          - name: type
+            description: The result's item type -- Movie, Series, Episode, Person, and so on, depending on which endpoint was searched.
+          - name: year
+            description: The result's production year, when it has one.
+          - name: series_name
+            description: The show this result belongs to, when the result is an episode.
+          - name: season_number
+            description: The season number, when the result is an episode or a season.
+          - name: episode_number
+            description: The episode number, when the result is an episode.
+          - name: semantic
+            description: Whether this result came from the semantic provider rather than Jellyfin's own keyword match.
+          - name: semantic_score
+            description: The semantic provider's own relevance score for this result. Null for a result that did not come from it.
+          - name: semantic_rank
+            description: This result's rank within the semantic provider's own candidates. Null for a result that did not come from it.
+          - name: reason
+            description: The model's own explanation for including this result, for an ai search that produced one. Null otherwise.
+          - name: _unmapped
+            description: >
+              JSON. Any field the plugin sent on this result that this schema does
+              not name. Kept rather than dropped.
+
       - name: camera_events
         description: >
           Attention events. Not final when first written: vision analysis lands hours

@@ -58,6 +58,8 @@ from homelab_datalake.assets.jellyfin import (
     _LIBRARY_ITEMS_SCHEMA,
     _PEOPLE_SCHEMA,
     _PLAYBACK_SCHEMA,
+    _SEARCH_RESULT_SCHEMA,
+    _SEARCH_SCHEMA,
     _STREAM_SCHEMA,
     _TITLE_SCHEMA,
     _USERS_SCHEMA,
@@ -66,6 +68,8 @@ from homelab_datalake.assets.jellyfin import (
     LIBRARY_ITEMS_PREFIX,
     PEOPLE_PREFIX,
     PLAYBACK_PREFIX,
+    SEARCH_RESULTS_PREFIX,
+    SEARCHES_PREFIX,
     STREAM_PREFIX,
     TITLE_PREFIX,
     USERS_PREFIX,
@@ -73,6 +77,7 @@ from homelab_datalake.assets.jellyfin import (
     jellyfin_library_items_raw,
     jellyfin_library_raw,
     jellyfin_playback_raw,
+    jellyfin_searches_raw,
     jellyfin_users_raw,
 )
 from homelab_datalake.assets.litellm_spend import _SCHEMA as SPEND_SCHEMA
@@ -142,6 +147,11 @@ _SOURCES = (
      jellyfin_library_items_raw,
      ("Daily snapshot of everything in the library that is not a movie: series, "
       "seasons, episodes, box sets and other videos.")),
+    ("jellyfin_searches", SEARCHES_PREFIX, _SEARCH_SCHEMA, jellyfin_searches_raw,
+     ("Every search request the AI Search plugin logged: Jellyfin's own search "
+      "endpoints and the plugin's own AI popup searches.")),
+    ("jellyfin_search_results", SEARCH_RESULTS_PREFIX, _SEARCH_RESULT_SCHEMA,
+     jellyfin_searches_raw, "One row per result a logged search returned."),
     ("camera_events", EVENT_PREFIX, _EVENT_SCHEMA, camera_events_raw,
      "Attention events. Not final when first written: vision analysis lands later."),
     ("camera_clips", CLIP_PREFIX, _CLIP_SCHEMA, camera_events_raw,

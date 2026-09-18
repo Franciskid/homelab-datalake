@@ -693,6 +693,238 @@ Whether `started_at` fell on a Saturday or a Sunday, in UTC.
 {% enddocs %}
 
 
+{# --------------------------------------------------------------- search log #}
+{# jellyfin_searches: one row per request. AI Search plugin, AiSearch/1.2.0.0 onward. #}
+
+{% docs sch_partition_date %}
+The UTC calendar date of `searched_at`. A convenience for joining a search to a
+daily-grain table; the partition itself is hourly.
+{% enddocs %}
+
+{% docs sch_partition_hour %}
+The start, in UTC, of the hourly partition this search was read for.
+{% enddocs %}
+
+{% docs sch_extracted_at %}
+When this pipeline read the row. What lets the merge in `jellyfin_searches_raw` pick
+the newest version of an entry the plugin's async queue had not yet committed on an
+earlier read.
+{% enddocs %}
+
+{% docs sch_search_id %}
+The plugin's own id for the request. Stable across reads, which is the key
+`jellyfin_searches_raw` merges an hour's two reads on.
+{% enddocs %}
+
+{% docs sch_searched_at %}
+When the request was made, in UTC, as the plugin recorded it.
+{% enddocs %}
+
+{% docs sch_kind %}
+`search` for one of Jellyfin's own endpoints (`/Items`, `/Search/Hints`, `/Persons`,
+`/Artists`) or `ai` for the plugin's own AI popup search. `mode` and `answer` are only
+ever populated for `ai`.
+{% enddocs %}
+
+{% docs sch_endpoint %}
+The request path that was searched, for example `/Items` or `/Search/Hints`.
+{% enddocs %}
+
+{% docs sch_method %}
+The HTTP method of the request -- `GET` for every search endpoint on this server so far.
+{% enddocs %}
+
+{% docs sch_status_code %}
+The HTTP status the server answered with.
+{% enddocs %}
+
+{% docs sch_duration_ms %}
+How long the server took to answer the request, in milliseconds.
+{% enddocs %}
+
+{% docs sch_search_term %}
+The text that was searched. Null for a request that carries no `searchTerm` parameter
+at all -- an endpoint like `/Persons` can be called with other filters instead.
+{% enddocs %}
+
+{% docs sch_user_id %}
+The account's Jellyfin id, when the request was made by a signed-in user rather than
+an API key. See `is_api_key`.
+{% enddocs %}
+
+{% docs sch_user_name %}
+The account's name, logged by the plugin at request time -- no join required, the
+same reasoning `pb_user_name` documents for playback.
+{% enddocs %}
+
+{% docs sch_is_api_key %}
+Whether the request was authenticated with an API key rather than a signed-in user's
+own session.
+{% enddocs %}
+
+{% docs sch_client %}
+The Jellyfin client that made the request -- Jellyfin Web, Android TV, Swiftfin, and
+so on, the same vocabulary `pb_client_name` uses.
+{% enddocs %}
+
+{% docs sch_client_version %}
+The client's own self-reported version string.
+{% enddocs %}
+
+{% docs sch_device %}
+The physical device or browser the client ran on.
+{% enddocs %}
+
+{% docs sch_device_id %}
+The client's stable device id, as Jellyfin assigns it. Distinct from `client_hash` --
+this identifies the app instance, not the network address it connected from.
+{% enddocs %}
+
+{% docs sch_remote_address %}
+The client address exactly as the server logged it, raw -- the same 2026-09-14
+decision `homelab_datalake.privacy` documents for `raw.npm_access`: private-warehouse-
+only, no export, seed or publish path may select it. There is no earlier gap to
+backfill here the way npm_access has one -- collection starts the day the AI Search
+plugin began logging searches, and nothing on the server predates that.
+{% enddocs %}
+
+{% docs sch_user_agent %}
+The requesting client's User-Agent header, exactly as sent.
+{% enddocs %}
+
+{% docs sch_parameters_json %}
+JSON. The request's own query string, minus credentials, values kept as strings.
+{% enddocs %}
+
+{% docs sch_parent_id %}
+The library folder or parent item the search was scoped to, when the request named
+one.
+{% enddocs %}
+
+{% docs sch_parent_name %}
+The name of `parent_id`, when the request named one.
+{% enddocs %}
+
+{% docs sch_result_count %}
+The true number of results the search matched, whether or not every one of them was
+logged -- see `results_logged`.
+{% enddocs %}
+
+{% docs sch_total_record_count %}
+The total record count the underlying Jellyfin query reported, before any paging the
+caller applied.
+{% enddocs %}
+
+{% docs sch_results_logged %}
+How many of `result_count` results actually have a row in `fct_jellyfin_search_result`
+-- the plugin caps what it logs per search at 250.
+{% enddocs %}
+
+{% docs sch_semantic_enabled %}
+Whether the semantic search provider is configured on the server at all.
+{% enddocs %}
+
+{% docs sch_semantic_ran %}
+Whether the semantic provider actually ran for this request. Can be false even when
+`semantic_enabled` is true -- see `semantic_skipped_reason`.
+{% enddocs %}
+
+{% docs sch_semantic_skipped_reason %}
+Why the semantic provider did not run, when `semantic_enabled` is true and
+`semantic_ran` is false. Null when it ran, or was never enabled.
+{% enddocs %}
+
+{% docs sch_semantic_mode %}
+How the semantic provider was reached for this request, for example `remote` or
+`local`. Null when it did not run.
+{% enddocs %}
+
+{% docs sch_semantic_duration_ms %}
+How long the semantic provider took to answer, in milliseconds. Null when it did not
+run.
+{% enddocs %}
+
+{% docs sch_semantic_raw_hits %}
+How many candidates the semantic provider returned before this search's own filters
+and ranking were applied.
+{% enddocs %}
+
+{% docs sch_semantic_matches %}
+How many of the semantic provider's candidates survived into the final result set.
+{% enddocs %}
+
+{% docs sch_semantic_error %}
+What the semantic provider reported, when it ran and failed. Null otherwise.
+{% enddocs %}
+
+{% docs sch_mode %}
+`normal` or `surprise`, for an `ai` search -- which of the plugin's two AI popup modes
+was used. Null for `kind = 'search'`.
+{% enddocs %}
+
+{% docs sch_answer %}
+The model's own summary of the results, for an `ai` search that produced one. Null
+otherwise.
+{% enddocs %}
+
+{# jellyfin_search_results: one row per result a logged search returned. #}
+
+{% docs schr_search_id %}
+The search this result belongs to. Joins to `fct_jellyfin_search.search_key` /
+`stg_jellyfin_searches.search_id`.
+{% enddocs %}
+
+{% docs schr_searched_at %}
+When the parent search was made, in UTC -- carried onto the result row so it answers
+"when" without a join back to the search.
+{% enddocs %}
+
+{% docs schr_position %}
+Where this result sat in the search's own ranking, one-based.
+{% enddocs %}
+
+{% docs schr_item_id %}
+The Jellyfin item this result points at, when the search matched a library item.
+{% enddocs %}
+
+{% docs schr_name %}
+The result's display name, as the plugin recorded it.
+{% enddocs %}
+
+{% docs schr_type %}
+The result's item type -- `Movie`, `Series`, `Episode`, `Person`, and so on, depending
+on which endpoint was searched.
+{% enddocs %}
+
+{% docs schr_year %}
+The result's production year, when it has one.
+{% enddocs %}
+
+{% docs schr_series_name %}
+The show this result belongs to, when the result is an episode.
+{% enddocs %}
+
+{% docs schr_semantic %}
+Whether this result came from the semantic provider rather than Jellyfin's own
+keyword match.
+{% enddocs %}
+
+{% docs schr_semantic_score %}
+The semantic provider's own relevance score for this result. Null for a result that
+did not come from it.
+{% enddocs %}
+
+{% docs schr_semantic_rank %}
+This result's rank within the semantic provider's own candidates, before it was
+merged with Jellyfin's keyword matches. Null for a result that did not come from it.
+{% enddocs %}
+
+{% docs schr_reason %}
+The model's own explanation for including this result, for an `ai` search that
+produced one. Null otherwise.
+{% enddocs %}
+
+
 {# -------------------------------------------------------------- server activity #}
 
 {% docs act_partition_date %}

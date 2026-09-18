@@ -831,6 +831,172 @@ models:
           JSON, or null. Any field the activity log sent that the raw schema does not
           name.
 
+  - name: fct_jellyfin_search
+    description: >
+      One row per search request logged by the AI Search plugin: what was
+      searched, by whom, through which endpoint, and whether the semantic layer
+      ran. No relationship test joins user_id to dim_jellyfin_user, the same
+      reasoning fct_jellyfin_playback's own note documents -- an API key search
+      carries no user_id at all, and an account can be removed from the current
+      snapshot without its past searches disappearing.
+    columns:
+      - name: search_key
+        description: The plugin's own id for the request.
+        tests: [not_null, unique]
+      - name: partition_date
+        description: '{{ doc("sch_partition_date") }}'
+        tests: [not_null]
+      - name: partition_hour
+        description: '{{ doc("sch_partition_hour") }}'
+        tests: [not_null]
+      - name: extracted_at
+        description: '{{ doc("sch_extracted_at") }}'
+      - name: searched_at
+        description: '{{ doc("sch_searched_at") }}'
+        tests: [not_null]
+      - name: searched_hour
+        description: searched_at truncated to the hour, in UTC.
+      - name: searched_hour_of_day
+        description: Hour of day, 0 to 23, in UTC.
+      - name: searched_weekday
+        description: Weekday name of searched_at, in UTC.
+      - name: is_weekend
+        description: Whether searched_at fell on a Saturday or a Sunday, in UTC.
+      - name: kind
+        description: '{{ doc("sch_kind") }}'
+      - name: is_ai_search
+        description: Whether kind is 'ai'.
+      - name: endpoint
+        description: '{{ doc("sch_endpoint") }}'
+      - name: method
+        description: '{{ doc("sch_method") }}'
+      - name: status_code
+        description: '{{ doc("sch_status_code") }}'
+      - name: duration_ms
+        description: '{{ doc("sch_duration_ms") }}'
+      - name: search_term
+        description: '{{ doc("sch_search_term") }}'
+      - name: user_id
+        description: '{{ doc("sch_user_id") }}'
+      - name: user_name
+        description: '{{ doc("sch_user_name") }}'
+      - name: is_api_key
+        description: '{{ doc("sch_is_api_key") }}'
+      - name: client
+        description: '{{ doc("sch_client") }}'
+      - name: client_version
+        description: '{{ doc("sch_client_version") }}'
+      - name: device
+        description: '{{ doc("sch_device") }}'
+      - name: device_id
+        description: '{{ doc("sch_device_id") }}'
+      - name: remote_address
+        description: '{{ doc("sch_remote_address") }}'
+      - name: client_hash
+        description: '{{ doc("client_hash") }}'
+      - name: client_network
+        description: '{{ doc("client_network") }}'
+      - name: client_trust
+        description: '{{ doc("client_trust") }}'
+      - name: user_agent
+        description: '{{ doc("sch_user_agent") }}'
+      - name: parameters_json
+        description: '{{ doc("sch_parameters_json") }}'
+      - name: parent_id
+        description: '{{ doc("sch_parent_id") }}'
+      - name: parent_name
+        description: '{{ doc("sch_parent_name") }}'
+      - name: result_count
+        description: '{{ doc("sch_result_count") }}'
+      - name: total_record_count
+        description: '{{ doc("sch_total_record_count") }}'
+      - name: results_logged
+        description: '{{ doc("sch_results_logged") }}'
+      - name: had_no_results
+        description: Whether result_count was zero.
+      - name: semantic_enabled
+        description: '{{ doc("sch_semantic_enabled") }}'
+      - name: semantic_ran
+        description: '{{ doc("sch_semantic_ran") }}'
+      - name: semantic_skipped_reason
+        description: '{{ doc("sch_semantic_skipped_reason") }}'
+      - name: semantic_mode
+        description: '{{ doc("sch_semantic_mode") }}'
+      - name: semantic_duration_ms
+        description: '{{ doc("sch_semantic_duration_ms") }}'
+      - name: semantic_raw_hits
+        description: '{{ doc("sch_semantic_raw_hits") }}'
+      - name: semantic_matches
+        description: '{{ doc("sch_semantic_matches") }}'
+      - name: semantic_error
+        description: '{{ doc("sch_semantic_error") }}'
+      - name: mode
+        description: '{{ doc("sch_mode") }}'
+      - name: answer
+        description: '{{ doc("sch_answer") }}'
+      - name: unmapped_json
+        description: >
+          JSON, or null. Any field the plugin sent that the raw schema does not
+          name.
+
+  - name: fct_jellyfin_search_result
+    description: >
+      One row per result a logged search returned, carrying enough of its parent
+      search -- searched_at, user_id, user_name, search_term and kind -- to be
+      usable on its own, the same reasoning fct_jellyfin_activity's own
+      user_name join documents.
+    columns:
+      - name: search_result_key
+        description: Surrogate key over search_id and position -- the result's grain.
+        tests: [not_null, unique]
+      - name: partition_date
+        description: The UTC calendar date of searched_at.
+        tests: [not_null]
+      - name: partition_hour
+        description: The start of the hourly partition this row was read for, in UTC.
+        tests: [not_null]
+      - name: extracted_at
+        description: When this pipeline read the row.
+      - name: search_id
+        description: '{{ doc("schr_search_id") }}'
+        tests: [not_null]
+      - name: searched_at
+        description: '{{ doc("schr_searched_at") }}'
+        tests: [not_null]
+      - name: position
+        description: '{{ doc("schr_position") }}'
+        tests: [not_null]
+      - name: item_id
+        description: '{{ doc("schr_item_id") }}'
+      - name: name
+        description: '{{ doc("schr_name") }}'
+      - name: type
+        description: '{{ doc("schr_type") }}'
+      - name: year
+        description: '{{ doc("schr_year") }}'
+      - name: series_name
+        description: '{{ doc("schr_series_name") }}'
+      - name: season_number
+        description: '{{ doc("lit_season_number") }}'
+      - name: episode_number
+        description: '{{ doc("lit_episode_number") }}'
+      - name: semantic
+        description: '{{ doc("schr_semantic") }}'
+      - name: semantic_score
+        description: '{{ doc("schr_semantic_score") }}'
+      - name: semantic_rank
+        description: '{{ doc("schr_semantic_rank") }}'
+      - name: reason
+        description: '{{ doc("schr_reason") }}'
+      - name: user_id
+        description: '{{ doc("sch_user_id") }} Carried from the parent search.'
+      - name: user_name
+        description: '{{ doc("sch_user_name") }} Carried from the parent search.'
+      - name: search_term
+        description: '{{ doc("sch_search_term") }} Carried from the parent search.'
+      - name: kind
+        description: '{{ doc("sch_kind") }} Carried from the parent search.'
+
   - name: fct_camera_event
     description: >
       One row per camera event, latest version. Vision analysis lands hours after the

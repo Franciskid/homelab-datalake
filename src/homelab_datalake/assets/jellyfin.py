@@ -1350,3 +1350,329 @@ def jellyfin_users_raw(context: AssetExecutionContext, lake: LakeStorage):
         severity=AssetCheckSeverity.WARN,
         metadata={"fields": MetadataValue.text(", ".join(sorted(unmapped)) or "none")},
     )
+
+
+# --------------------------------------------------------------------------------
+# the search log: the AI Search plugin's own `/AiSearch/SearchLog`, since AiSearch/1.2.0.0
+# --------------------------------------------------------------------------------
+#
+# Hourly, like playback, and for the same reason: a question about tonight's searches
+# should not wait for a job that runs after midnight. Unlike playback there is no
+# history to backfill and no `_history_raw` counterpart -- the plugin only ever keeps
+# `retentionDays` (7 by default) of entries, and nothing existed on the server before
+# this version shipped, so every earlier hourly partition is simply empty rather than
+# unfilled. Collection starts the day this pipeline shipped, the same reasoning
+# LIBRARY_ITEMS_START uses.
+#
+# Two raw datasets per partition, one asset, the same shape `jellyfin_library_raw`
+# uses for titles and genres: a search has many results, and flattening them into the
+# search row would mean a delimited string or result_1/result_2/result_3.
+SEARCHES_START = "2026-09-19-00:00"
+searches_partitions = HourlyPartitionsDefinition(start_date=SEARCHES_START, end_offset=1)
+
+SEARCHES_PREFIX = layout.prefix("jellyfin_searches")
+SEARCH_RESULTS_PREFIX = layout.prefix("jellyfin_search_results")
+
+_SEARCH_SCHEMA = pa.schema(
+    [
+        ("partition_hour", pa.timestamp("us", tz="UTC")),
+        ("dt", pa.date32()),
+        ("_extracted_at", pa.timestamp("us", tz="UTC")),
+        ("id", pa.int64()),
+        ("searched_at", pa.timestamp("us", tz="UTC")),
+        ("kind", pa.string()),
+        ("endpoint", pa.string()),
+        ("method", pa.string()),
+        ("status_code", pa.int32()),
+        ("duration_ms", pa.int64()),
+        ("search_term", pa.string()),
+        ("user_id", pa.string()),
+        ("user_name", pa.string()),
+        ("is_api_key", pa.bool_()),
+        ("client", pa.string()),
+        ("client_version", pa.string()),
+        ("device", pa.string()),
+        ("device_id", pa.string()),
+        # Raw, alongside its redacted counterparts below -- see the 2026-09-14
+        # decision in homelab_datalake.privacy, which this pipeline follows exactly
+        # the way raw.npm_access does.
+        ("remote_address", pa.string()),
+        ("client_hash", pa.string()),
+        ("client_network", pa.string()),
+        ("client_trust", pa.string()),
+        ("user_agent", pa.string()),
+        ("parameters", pa.string()),
+        ("parent_id", pa.string()),
+        ("parent_name", pa.string()),
+        ("result_count", pa.int32()),
+        ("total_record_count", pa.int32()),
+        ("results_logged", pa.int32()),
+        ("semantic_enabled", pa.bool_()),
+        ("semantic_ran", pa.bool_()),
+        ("semantic_skipped_reason", pa.string()),
+        ("semantic_mode", pa.string()),
+        ("semantic_duration_ms", pa.int64()),
+        ("semantic_raw_hits", pa.int32()),
+        ("semantic_matches", pa.int32()),
+        ("semantic_error", pa.string()),
+        ("mode", pa.string()),
+        ("answer", pa.string()),
+        ("_unmapped", pa.string()),
+    ]
+)
+
+_SEARCH_RESULT_SCHEMA = pa.schema(
+    [
+        ("partition_hour", pa.timestamp("us", tz="UTC")),
+        ("dt", pa.date32()),
+        ("_extracted_at", pa.timestamp("us", tz="UTC")),
+        ("search_id", pa.int64()),
+        ("searched_at", pa.timestamp("us", tz="UTC")),
+        ("position", pa.int32()),
+        ("item_id", pa.string()),
+        ("name", pa.string()),
+        ("type", pa.string()),
+        ("year", pa.int32()),
+        ("series_name", pa.string()),
+        ("season_number", pa.int32()),
+        ("episode_number", pa.int32()),
+        ("semantic", pa.bool_()),
+        ("semantic_score", pa.float64()),
+        ("semantic_rank", pa.int32()),
+        ("reason", pa.string()),
+        ("_unmapped", pa.string()),
+    ]
+)
+
+CHECK_SEARCHES_RECONCILED = "searches_match_the_plugins_own_count"
+CHECK_SEARCH_LOGGING_ENABLED = "search_logging_enabled_on_the_server"
+CHECK_SEARCHES_NO_UNMAPPED = "no_unmapped_fields"
+
+
+def _search_entry_key(row: dict):
+    return row.get("id")
+
+
+def _search_result_key(row: dict):
+    search_id, position = row.get("search_id"), row.get("position")
+    if search_id is None or position is None:
+        return None
+    return (search_id, position)
+
+
+def _search_row_is_newer(candidate: dict, incumbent: dict) -> bool:
+    new_at, old_at = candidate.get("_extracted_at"), incumbent.get("_extracted_at")
+    if new_at is None:
+        return False
+    return old_at is None or new_at > old_at
+
+
+def _merge_keyed(existing: list[dict], incoming: list[dict], schema: pa.Schema, key_fn) -> tuple[list[dict], int]:
+    """Union two reads of one hour, newest `_extracted_at` per `key_fn(row)`.
+
+    Same shape as `_merge_playback`, generalised over the key function because this
+    asset merges two differently-keyed objects out of one partition window -- entries
+    by `id`, results by `(search_id, position)` -- rather than the one composite key
+    playback uses. The reason to merge rather than replace is the same one
+    `jellyfin_playback_raw` documents: entries reach the log through an async queue,
+    so a read that runs at the top of the hour can legitimately miss one that a later
+    re-read of the same hour sees.
+    """
+    names = [f.name for f in schema]
+    incoming_keys = {key_fn(row) for row in incoming}
+    merged: dict = {}
+
+    for row in list(existing) + list(incoming):
+        normalised = {name: row.get(name) for name in names}
+        key = key_fn(normalised)
+        if key is None:
+            continue
+        incumbent = merged.get(key)
+        if incumbent is None or _search_row_is_newer(normalised, incumbent):
+            merged[key] = normalised
+
+    retained_only_in_lake = sum(1 for key in merged if key not in incoming_keys)
+    return list(merged.values()), retained_only_in_lake
+
+
+@asset(
+    partitions_def=searches_partitions,
+    group_name="jellyfin",
+    compute_kind="python",
+    retry_policy=RetryPolicy(max_retries=3, delay=15),
+    check_specs=[
+        AssetCheckSpec(
+            name=CHECK_SEARCHES_RECONCILED,
+            asset="jellyfin_searches_raw",
+            description=(
+                "Fails when the entries this run wrote for its own hour do not "
+                "cover every entry the plugin offered for that hour, or when the "
+                "result rows written for those entries do not sum to their own "
+                "resultsLogged. Both sides come from the same read, so a mismatch "
+                "means the write or the merge dropped or duplicated something -- not "
+                "that a request is still queued, which is invisible to both sides "
+                "equally and only shows up once a later run re-reads the hour."
+            ),
+        ),
+        AssetCheckSpec(
+            name=CHECK_SEARCH_LOGGING_ENABLED,
+            asset="jellyfin_searches_raw",
+            description=(
+                "Warns when the plugin reports search logging turned off on the "
+                "server. Not an ingest failure -- the endpoint still answers, with "
+                "an empty log -- but a warehouse silently going quiet about search "
+                "activity is worth surfacing rather than discovering by absence."
+            ),
+        ),
+        AssetCheckSpec(
+            name=CHECK_SEARCHES_NO_UNMAPPED,
+            asset="jellyfin_searches_raw",
+            description=(
+                "Warns when the plugin sent a field nothing here reads -- on the "
+                "entry itself, on its nested semantic block, or on one of its "
+                "results. The value is kept in _unmapped rather than dropped; this "
+                "is the prompt to give it a column."
+            ),
+        ),
+    ],
+    description=(
+        "One hour of the AI Search plugin's search log: every /Items, "
+        "/Search/Hints, /Persons and /Artists request Jellyfin itself served, plus "
+        "the plugin's own AI popup searches. Merged into the partition, never "
+        "replaced -- see the module note above on why a later read of the same "
+        "hour can add rows a first read could not see."
+    ),
+)
+def jellyfin_searches_raw(context: AssetExecutionContext, lake: LakeStorage):
+    start, end = context.partition_time_window
+
+    base_url = os.environ.get("JELLYFIN_URL", "")
+    api_key = os.environ.get("JELLYFIN_API_KEY", "")
+    if not base_url or not api_key:
+        raise ValueError("JELLYFIN_URL and JELLYFIN_API_KEY are required")
+    salt = os.environ.get("CLIENT_IP_HASH_SALT", "")
+    if not salt:
+        # Failing here is deliberate, the same guard npm_access_raw runs -- see
+        # _require_salt there. Defaulting to an empty salt would write reversible
+        # hashes of real addresses, silently.
+        raise ValueError(
+            "CLIENT_IP_HASH_SALT is not set. Refusing to run rather than write "
+            "reversible client hashes. Generate one with: openssl rand -hex 32"
+        )
+
+    parsed = jellyfin_source.search_log_window(start, end, base_url, api_key, salt)
+    offered_entries = parsed.entries
+    offered_results = parsed.results
+
+    extracted_at = datetime.now(UTC)
+    for row in offered_entries:
+        row["partition_hour"] = start
+        row["dt"] = row["searched_at"].date() if row["searched_at"] else start.date()
+        row["_extracted_at"] = extracted_at
+    for row in offered_results:
+        row["partition_hour"] = start
+        row["dt"] = row["searched_at"].date() if row["searched_at"] else start.date()
+        row["_extracted_at"] = extracted_at
+
+    projected_entries, _unmapped_entries = project(offered_entries, _SEARCH_SCHEMA)
+    projected_results, _unmapped_results = project(offered_results, _SEARCH_RESULT_SCHEMA)
+
+    entries_prefix = f"{SEARCHES_PREFIX}/partition_hour={start:%Y-%m-%dT%H:00:00}"
+    entries_key = f"{entries_prefix}/data.parquet"
+    existing_entries = _read_raw_rows(lake, entries_key, _SEARCH_SCHEMA)
+    merged_entries, retained_entries = _merge_keyed(
+        existing_entries, projected_entries, _SEARCH_SCHEMA, _search_entry_key
+    )
+    lake.delete_prefix(entries_prefix)
+    written_entries = lake.write_table(
+        entries_key, pa.Table.from_pylist(merged_entries, schema=_SEARCH_SCHEMA)
+    )
+
+    results_prefix = f"{SEARCH_RESULTS_PREFIX}/partition_hour={start:%Y-%m-%dT%H:00:00}"
+    results_key = f"{results_prefix}/data.parquet"
+    existing_results = _read_raw_rows(lake, results_key, _SEARCH_RESULT_SCHEMA)
+    merged_results, retained_results = _merge_keyed(
+        existing_results, projected_results, _SEARCH_RESULT_SCHEMA, _search_result_key
+    )
+    lake.delete_prefix(results_prefix)
+    written_results = lake.write_table(
+        results_key, pa.Table.from_pylist(merged_results, schema=_SEARCH_RESULT_SCHEMA)
+    )
+
+    offered_ids = {row["id"] for row in offered_entries if row.get("id") is not None}
+    merged_ids = {row.get("id") for row in merged_entries}
+    expected_result_rows = sum(
+        row.get("results_logged") or 0 for row in offered_entries if row.get("id") is not None
+    )
+    actual_result_rows = sum(1 for row in merged_results if row.get("search_id") in offered_ids)
+    # A subset check, not equality: the merge can legitimately keep an entry this
+    # run's own query no longer offers -- the same reason jellyfin_playback_raw's own
+    # sessions_only_in_lake exists -- so what has to hold is that nothing this run
+    # collected went missing, not that the partition holds nothing else.
+    entries_reconciled = offered_ids <= merged_ids
+    results_reconciled = actual_result_rows == expected_result_rows
+
+    context.log.info(
+        "hour=%s..%s %d searches offered by the plugin, %d in the partition "
+        "(was %d, %d kept that the plugin no longer offers), %d result rows",
+        start, end, len(offered_entries), len(merged_entries), len(existing_entries),
+        retained_entries, len(merged_results),
+    )
+
+    unmapped = parsed.unmapped
+    if unmapped:
+        context.log.warning(
+            "hour=%s..%s the search log sent fields the schema does not name: %s",
+            start, end, ", ".join(sorted(unmapped)),
+        )
+    if parsed.logging_enabled is False:
+        context.log.warning(
+            "hour=%s..%s search logging is turned off on the server", start, end,
+        )
+
+    yield Output(
+        {"searches": len(merged_entries), "results": len(merged_results)},
+        metadata={
+            "searches_offered_by_plugin": len(offered_entries),
+            "searches": len(merged_entries),
+            "searches_before_merge": len(existing_entries),
+            "searches_only_in_lake": retained_entries,
+            "results": len(merged_results),
+            "results_before_merge": len(existing_results),
+            "results_only_in_lake": retained_results,
+            "logging_enabled": parsed.logging_enabled,
+            "retention_days": parsed.retention_days,
+            "oldest_timestamp_on_server": MetadataValue.text(
+                str(parsed.oldest_timestamp) if parsed.oldest_timestamp else "unknown"
+            ),
+            "bytes_written": written_entries + written_results,
+            "unmapped_fields": MetadataValue.text(", ".join(sorted(unmapped)) or "none"),
+            "extracted_at": MetadataValue.text(str(extracted_at)),
+        },
+    )
+
+    yield AssetCheckResult(
+        check_name=CHECK_SEARCHES_RECONCILED,
+        passed=entries_reconciled and results_reconciled,
+        severity=AssetCheckSeverity.ERROR,
+        metadata={
+            "entries_written": len(merged_entries),
+            "entries_offered": len(offered_entries),
+            "result_rows_for_offered_entries": actual_result_rows,
+            "results_logged_by_offered_entries": expected_result_rows,
+        },
+    )
+
+    yield AssetCheckResult(
+        check_name=CHECK_SEARCH_LOGGING_ENABLED,
+        passed=parsed.logging_enabled is True,
+        severity=AssetCheckSeverity.WARN,
+        metadata={"logging_enabled": parsed.logging_enabled},
+    )
+
+    yield AssetCheckResult(
+        check_name=CHECK_SEARCHES_NO_UNMAPPED,
+        passed=not unmapped,
+        severity=AssetCheckSeverity.WARN,
+        metadata={"fields": MetadataValue.text(", ".join(sorted(unmapped)) or "none")},
+    )
