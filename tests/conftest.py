@@ -265,6 +265,120 @@ SELECT
 FROM base;
 """
 
+# One search in six is the plugin's own AI popup (kind='ai'); the rest are Jellyfin's
+# own endpoints. One in nine carries no user_id at all -- an API-key search -- and the
+# semantic branches (enabled/ran/skipped/mode/duration/hits/matches) are all null
+# together whenever semantic_ran is false, the same shape the real endpoint sends.
+_JELLYFIN_SEARCHES = """
+CREATE OR REPLACE TABLE marts.fct_jellyfin_search AS
+WITH base AS (
+    SELECT
+        i,
+        (TIMESTAMPTZ '2026-09-19 05:00:00Z' + INTERVAL (i * 41) MINUTE) AS ts,
+        (i % 6 = 0) AS is_ai,
+        (i % 13 <> 0) AS semantic_configured,
+        (i % 13 <> 0 AND i % 4 <> 0) AS semantic_did_run
+    FROM (SELECT i::INTEGER AS i FROM range(0, 200) t(i))
+)
+SELECT
+    i AS search_key,
+    CAST(ts AS DATE) AS partition_date,
+    date_trunc('hour', ts) AS partition_hour,
+    ts + INTERVAL 2 SECOND AS extracted_at,
+    ts AS searched_at,
+    date_trunc('hour', ts) AS searched_hour,
+    (i % 24) AS searched_hour_of_day,
+    ['Monday', 'Tuesday', 'Wednesday'][(i % 3) + 1] AS searched_weekday,
+    (i % 7 > 4) AS is_weekend,
+    CASE WHEN is_ai THEN 'ai' ELSE 'search' END AS kind,
+    is_ai AS is_ai_search,
+    CASE WHEN is_ai THEN '/AiSearch/Ask'
+         ELSE ['/Items', '/Search/Hints', '/Persons'][(i % 3) + 1] END AS endpoint,
+    'GET' AS method,
+    CASE WHEN i % 29 = 0 THEN 500 ELSE 200 END AS status_code,
+    20 + (i % 400) AS duration_ms,
+    CASE WHEN i % 17 <> 0 THEN 'term ' || (i % 50) END AS search_term,
+    CASE WHEN i % 9 <> 0 THEN 'user-' || (i % 6) END AS user_id,
+    CASE WHEN i % 9 <> 0 THEN 'person' || (i % 6) END AS user_name,
+    (i % 9 = 0) AS is_api_key,
+    ['Jellyfin Web', 'Android TV', 'Swiftfin'][(i % 3) + 1] AS client,
+    '12.1.0' AS client_version,
+    ['Chrome', 'Shield', 'iPhone'][(i % 3) + 1] AS device,
+    'device-' || (i % 10) AS device_id,
+    CASE WHEN i % 5 <> 0 THEN '192.0.2.' || (i % 200) END AS remote_address,
+    CASE WHEN i % 5 <> 0 THEN 'ch' || (i % 40) END AS client_hash,
+    CASE WHEN i % 5 <> 0 THEN '192.0.2.0/24' END AS client_network,
+    CASE WHEN i % 5 <> 0 THEN 'resolved' ELSE 'unknown' END AS client_trust,
+    'Mozilla/5.0 (Test) Jellyfin/1.0' AS user_agent,
+    CASE WHEN i % 3 = 0 THEN '{"searchTerm": "x"}' END AS parameters_json,
+    CASE WHEN i % 11 = 0 THEN 'folder-' || (i % 4) END AS parent_id,
+    CASE WHEN i % 11 = 0 THEN 'Library ' || (i % 4) END AS parent_name,
+    (i % 4) AS result_count,
+    (i % 4) AS total_record_count,
+    (i % 4) AS results_logged,
+    (i % 4 = 0) AS had_no_results,
+    semantic_configured AS semantic_enabled,
+    semantic_did_run AS semantic_ran,
+    CASE WHEN semantic_configured AND NOT semantic_did_run THEN 'provider_unreachable' END
+        AS semantic_skipped_reason,
+    CASE WHEN semantic_did_run THEN 'remote' END AS semantic_mode,
+    CASE WHEN semantic_did_run THEN 40 + (i % 200) END AS semantic_duration_ms,
+    CASE WHEN semantic_did_run THEN 20 + (i % 60) END AS semantic_raw_hits,
+    CASE WHEN semantic_did_run THEN (i % 4) END AS semantic_matches,
+    CASE WHEN i % 47 = 0 THEN 'timed out' END AS semantic_error,
+    CASE WHEN is_ai THEN ['normal', 'surprise'][(i % 2) + 1] END AS mode,
+    CASE WHEN is_ai THEN 'Here are a few picks that match what you described.' END AS answer,
+    CAST(NULL AS VARCHAR) AS unmapped_json
+FROM base;
+"""
+
+# One row per result, zero to three per search -- a search that matched nothing has
+# no result rows at all, the same as a real search whose result_count is zero. Only
+# the top-ranked result of a search ever carries a semantic score, the same shape the
+# real endpoint sends: semantic re-ranks the field, it does not score every row.
+_JELLYFIN_SEARCH_RESULTS = """
+CREATE OR REPLACE TABLE marts.fct_jellyfin_search_result AS
+WITH base AS (
+    SELECT
+        i,
+        (TIMESTAMPTZ '2026-09-19 05:00:00Z' + INTERVAL (i * 41) MINUTE) AS ts,
+        (i % 6 = 0) AS is_ai,
+        (i % 9 <> 0) AS has_user,
+        (i % 13 <> 0 AND i % 4 <> 0) AS semantic_did_run,
+        (i % 4) AS n_results
+    FROM (SELECT i::INTEGER AS i FROM range(0, 200) t(i))
+),
+expanded AS (
+    SELECT base.*, gs.pos
+    FROM base, generate_series(1, base.n_results) AS gs(pos)
+    WHERE base.n_results > 0
+)
+SELECT
+    'sr' || i || '-' || pos AS search_result_key,
+    CAST(ts AS DATE) AS partition_date,
+    date_trunc('hour', ts) AS partition_hour,
+    ts + INTERVAL 2 SECOND AS extracted_at,
+    i AS search_id,
+    ts AS searched_at,
+    pos AS position,
+    'item-' || ((i + pos) % 60) AS item_id,
+    'Result ' || pos AS name,
+    CASE WHEN pos % 3 = 0 THEN 'Series' WHEN pos % 3 = 1 THEN 'Episode' ELSE 'Movie' END AS type,
+    2000 + (i % 25) AS year,
+    CASE WHEN pos % 3 = 1 THEN 'Show ' || (i % 5) END AS series_name,
+    CASE WHEN pos % 3 = 1 THEN 1 END AS season_number,
+    CASE WHEN pos % 3 = 1 THEN pos END AS episode_number,
+    (pos = 1 AND semantic_did_run) AS semantic,
+    CASE WHEN pos = 1 AND semantic_did_run THEN 0.5 + (pos * 0.1) END AS semantic_score,
+    CASE WHEN pos = 1 AND semantic_did_run THEN 1 END AS semantic_rank,
+    CASE WHEN is_ai THEN 'Matches the mood you described.' END AS reason,
+    CASE WHEN has_user THEN 'user-' || (i % 6) END AS user_id,
+    CASE WHEN has_user THEN 'person' || (i % 6) END AS user_name,
+    CASE WHEN i % 17 <> 0 THEN 'term ' || (i % 50) END AS search_term,
+    CASE WHEN is_ai THEN 'ai' ELSE 'search' END AS kind
+FROM expanded;
+"""
+
 # Most entries name no account at all -- a library scan concerns nobody -- and among
 # the ones that do, most name an id the account snapshot no longer holds. Both
 # measured against the real server, not guessed.
@@ -478,6 +592,7 @@ def build_marts(path: str) -> None:
     con.execute("CREATE SCHEMA IF NOT EXISTS marts;")
     for statement in (
         _LLM, _HTTP, _CAMERA, _LIBRARY, _JELLYFIN_PLAYBACK, _JELLYFIN_ACTIVITY,
+        _JELLYFIN_SEARCHES, _JELLYFIN_SEARCH_RESULTS,
         _AI_GATEWAY_CALLS, _AGENT_RUNS, _AGENT_TOOL_CALLS, _CONVERSATION_MESSAGES,
         _EMAIL_SENDS, _AUTOMATION_RUNS,
     ):

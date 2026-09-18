@@ -205,6 +205,22 @@ RAW_DATASETS: tuple[Dataset, ...] = (
     _raw("jellyfin_library_items", DOMAIN_MEDIA, "jellyfin", "library_items",
          "Daily snapshot of everything in the library that is not a movie: series, "
          "seasons, episodes, box sets and other videos."),
+    # Added when the AI Search plugin reached AiSearch/1.2.0.0 and started keeping a search
+    # log: every /Items, /Search/Hints, /Persons and /Artists request Jellyfin itself
+    # served, plus the plugin's own AI popup searches. Hourly, like jellyfin_playback,
+    # and single_schema=True for the same reason -- both objects are written
+    # exclusively through project(..., _SEARCH_SCHEMA) / project(...,
+    # _SEARCH_RESULT_SCHEMA) in assets/jellyfin.py. See jellyfin_searches_raw's own
+    # docstring for why there is no jellyfin_searches_history_raw counterpart: the
+    # plugin only ever keeps retentionDays (7 by default), and nothing existed on the
+    # server before this version shipped.
+    _raw("jellyfin_searches", DOMAIN_MEDIA, "jellyfin", "searches",
+         "Every search request the AI Search plugin logged: Jellyfin's own search "
+         "endpoints and the plugin's own AI popup searches.",
+         partition_column="partition_hour", single_schema=True),
+    _raw("jellyfin_search_results", DOMAIN_MEDIA, "jellyfin", "search_results",
+         "One row per result a logged search returned, capped at 250 per search by "
+         "the plugin.", partition_column="partition_hour", single_schema=True),
     _raw("camera_events", DOMAIN_MONITORING, "camera", "events",
          "Attention events. Not final when first written: analysis lands later."),
     _raw("camera_clips", DOMAIN_MONITORING, "camera", "clips",
@@ -311,6 +327,10 @@ CURATED_DATASETS: tuple[Dataset, ...] = (
              "Series, seasons, episodes, box sets and other videos, typed, with "
              "season_number/episode_number resolved from the raw index numbers.",
              "snapshot_date"),
+    _curated("stg_jellyfin_searches", DOMAIN_MEDIA, "jellyfin", "searches",
+             "Search requests, typed.", "partition_date"),
+    _curated("stg_jellyfin_search_results", DOMAIN_MEDIA, "jellyfin", "search_results",
+             "Search results, typed.", "partition_date"),
     _curated("stg_tmdb_titles", DOMAIN_MEDIA, "tmdb", "titles",
              "TMDB enrichment, typed, with the revenue-to-budget ratio derived.",
              None),
@@ -394,6 +414,11 @@ MART_DATASETS: tuple[Dataset, ...] = (
     _mart("dim_jellyfin_user", DOMAIN_MEDIA, "dim_jellyfin_user",
           "The account each play and activity entry points at: latest snapshot "
           "only.", None),
+    _mart("fct_jellyfin_search", DOMAIN_MEDIA, "fct_jellyfin_search",
+          "One row per search request logged by the AI Search plugin.",
+          "partition_date"),
+    _mart("fct_jellyfin_search_result", DOMAIN_MEDIA, "fct_jellyfin_search_result",
+          "One row per result a logged search returned.", "partition_date"),
     _mart("fct_ai_gateway_call", DOMAIN_AI, "fct_ai_gateway_call",
           "One row per api.ai gateway call: application, key, person, requested "
           "and actual model, full prompt and response, tokens, cost, latency.",

@@ -868,6 +868,161 @@ MEDIA_SERVER_ACTIVITY = Dataset(
 )
 
 
+# --- Search log ------------------------------------------------------------------
+# Added when the AI Search plugin reached AiSearch/1.2.0.0 and started keeping one.
+
+MEDIA_SEARCHES = Dataset(
+    name="media_searches",
+    table="marts.fct_jellyfin_search",
+    kind="event",
+    date_column="partition_date",
+    description=(
+        "One row per search request: the server's own /Items, /Search/Hints, "
+        "/Persons and /Artists searches, and the plugin's own AI popup searches "
+        "(kind='ai'). semantic_ran is the one to filter on for 'did the semantic "
+        "provider actually run' -- semantic_enabled only says the provider is "
+        "configured at all, and can be true while semantic_ran is false, see "
+        "semantic_skipped_reason. mode and answer are only ever populated for an "
+        "ai search; result_count is always the true match count, results_logged "
+        "how many of them have a row in media_search_results, capped at 250 per "
+        "search by the plugin."
+    ),
+    dimensions=(
+        Dimension("kind", "kind", "'search' for a Jellyfin endpoint, 'ai' for the plugin's AI popup."),
+        Dimension("is_ai_search", "is_ai_search", "Whether kind is 'ai'."),
+        Dimension("endpoint", "endpoint", "The request path that was searched, for example /Items."),
+        Dimension("method", "method", "HTTP method of the request."),
+        Dimension("status_code", "cast(status_code AS VARCHAR)", "HTTP status the server answered with."),
+        Dimension("search_term", "search_term", "The text that was searched."),
+        Dimension("person", "user_name", "Who searched, by account name. Null for an API-key request -- see is_api_key."),
+        Dimension("is_api_key", "is_api_key", "True when the request was authenticated with an API key rather than a user session."),
+        Dimension("client", "client", "The Jellyfin client that made the request."),
+        Dimension("device", "device", "The physical device or browser the client ran on."),
+        Dimension("client_trust", "client_trust",
+                  "resolved when the real client address was known; cdn_edge when only "
+                  "Cloudflare's edge was logged; unknown when there was no usable address."),
+        Dimension("had_no_results", "had_no_results", "Whether result_count was zero."),
+        Dimension("semantic_enabled", "semantic_enabled", "Whether the semantic provider is configured on the server at all."),
+        Dimension("semantic_ran", "semantic_ran", "Whether the semantic provider actually ran for this request."),
+        Dimension("semantic_mode", "semantic_mode", "How the semantic provider was reached, for example remote or local. Null when it did not run."),
+        Dimension("mode", "mode", "'normal' or 'surprise', for an ai search. Null for kind='search'."),
+        Dimension("weekday", "searched_weekday", "Day of week the search was made, in UTC."),
+        Dimension("hour_of_day", "searched_hour_of_day", "Hour of day the search was made, 0 to 23, in UTC."),
+        Dimension("is_weekend", "is_weekend", "True for Saturday and Sunday, in UTC."),
+    ),
+    measures=(
+        Measure("searches", "count(*)", "Number of search requests.", "searches"),
+        Measure("distinct_searchers", "count(DISTINCT user_id)", "Distinct accounts that searched.", "people"),
+        Measure("distinct_terms", "count(DISTINCT search_term)", "Distinct search terms.", "terms"),
+        Measure("searches_with_no_results", "count(*) FILTER (WHERE had_no_results)",
+                "Searches that matched nothing.", "searches"),
+        Measure("semantic_share_pct",
+                "round(100.0 * count(*) FILTER (WHERE semantic_ran) / nullif(count(*), 0), 2)",
+                "Share of searches where the semantic provider actually ran.", "%"),
+        Measure("median_duration_ms", "round(median(duration_ms)::numeric, 1)",
+                "Median time the server took to answer.", "ms"),
+        Measure("avg_results_per_search",
+                "round((sum(result_count)::double / nullif(count(*), 0))::numeric, 2)",
+                "Mean number of results per search, from the true match count.", "results"),
+    ),
+    default_measures=("searches", "distinct_searchers", "semantic_share_pct"),
+    attributes=(
+        Attribute("search_key", "search_key", "The plugin's own id for the request."),
+        Attribute("partition_date", "partition_date", "The UTC day the search belongs to."),
+        Attribute("partition_hour", "partition_hour", "The start of the hourly partition this search was read for, in UTC."),
+        Attribute("extracted_at", "extracted_at", "When the lake read this search."),
+        Attribute("searched_at", "searched_at", "When the request was made, to the microsecond, in UTC."),
+        Attribute("searched_hour", "searched_hour", "searched_at truncated to the hour."),
+        Attribute("user_id", "user_id", "The account's raw Jellyfin id, when the request named one."),
+        Attribute("client_version", "client_version", "The client's own self-reported version string."),
+        Attribute("device_id", "device_id", "The client's stable device id, as Jellyfin assigns it."),
+        Attribute("duration_ms", "duration_ms", "How long the server took to answer this one request, in milliseconds."),
+        Attribute("remote_address", "remote_address",
+                  "The client address, raw. client_hash below is the pseudonym most "
+                  "questions should use; this is for looking one search up by the "
+                  "address that made it."),
+        Attribute("client_hash", "client_hash", "Pseudonym of the client address."),
+        Attribute("client_network", "client_network", "The /24 or /48 the client sat in."),
+        Attribute("user_agent", "user_agent", "The requesting client's User-Agent header."),
+        Attribute("parameters_json", "parameters_json", "JSON. The request's own query string, minus credentials."),
+        Attribute("parent_id", "parent_id", "The library folder or parent item the search was scoped to, when named."),
+        Attribute("parent_name", "parent_name", "The name of parent_id, when the request named one."),
+        Attribute("result_count", "result_count", "The true number of results this search matched."),
+        Attribute("total_record_count", "total_record_count", "The total record count the underlying query reported, before paging."),
+        Attribute("results_logged", "results_logged", "How many of result_count have a row in media_search_results."),
+        Attribute("semantic_skipped_reason", "semantic_skipped_reason", "Why the semantic provider did not run, when it is enabled but did not."),
+        Attribute("semantic_duration_ms", "semantic_duration_ms", "How long the semantic provider took to answer, in milliseconds. Null when it did not run."),
+        Attribute("semantic_raw_hits", "semantic_raw_hits", "How many candidates the semantic provider returned before this search's own filters were applied."),
+        Attribute("semantic_matches", "semantic_matches", "How many of the semantic provider's candidates survived into the final result set."),
+        Attribute("semantic_error", "semantic_error", "What the semantic provider reported, when it ran and failed."),
+        Attribute("answer", "answer", "The model's own summary of the results, for an ai search that produced one."),
+        Attribute("unmapped_json", "unmapped_json", "JSON, or null. Any field the plugin sent that the raw schema does not name."),
+    ),
+    default_fields=(
+        "searched_at", "person", "search_term", "kind", "endpoint", "result_count",
+        "search_key",
+    ),
+    record_order="searched_at",
+)
+
+
+MEDIA_SEARCH_RESULTS = Dataset(
+    name="media_search_results",
+    table="marts.fct_jellyfin_search_result",
+    kind="event",
+    date_column="partition_date",
+    description=(
+        "One row per result a logged search returned, capped at 250 per search by "
+        "the plugin -- media_searches.result_count is always the true match count, "
+        "results_logged there how many of them have a row here. Carries enough of "
+        "its parent search (person, search_term, kind) to be usable without a join "
+        "back to media_searches."
+    ),
+    dimensions=(
+        Dimension("type", "type", "The result's item type -- Movie, Series, Episode, Person, and so on."),
+        Dimension("semantic", "semantic", "Whether this result came from the semantic provider rather than a keyword match."),
+        Dimension("series", "series_name", "The show this result belongs to, when the result is an episode."),
+        Dimension("person", "user_name", "Who made the search this result belongs to, by account name."),
+        Dimension("kind", "kind", "'search' or 'ai' -- the kind of the parent search."),
+    ),
+    measures=(
+        Measure("result_rows", "count(*)", "Number of result rows.", "results"),
+        Measure("distinct_searches", "count(DISTINCT search_id)", "Distinct searches represented.", "searches"),
+        Measure("semantic_results", "count(*) FILTER (WHERE semantic)",
+                "Results that came from the semantic provider.", "results"),
+        Measure("median_semantic_score", "round(median(semantic_score)::numeric, 3)",
+                "Median relevance score among semantic results.", "score"),
+        Measure("median_position", "round(median(position)::numeric, 1)",
+                "Median rank position among results.", "position"),
+    ),
+    default_measures=("result_rows", "distinct_searches", "semantic_results"),
+    attributes=(
+        Attribute("search_result_key", "search_result_key", "Surrogate key over search_id and position."),
+        Attribute("partition_date", "partition_date", "The UTC day the parent search belongs to."),
+        Attribute("partition_hour", "partition_hour", "The start of the hourly partition this row was read for, in UTC."),
+        Attribute("extracted_at", "extracted_at", "When the lake read this row."),
+        Attribute("search_id", "search_id", "The search this result belongs to. Joins to media_searches.search_key."),
+        Attribute("searched_at", "searched_at", "When the parent search was made, in UTC."),
+        Attribute("position", "position", "Where this result sat in the search's own ranking, one-based."),
+        Attribute("item_id", "item_id", "The Jellyfin item this result points at, when the search matched a library item."),
+        Attribute("name", "name", "The result's display name, as the plugin recorded it."),
+        Attribute("year", "year", "The result's production year, when it has one."),
+        Attribute("season_number", "season_number", "The season number, when the result is an episode or a season."),
+        Attribute("episode_number", "episode_number", "The episode number, when the result is an episode."),
+        Attribute("semantic_score", "semantic_score", "The semantic provider's own relevance score. Null for a result that did not come from it."),
+        Attribute("semantic_rank", "semantic_rank", "This result's rank within the semantic provider's own candidates. Null for a result that did not come from it."),
+        Attribute("reason", "reason", "The model's own explanation for including this result, for an ai search that produced one."),
+        Attribute("user_id", "user_id", "The raw Jellyfin id of the account that made the parent search."),
+        Attribute("search_term", "search_term", "The text that was searched, carried from the parent search."),
+    ),
+    default_fields=(
+        "searched_at", "name", "type", "position", "person", "search_term",
+        "search_result_key",
+    ),
+    record_order="searched_at",
+)
+
+
 # --- The AI platform's own database -------------------------------------------
 # Six datasets over the marts in fct_ai_gateway_call.sql through
 # fct_automation_run.sql -- see homelab_datalake.parsing.ai_platform_registry for
@@ -1221,7 +1376,7 @@ AUTOMATION_RUNS = Dataset(
 DATASETS: dict[str, Dataset] = {
     d.name: d for d in (
         LLM_SPEND, WEB_TRAFFIC, CAMERA_ACTIVITY, MEDIA_LIBRARY, MEDIA_PLAYBACK,
-        MEDIA_SERVER_ACTIVITY,
+        MEDIA_SERVER_ACTIVITY, MEDIA_SEARCHES, MEDIA_SEARCH_RESULTS,
         AI_GATEWAY_CALLS, AGENT_RUNS, AGENT_TOOL_CALLS, CONVERSATIONS, EMAIL_SENDS,
         AUTOMATION_RUNS,
     )

@@ -205,6 +205,7 @@ jellyfin_daily_job = define_asset_job(
             jellyfin.jellyfin_users_raw, jellyfin.jellyfin_library_items_raw,
             jellyfin.jellyfin_activity_history_raw,
             jellyfin.jellyfin_playback_history_raw,
+            jellyfin.jellyfin_searches_raw,
         )
     ),
     partitions_def=jellyfin.library_partitions,
@@ -259,6 +260,13 @@ jellyfin_users_job = define_asset_job(
     selection=AssetSelection.assets(jellyfin.jellyfin_users_raw),
     partitions_def=jellyfin.users_partitions,
     description="Snapshot today's account list.",
+)
+
+jellyfin_searches_job = define_asset_job(
+    name="jellyfin_searches",
+    selection=AssetSelection.assets(jellyfin.jellyfin_searches_raw),
+    partitions_def=jellyfin.searches_partitions,
+    description="Land one hour of the AI Search plugin's search log.",
 )
 
 
@@ -345,6 +353,31 @@ def jellyfin_activity_schedule(context: ScheduleEvaluationContext):
 def jellyfin_users_schedule(context: ScheduleEvaluationContext):
     day = context.scheduled_execution_time.date()
     yield RunRequest(run_key=f"jellyfin-users-{day.isoformat()}", partition_key=day.isoformat())
+
+
+@schedule(
+    job=jellyfin_searches_job,
+    cron_schedule="10 * * * *",
+    default_status=DefaultScheduleStatus.STOPPED,
+    description=(
+        "Every hour at ten past, re-materialising the current hour plus the two "
+        "before it. The plugin writes search log entries through an async queue, "
+        "so an entry stamped a few seconds before the top of the hour can still "
+        "reach disk just after it turns -- the re-read is what catches that. "
+        "Idempotent by construction -- jellyfin_searches_raw merges into a "
+        "partition rather than replacing it."
+    ),
+)
+def jellyfin_searches_hourly_schedule(context: ScheduleEvaluationContext):
+    current_hour = context.scheduled_execution_time.replace(
+        minute=0, second=0, microsecond=0
+    )
+    for back in range(3):
+        hour = current_hour - datetime.timedelta(hours=back)
+        yield RunRequest(
+            run_key=f"jellyfin-searches-{hour:%Y-%m-%d-%H}-{context.scheduled_execution_time:%Y%m%d%H%M}",
+            partition_key=hour.strftime("%Y-%m-%d-%H:%M"),
+        )
 
 
 # Zones are excluded and get their own job below. Everything in a partitioned job has
@@ -556,13 +589,14 @@ defs = Definitions(
           ai_platform_snapshot_job, ai_platform_window_job, ai_platform_coverage_job,
           jellyfin_daily_job, jellyfin_library_items_job, jellyfin_playback_job,
           jellyfin_playback_history_job, jellyfin_activity_job,
-          jellyfin_activity_history_job, jellyfin_users_job,
+          jellyfin_activity_history_job, jellyfin_users_job, jellyfin_searches_job,
           camera_daily_job, camera_zones_job, analytics_job],
     schedules=[npm_daily_schedule, mcp_api_daily_schedule, litellm_daily_schedule,
                ai_platform_snapshot_schedule, ai_platform_window_schedule,
                ai_platform_coverage_schedule, jellyfin_daily_schedule,
                jellyfin_library_items_schedule, jellyfin_playback_hourly_schedule,
-               jellyfin_activity_schedule, jellyfin_users_schedule, camera_daily_schedule,
+               jellyfin_activity_schedule, jellyfin_users_schedule,
+               jellyfin_searches_hourly_schedule, camera_daily_schedule,
                camera_late_arrival_schedule, camera_zones_schedule, analytics_daily_schedule],
     sensors=[notify_on_failure],
     resources={

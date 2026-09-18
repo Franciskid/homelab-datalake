@@ -524,3 +524,59 @@ def test_a_single_schema_dataset_returns_correct_data_through_a_real_session(tmp
             session, "SELECT user_name, play_duration_seconds FROM raw.jellyfin_playback"
         )
     assert result.rows == [["greg", 3600]]
+
+
+def test_a_second_single_schema_dataset_written_by_one_asset_also_binds_correctly(tmp_path):
+    """jellyfin_searches_raw writes two flagged objects from one partition run --
+    entries and results -- which is a new combination this repo has not exercised
+    before: two single_schema=True datasets sharing one writer rather than one each.
+    Both must bind and answer correctly through a real session.
+    """
+    from homelab_datalake.assets.jellyfin import _SEARCH_RESULT_SCHEMA, _SEARCH_SCHEMA
+
+    lake = LakeStorage(local_root=str(tmp_path))
+    searches = layout.dataset("jellyfin_searches")
+    results = layout.dataset("jellyfin_search_results")
+    assert searches.single_schema is True
+    assert results.single_schema is True
+
+    entry_row = {
+        "partition_hour": datetime(2026, 9, 19, 10, tzinfo=UTC),
+        "dt": date(2026, 9, 19),
+        "_extracted_at": datetime(2026, 9, 19, 10, 5, tzinfo=UTC),
+        "id": 639000000000000123, "searched_at": datetime(2026, 9, 19, 10, 11, 12, tzinfo=UTC),
+        "kind": "search", "endpoint": "/Items", "method": "GET", "status_code": 200,
+        "duration_ms": 184, "search_term": "heist movie with a twist",
+        "user_id": "u1", "user_name": "francois", "is_api_key": False,
+        "client": "Jellyfin Web", "client_version": "12.1.0", "device": "Firefox",
+        "device_id": "d1", "remote_address": None, "client_hash": None,
+        "client_network": None, "client_trust": "unknown", "user_agent": "ua",
+        "parameters": None, "parent_id": None, "parent_name": None,
+        "result_count": 1, "total_record_count": 1, "results_logged": 1,
+        "semantic_enabled": True, "semantic_ran": True, "semantic_skipped_reason": None,
+        "semantic_mode": "remote", "semantic_duration_ms": 140, "semantic_raw_hits": 80,
+        "semantic_matches": 20, "semantic_error": None, "mode": None, "answer": None,
+    }
+    result_row = {
+        "partition_hour": datetime(2026, 9, 19, 10, tzinfo=UTC),
+        "dt": date(2026, 9, 19),
+        "_extracted_at": datetime(2026, 9, 19, 10, 5, tzinfo=UTC),
+        "search_id": 639000000000000123, "searched_at": datetime(2026, 9, 19, 10, 11, 12, tzinfo=UTC),
+        "position": 1, "item_id": "item1", "name": "Inside Man", "type": "Movie",
+        "year": 2006, "series_name": None, "season_number": None, "episode_number": None,
+        "semantic": True, "semantic_score": 0.61, "semantic_rank": 1, "reason": None,
+    }
+    lake.write_table(
+        f"{searches.prefix}/partition_hour=2026-09-19T10:00:00/data.parquet",
+        pa.Table.from_pylist([entry_row], schema=_SEARCH_SCHEMA),
+    )
+    lake.write_table(
+        f"{results.prefix}/partition_hour=2026-09-19T10:00:00/data.parquet",
+        pa.Table.from_pylist([result_row], schema=_SEARCH_RESULT_SCHEMA),
+    )
+
+    with q.LakeSession(lake=lake) as session:
+        searched = q.run(session, "SELECT search_term FROM raw.jellyfin_searches")
+        matched = q.run(session, "SELECT name FROM raw.jellyfin_search_results")
+    assert searched.rows == [["heist movie with a twist"]]
+    assert matched.rows == [["Inside Man"]]

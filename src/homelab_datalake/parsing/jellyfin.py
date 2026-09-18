@@ -48,6 +48,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from datetime import time as dtime
 
+from homelab_datalake.privacy import redact_client
 from homelab_datalake.useragent import USER_AGENT
 
 # Requested from the API.
@@ -1293,3 +1294,283 @@ def activity_history(base_url: str | None = None, api_key: str | None = None,
         if len(items) < PAGE_SIZE:
             break
     return result()
+
+
+# --------------------------------------------------------------------------------
+# the AI Search plugin's search log: `/AiSearch/SearchLog`
+# --------------------------------------------------------------------------------
+#
+# Added when the plugin reached AiSearch/1.2.0.0 and started keeping one. Unlike playback and
+# the activity log, there is no history to reconcile against and no one-pass backfill
+# to write: the plugin only ever holds `retentionDays` (default 7) of entries, and
+# nothing existed on the server before this version shipped. So the asset that reads
+# this is hourly like `jellyfin_playback_raw`, but has no `_history_raw` counterpart --
+# see SEARCHES_START in assets/jellyfin.py.
+#
+# The endpoint pages on a real cursor, `afterId`, rather than the activity log's
+# `startIndex`: the log is written newest-*last* within the window this asset asks
+# for, through an async queue, so a page fetched with `afterId=<the last id already
+# read>` cannot re-offer an entry this pass has already seen the way a newest-first
+# `startIndex` walk can. That is also why `search_log_window` merges two reads of one
+# hour instead of replacing -- an entry timestamped a few seconds before the top of
+# the hour can still be sitting in the queue when the hour's own run executes, and
+# only be visible to a later re-read, the same reasoning PlaybackActivity's merge
+# documents for a session that is still open.
+
+SEARCH_LOG_PAGE_LIMIT = 1000  # the endpoint's own default; also its documented max, 5000
+
+
+class SearchLogUnavailable(RuntimeError):
+    """`/AiSearch/SearchLog` answered 404.
+
+    The plugin is either not installed, or older than AiSearch/1.2.0.0, the version this
+    endpoint was added in. Raised rather than treated as an empty hour, because an
+    empty hour and a missing endpoint are not the same state -- one is nothing to
+    report, the other is nothing this pipeline can read at all.
+    """
+
+
+# Every key `_search_entry_row` reads from one entry, not counting `results` and
+# `semantic`, which are consumed by their own row builders below and would otherwise
+# be reported as unmapped on every single entry. Anything an entry carries that is in
+# none of the three CONSUMED sets on this page is something the plugin has started
+# sending that this module does not look at yet.
+_SEARCH_ENTRY_CONSUMED = frozenset(
+    {
+        "id", "timestamp", "kind", "endpoint", "method", "statusCode", "durationMs",
+        "searchTerm", "userId", "userName", "isApiKey", "client", "clientVersion",
+        "device", "deviceId", "remoteAddress", "userAgent", "parameters",
+        "parentId", "parentName", "resultCount", "totalRecordCount", "resultsLogged",
+        "results", "semantic", "mode", "answer",
+    }
+)
+
+_SEARCH_RESULT_CONSUMED = frozenset(
+    {
+        "position", "itemId", "name", "type", "year", "seriesName", "seasonNumber",
+        "episodeNumber", "semantic", "semanticScore", "semanticRank", "reason",
+    }
+)
+
+_SEARCH_SEMANTIC_CONSUMED = frozenset(
+    {"enabled", "ran", "skippedReason", "mode", "durationMs", "rawHits", "matches", "error"}
+)
+
+
+def _search_entry_leftovers(entry: dict) -> dict:
+    """Fields on the entry, its nested `semantic` block and its `results` that this
+    module does not read, keyed by a dotted path so a leftover inside `semantic` or
+    `results` is not mistaken for one on the entry itself.
+
+    Computed by hand rather than through `projection.project()`: that function finds
+    the same kind of leftover inside a declared struct or list column, but the entry
+    is flattened into two different row shapes here (one row on `jellyfin_searches`,
+    zero or more on `jellyfin_search_results`) rather than landed as a single nested
+    column, so there is no schema for it to compare against at this stage.
+    """
+    leftovers = {k: v for k, v in entry.items() if k not in _SEARCH_ENTRY_CONSUMED}
+    semantic = entry.get("semantic") or {}
+    for key, value in semantic.items():
+        if key not in _SEARCH_SEMANTIC_CONSUMED:
+            leftovers[f"semantic.{key}"] = value
+    for result in entry.get("results") or []:
+        for key, value in (result or {}).items():
+            if key not in _SEARCH_RESULT_CONSUMED:
+                leftovers[f"results[].{key}"] = value
+    return leftovers
+
+
+def _search_entry_row(entry: dict, salt: str) -> dict:
+    """One row for `jellyfin_searches`. Pure -- no wall clock, no partition context --
+    so `partition_hour`, `dt` and `_extracted_at` are stamped by the asset afterward,
+    the same division `jellyfin_playback_raw` keeps between `playback_window` and
+    itself.
+
+    `remote_address` is kept raw, alongside its redacted `client_hash`/
+    `client_network`/`client_trust`, the same 2026-09-14 decision `homelab_datalake.
+    privacy` documents for `raw.npm_access` -- this warehouse is private-only, reached
+    through the same Keycloak-gated tools, and a caller with a legitimate reason to
+    look a search up by the address that made it should be able to.
+    """
+    semantic = entry.get("semantic") or {}
+    parameters = entry.get("parameters")
+    redacted = redact_client(entry.get("remoteAddress"), salt)
+    return {
+        "id": entry.get("id"),
+        "searched_at": _parse_timestamp(entry.get("timestamp")),
+        "kind": entry.get("kind"),
+        "endpoint": entry.get("endpoint"),
+        "method": entry.get("method"),
+        "status_code": entry.get("statusCode"),
+        "duration_ms": entry.get("durationMs"),
+        "search_term": entry.get("searchTerm"),
+        "user_id": entry.get("userId"),
+        "user_name": entry.get("userName"),
+        "is_api_key": entry.get("isApiKey"),
+        "client": entry.get("client"),
+        "client_version": entry.get("clientVersion"),
+        "device": entry.get("device"),
+        "device_id": entry.get("deviceId"),
+        "remote_address": entry.get("remoteAddress"),
+        "client_hash": redacted.client_hash,
+        "client_network": redacted.client_network,
+        "client_trust": redacted.client_trust,
+        "user_agent": entry.get("userAgent"),
+        "parameters": (
+            json.dumps(parameters, default=str, sort_keys=True) if parameters else None
+        ),
+        "parent_id": entry.get("parentId"),
+        "parent_name": entry.get("parentName"),
+        "result_count": entry.get("resultCount"),
+        "total_record_count": entry.get("totalRecordCount"),
+        "results_logged": entry.get("resultsLogged"),
+        "semantic_enabled": semantic.get("enabled"),
+        "semantic_ran": semantic.get("ran"),
+        "semantic_skipped_reason": semantic.get("skippedReason"),
+        "semantic_mode": semantic.get("mode"),
+        "semantic_duration_ms": semantic.get("durationMs"),
+        "semantic_raw_hits": semantic.get("rawHits"),
+        "semantic_matches": semantic.get("matches"),
+        "semantic_error": semantic.get("error"),
+        "mode": entry.get("mode"),
+        "answer": entry.get("answer"),
+    }
+
+
+def _search_result_rows(entry: dict) -> list[dict]:
+    """One row per result on `entry`, carrying the parent search's id and timestamp so
+    a result row needs no join to say when it was returned.
+    """
+    search_id = entry.get("id")
+    searched_at = _parse_timestamp(entry.get("timestamp"))
+    rows = []
+    for result in entry.get("results") or []:
+        rows.append(
+            {
+                "search_id": search_id,
+                "searched_at": searched_at,
+                "position": result.get("position"),
+                "item_id": result.get("itemId"),
+                "name": result.get("name"),
+                "type": result.get("type"),
+                "year": result.get("year"),
+                "series_name": result.get("seriesName"),
+                "season_number": result.get("seasonNumber"),
+                "episode_number": result.get("episodeNumber"),
+                "semantic": result.get("semantic"),
+                "semantic_score": result.get("semanticScore"),
+                "semantic_rank": result.get("semanticRank"),
+                "reason": result.get("reason"),
+            }
+        )
+    return rows
+
+
+def fetch_search_log_page(base_url: str, api_key: str, start: datetime, end: datetime,
+                          after_id: int, limit: int = SEARCH_LOG_PAGE_LIMIT) -> dict:
+    """One page of `[start, end)`, strictly after `after_id`.
+
+    Raises `SearchLogUnavailable` on a 404 rather than letting a caller mistake a
+    missing plugin for a quiet hour -- see that class's own docstring.
+    """
+    import urllib.error
+    import urllib.parse
+    import urllib.request
+
+    query = urllib.parse.urlencode(
+        {
+            "from": start.astimezone(UTC).isoformat().replace("+00:00", "Z"),
+            "to": end.astimezone(UTC).isoformat().replace("+00:00", "Z"),
+            "afterId": after_id,
+            "limit": limit,
+        }
+    )
+    url = f"{base_url.rstrip('/')}/AiSearch/SearchLog?{query}"
+    if not url.startswith(("http://", "https://")):
+        raise ValueError(f"JELLYFIN_URL must be http(s), got {base_url!r}")
+    request = urllib.request.Request(  # noqa: S310 - scheme checked immediately above
+        url,
+        headers={
+            "Authorization": f'MediaBrowser Token="{api_key}"',
+            "User-Agent": USER_AGENT,
+        },
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=60) as response:  # noqa: S310
+            return json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as error:
+        if error.code == 404:
+            raise SearchLogUnavailable(
+                "Jellyfin answered 404 for /AiSearch/SearchLog -- the AI Search "
+                "plugin is missing, or older than AiSearch/1.2.0.0, the version this endpoint "
+                "was added in."
+            ) from error
+        raise
+
+
+@dataclass
+class SearchLogWindow:
+    entries: list[dict] = field(default_factory=list)
+    results: list[dict] = field(default_factory=list)
+    #: Dotted field paths the plugin sent that nothing here reads. Reported, never
+    #: silent -- see `_search_entry_leftovers`.
+    unmapped: set[str] = field(default_factory=set)
+    pages: int = 0
+    #: From the first page's envelope. `None` when no page was ever read -- an
+    #: injected empty `pages=[]`, in a test -- which is why the logging-enabled check
+    #: treats `None` as "cannot confirm" rather than as `False`.
+    logging_enabled: bool | None = None
+    retention_days: int | None = None
+    oldest_timestamp: datetime | None = None
+
+
+def search_log_window(start: datetime, end: datetime, base_url: str | None = None,
+                      api_key: str | None = None, salt: str | None = None,
+                      pages: list[dict] | None = None) -> SearchLogWindow:
+    """Every `/AiSearch/SearchLog` entry in `[start, end)`, paged with `afterId` while
+    `hasMore` is true.
+
+    `pages` is injectable -- already-fetched page payloads, in request order -- so
+    tests need no server, the same shape every other reader in this module offers.
+    `salt` has no environment fallback when `pages` is given: a fixture with no
+    `remoteAddress` never reaches `redact_client`'s salt check at all, so most tests
+    do not need one, and a test that does exercise client_hash passes it explicitly.
+    """
+    out = SearchLogWindow()
+
+    def consume(payload: dict) -> None:
+        out.pages += 1
+        if out.pages == 1:
+            out.logging_enabled = payload.get("loggingEnabled")
+            out.retention_days = payload.get("retentionDays")
+            out.oldest_timestamp = _parse_timestamp(payload.get("oldestTimestamp"))
+        for entry in payload.get("entries") or []:
+            out.entries.append(_search_entry_row(entry, salt or ""))
+            out.results.extend(_search_result_rows(entry))
+            out.unmapped.update(_search_entry_leftovers(entry))
+
+    if pages is not None:
+        for page in pages:
+            consume(page)
+        return out
+
+    base_url = base_url or os.environ.get("JELLYFIN_URL", "")
+    api_key = api_key or os.environ.get("JELLYFIN_API_KEY", "")
+    if not base_url or not api_key:
+        raise ValueError("JELLYFIN_URL and JELLYFIN_API_KEY are required")
+    if salt is None:
+        salt = os.environ.get("CLIENT_IP_HASH_SALT", "")
+
+    after_id = 0
+    while True:
+        payload = fetch_search_log_page(base_url, api_key, start, end, after_id)
+        consume(payload)
+        if not payload.get("hasMore"):
+            break
+        next_after_id = payload.get("nextAfterId")
+        if next_after_id is None or next_after_id == after_id:
+            # A page said there was more but gave no way to reach it. Stopping is
+            # safer than looping forever on the same cursor.
+            break
+        after_id = next_after_id
+    return out

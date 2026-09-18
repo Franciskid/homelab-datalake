@@ -75,11 +75,16 @@ def test_only_datasets_with_a_provably_fixed_writer_schema_are_flagged():
     jellyfin_playback and jellyfin_activity qualify because every partition is
     built through project(..., _PLAYBACK_SCHEMA) / project(..., _ACTIVITY_SCHEMA)
     in assets/jellyfin.py -- Python code with one hardcoded pyarrow schema, not a
-    dbt model or a registry that gains columns. See the next test for the writer
-    side of this claim.
+    dbt model or a registry that gains columns. jellyfin_searches and
+    jellyfin_search_results qualify the same way, through project(...,
+    _SEARCH_SCHEMA) / project(..., _SEARCH_RESULT_SCHEMA) in jellyfin_searches_raw.
+    See the next test for the writer side of this claim.
     """
     flagged = {d.table for d in layout.ALL_DATASETS if d.single_schema}
-    assert flagged == {"jellyfin_playback", "jellyfin_activity"}
+    assert flagged == {
+        "jellyfin_playback", "jellyfin_activity",
+        "jellyfin_searches", "jellyfin_search_results",
+    }
 
 
 @pytest.mark.parametrize("function_name, schema_name", [
@@ -92,6 +97,11 @@ def test_only_datasets_with_a_provably_fixed_writer_schema_are_flagged():
     ("_write_playback_history_hour", "_PLAYBACK_SCHEMA"),
     ("jellyfin_activity_raw", "_ACTIVITY_SCHEMA"),
     ("_write_activity_history_day", "_ACTIVITY_SCHEMA"),
+    # jellyfin_searches_raw writes both flagged objects itself -- there is no
+    # history counterpart to delegate to (see the asset's own module docstring),
+    # so both schema constants have to show up in this one function.
+    ("jellyfin_searches_raw", "_SEARCH_SCHEMA"),
+    ("jellyfin_searches_raw", "_SEARCH_RESULT_SCHEMA"),
 ])
 def test_every_writer_of_a_flagged_dataset_still_uses_the_declared_schema(
     function_name, schema_name

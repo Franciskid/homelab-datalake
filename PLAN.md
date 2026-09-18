@@ -86,6 +86,19 @@ resolves an episode's series by id against it, with the item-name parse kept onl
 the documented fallback for the rows the id join does not reach (6.3% of distinct
 episodes played, 7.5% of episode playback rows, measured 2026-09-15).
 
+**Extended again, when the AI Search plugin reached AiSearch/1.2.0.0.** The plugin
+started keeping its own search log -- every `/Items`, `/Search/Hints`, `/Persons`
+and `/Artists` request Jellyfin itself served, plus the plugin's own AI popup
+searches, with their results and whether the semantic provider ran. Same shape as
+the playback branch above: hourly partitions, merged rather than replaced (entries
+reach the log through an async queue), no history job because nothing existed on
+the server before the plugin shipped this. `jellyfin_searches_raw` in
+`assets/jellyfin.py` lands both `jellyfin_searches` and `jellyfin_search_results`
+from one partition run, the same way `jellyfin_library_raw` writes titles and
+genres together; `fct_jellyfin_search` and `fct_jellyfin_search_result` are the
+marts, and `media_searches` / `media_search_results` are the semantic-layer
+datasets over them.
+
 **Together:** volume + semi-structured + external API enrichment. Covers most of what the job
 actually involves.
 
