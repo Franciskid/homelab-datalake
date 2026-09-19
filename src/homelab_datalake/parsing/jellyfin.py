@@ -91,6 +91,11 @@ NOT_STORED = frozenset(
         "ParentThumbImageTag",
         "ParentThumbItemId",
         "ScreenshotImageTags",
+        # Live TV. Every film carries it and every one carries it empty, so today the
+        # empty-value rule already keeps it out of the warning -- but that is an
+        # accident of the value, not a decision about the field. A movie library has no
+        # channel, so if the server ever starts filling it in, the answer is still no.
+        "ChannelId",
     }
 )
 
@@ -139,6 +144,10 @@ def _leftovers(item: dict, consumed: frozenset[str], not_stored: frozenset[str])
     warning permanent: on 2026-09-19 every item carried `ChannelId` and 907 films carried
     `AspectRatio`, all of them empty, and the check had been naming both every day. A
     key that starts carrying something is reported the day it does, which is the point.
+
+    That last sentence is why `AspectRatio` is not in NOT_STORED beside `ChannelId`: the
+    aspect ratio of a film is a real attribute, so the day Jellyfin starts reporting one
+    is a day worth hearing about. `ChannelId` never will be.
     """
     return {
         key: value for key, value in item.items()

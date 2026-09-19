@@ -435,7 +435,13 @@ models:
           false with is_enrichable true means the lookup has not run or has no key
           configured, which is a supported state rather than a fault.
       - name: original_language
-        description: '{{ doc("lib_original_language") }}'
+        description: >
+          ISO code of the language the film was made in. The one column here fed by two
+          sources: TMDB where it has an answer (3,132 of 3,135 films on 2026-09-19),
+          otherwise the library's own field, which Jellyfin 12.1.0 added and fills for
+          67. Where both answered they agreed on every one, so the fallback adds
+          coverage rather than a second opinion. Unlike budget and revenue beside it,
+          this column is not empty when TMDB enrichment is off.
       - name: budget_usd
         description: '{{ doc("lib_budget_usd") }}'
       - name: revenue_usd

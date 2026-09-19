@@ -49,6 +49,7 @@ renamed as (
         file_size_bytes,
         file_bitrate,
         media_source_count,
+        nullif(original_language, '')           as original_language,
         nullif(_unmapped, '')                   as unmapped_json
     from source
 )

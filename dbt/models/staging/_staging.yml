@@ -596,6 +596,12 @@ models:
         description: >
           How many media sources the title has. More than one means several versions of the
           same film.
+      - name: original_language
+        description: >
+          ISO 639-1 code of the language the film was made in, as the library holds it.
+          New with Jellyfin 12.1.0 and sparse -- 67 of 3,135 films on 2026-09-19 -- so
+          fct_library_title takes TMDB's far denser answer first and falls back to this.
+          Null means the server did not report one, not that the film has none.
       - name: unmapped_json
         description: >
           JSON, or null. Anything Jellyfin returned that nothing here reads. Fields

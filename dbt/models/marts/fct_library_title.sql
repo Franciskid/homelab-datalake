@@ -41,12 +41,22 @@ select
     -- that were never enriched.
     (titles.tmdb_id is not null) as is_enrichable,
 
-    -- The figures Jellyfin has no field for, joined on the id Jellyfin already
+    -- The one column here with two sources. TMDB first, the library second: Jellyfin
+    -- gained an OriginalLanguage field of its own in 12.1.0 and fills it for 67 of
+    -- 3,135 films, against TMDB's 3,132, and where both answered they agreed on every
+    -- one of the 67 (measured 2026-09-19). So the library's copy is a fallback for
+    -- titles TMDB was never asked about, not a second opinion to reconcile.
+    --
+    -- It closed no gap on the day it was written -- the three films with no language
+    -- have none from either source -- and it is not meant to. It closes one when
+    -- enrichment is off, which is the state this mart is built to survive.
+    coalesce(tmdb.original_language, titles.original_language) as original_language,
+
+    -- The figures Jellyfin has no field for at all, joined on the id Jellyfin already
     -- stored -- never on the title, so a film cannot pick up another film's box
     -- office. Null when no API key is configured, which is a supported state: the
     -- rating, original title, country and dates above all come from Jellyfin and are
     -- populated either way.
-    tmdb.original_language,
     tmdb.budget_usd,
     tmdb.revenue_usd,
     tmdb.revenue_to_budget,

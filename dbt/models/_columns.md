@@ -561,8 +561,11 @@ IMDb identifier, where Jellyfin matched one.
 {% enddocs %}
 
 {% docs lib_original_language %}
-ISO code of the language the film was made in. One of the few facts Jellyfin has no
-field for, so it comes from TMDB and is null when no API key is configured.
+ISO code of the language the film was made in, as TMDB reports it. Jellyfin had no field
+for this until 12.1.0 and still fills its own for a fraction of the library -- 67 of
+3,135 films on 2026-09-19, against 3,132 here -- so TMDB remains the source, and this
+column is null when no API key is configured. In fct_library_title the library's sparse
+copy stands in where this one is null.
 {% enddocs %}
 
 {% docs lib_budget_usd %}

@@ -390,3 +390,14 @@ def test_the_fields_twelve_one_added_have_columns():
     assert (row["original_language"], row["part_count"], row["iso_type"],
             row["video_3d_format"]) == ("ja", 2, "Dvd", "HalfSideBySide")
     assert out.unmapped == set()
+
+
+def test_a_populated_channel_id_is_still_not_reported():
+    """A movie library has no channel, so NOT_STORED rather than the empty-value rule.
+
+    Both kept it quiet while it was empty on every film, but only one of them is a
+    decision. `AspectRatio` is deliberately left to the other: it is a real attribute
+    of a film, so the day the server starts reporting one should be heard.
+    """
+    out = snapshot(DAY, items=[item(ChannelId="tv-4", AspectRatio="2.39:1")])
+    assert out.unmapped == {"AspectRatio"}

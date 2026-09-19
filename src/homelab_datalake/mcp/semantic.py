@@ -620,19 +620,24 @@ MEDIA_LIBRARY = Dataset(
         Dimension("is_runtime_plausible", "is_runtime_plausible",
                   "False for the handful of DVD rips that report a runtime of over a "
                   "day. Kept as reported and flagged, rather than corrected or dropped."),
-        # From TMDB, joined on the id Jellyfin stored. All null when no API key is
-        # configured, which is why `is_enriched` is a dimension rather than a footnote:
-        # a query can exclude unenriched titles instead of averaging over their nulls.
+        # The enrichment-sensitive end of the table, joined on the id Jellyfin stored.
+        # Null without an API key, except `production_country`, which comes from the
+        # snapshot, and `original_language`, which falls back to it. That is why
+        # `is_enriched` is a dimension rather than a footnote: a query can exclude
+        # unenriched titles instead of averaging over their nulls.
         Dimension("production_country", "production_country",
                   "Primary production country. From the library snapshot, so it is "
                   "populated regardless of whether TMDB enrichment is configured."),
         Dimension("original_language", "original_language",
-                  "Language the film was shot in. Needs TMDB enrichment -- the library "
-                  "has no field for it -- so it is null when no API key is set."),
+                  "Language the film was shot in. From TMDB, which answers for almost "
+                  "every title, falling back to the library's own field -- added in "
+                  "Jellyfin 12.1.0 and filled for about 2% of the shelf -- so it thins "
+                  "out rather than emptying when no API key is set."),
         Dimension("is_enriched", "is_enriched",
-                  "True when the TMDB figures were fetched for this title. Affects only "
-                  "budget, revenue, popularity, vote count and original language; "
-                  "ratings, titles, countries and dates come from the library itself."),
+                  "True when the TMDB figures were fetched for this title. Affects "
+                  "budget, revenue, popularity and vote count outright, and most of "
+                  "original_language; ratings, titles, countries and dates come from "
+                  "the library itself."),
     ),
     measures=(
         Measure("titles", "count(DISTINCT item_id)", "Distinct titles.", "titles"),
