@@ -94,6 +94,17 @@ def project(
             if key not in fields and key not in ignore:
                 leftovers[key] = value
 
+        # A row can arrive already carrying `_unmapped`: the Jellyfin snapshots build
+        # their rows key by key and compute the payload's leftovers themselves, because
+        # by the time a row reaches here the payload is gone. That value used to be
+        # skipped above and then overwritten below with this pass's own leftovers --
+        # none, for a row built to the schema -- so every film and library item was
+        # written with `_unmapped` null while the check went on naming the fields as
+        # kept. Measured 2026-09-19: null on all 3,135 films and all 16,378 items.
+        # Merged now, and this pass's findings win a clash since they are the newer.
+        carried = _carried_unmapped(row.get(UNMAPPED_COLUMN))
+        leftovers = {**carried, **leftovers}
+
         if UNMAPPED_COLUMN in fields:
             built[UNMAPPED_COLUMN] = (
                 json.dumps(leftovers, default=str, sort_keys=True) if leftovers else None
@@ -102,6 +113,22 @@ def project(
         out.append(built)
 
     return out, unmapped_seen
+
+
+def _carried_unmapped(value) -> dict:
+    """Leftovers a caller already put on the row, as a dict, whatever form they came in."""
+    if value is None:
+        return {}
+    if isinstance(value, dict):
+        return dict(value)
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except ValueError:
+            # Not JSON: still somebody's data, so keep it rather than choose to lose it.
+            return {UNMAPPED_COLUMN: value}
+        return parsed if isinstance(parsed, dict) else {UNMAPPED_COLUMN: parsed}
+    return {UNMAPPED_COLUMN: value}
 
 
 def drop_keys(value: dict, *keys: str) -> dict:

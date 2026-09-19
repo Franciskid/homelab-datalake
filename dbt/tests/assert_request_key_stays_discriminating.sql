@@ -1,72 +1,82 @@
-{{ config(severity='warn') }}
+-- No two requests share a `request_key` while differing in anything the table records.
+--
+-- That is what "discriminating" means for this key, stated directly. The key is not
+-- unique and must not be: two requests identical in every recorded respect -- same
+-- second, client, host, method, path, query, status, bytes and user agent -- are
+-- indistinguishable in the log, and inventing a difference would be inventing data.
+-- What must never happen is the other case, a key that merges requests the table can
+-- tell apart. Every distinct-count built on the key then undercounts, silently.
+--
+-- **It compares every column, read from the warehouse.** `adapter.get_columns_in_relation`
+-- asks what fct_http_request actually holds, so a column added to the fact and left out
+-- of the key fails this test the first night it varies. That is not hypothetical: it is
+-- how this key broke. query_string reached the fact on 14 Sep 2026 and not the key, and
+-- by the 19th the key was merging 718k rows of Keycloak's OIDC auth endpoint whose query
+-- strings differed in `state` and `nonce` -- plus 2,923 groups differing in user agent,
+-- 527 in method, 73 in host. The key now covers every recorded field, and on the day it
+-- changed this found zero offending keys across all 11,063,927 rows.
+--
+-- The test it replaces measured each day's duplicate share against a 40% threshold, as
+-- a proxy for the key's health. The proxy could not tell a key failing from traffic
+-- repeating, and by 19 Sep it was warning on ten days at up to 95% -- every one of them
+-- genuine repeats: the camera's HLS player caught in a login redirect loop, requesting
+-- one playlist 30-55 times a second for hours (2.53M times on 13 Sep from one browser),
+-- each request bounced to /api/auth/login and on to Keycloak and retried. Those rows
+-- are identical in every column, so they pass here, correctly. A loop like that is a
+-- traffic problem for monitoring to catch, not a data-quality one: nothing about the
+-- table was wrong.
+--
+-- It fails the build, where the threshold only warned. A threshold on traffic has to
+-- tolerate a noisy night; this has no noisy nights -- a merged pair of distinguishable
+-- requests is wrong on a quiet day and on a flood day alike, and every number built on
+-- the key is wrong with it.
+--
+-- The weaker failure -- an input still present but no longer saying anything, like a
+-- timestamp that stops parsing -- makes rows identical rather than different, so it
+-- cannot surface here. assert_request_key_inputs_stay_populated watches for it.
+--
+-- Two stages, because the second is expensive and almost always runs on nothing: the
+-- first finds offending keys with one hash per row, the second names the columns that
+-- differ, for those keys only.
 
--- `request_key` is a surrogate, not a natural key. This is the test its description
--- promises -- and which, until 30 Aug 2026, did not exist.
---
--- Duplicates are correct here. The key is md5 over instance, timestamp, client hash,
--- path, status and bytes, and two genuinely distinct requests can agree on all six:
--- a scanner asking for /login twice in the same second from the same address produces
--- two rows that are identical in every recorded respect. The log carries whole
--- seconds -- one busy second in August holds 1,252 requests -- so nothing in it
--- distinguishes them, and inventing a difference would be inventing data.
---
--- Two things about this test were wrong, and both are fixed here.
---
--- It measured the duplicate share over the WHOLE table. That number is monotonic in
--- the worst way: a single abnormal day is averaged into every build that ever runs
--- afterwards, so once it crosses the threshold it can never come back under it. On
--- 3 Sep 2026 a scanner walked api.homelab.fraserv.fr for 276,606 requests -- nine
--- times a normal day, 37% of them duplicates by the definition above -- and pushed
--- the all-history share from 5.27% to 17.45%. Every nightly build from 4 Sep failed
--- on this assertion, `dbt build` skipped everything downstream of the fact table,
--- `publish` never ran, and the serving copy the UI, the MCP tools and the API all
--- read stayed frozen at 2 Sep for eight days while the raw layer kept landing
--- perfectly. Discrimination is a property of a day's data; it is now measured per day.
---
--- It also failed the build for the case its own comment said should not fail it -- a
--- noisy scanning day. A flood of identical requests is real traffic faithfully
--- recorded, not a key that has stopped working, so this is a warning. The failure
--- mode that genuinely corrupts every downstream distinct-count -- a column falling
--- out of the key -- is watched by assert_request_key_inputs_stay_populated, which
--- does fail the build.
---
--- Measured over 40 days carrying at least 1,000 requests: the median day has 6.2% of
--- its rows beyond the first in a duplicate group, the 95th percentile 18.1%, and the
--- worst -- 3 Sep 2026, the scanner flood -- 37.1%. No day reached 40%. That is the
--- threshold: above it, a day is behaving like nothing this lake has recorded.
---
--- Quiet days are excluded, as in assert_reject_rate_within_threshold: three requests
--- of which two repeat is 67% and means nothing.
+{%- set columns = [] -%}
+{%- if execute -%}
+    {%- for column in adapter.get_columns_in_relation(ref('fct_http_request')) -%}
+        {%- if column.name != 'request_key' -%}
+            {%- do columns.append(column.name) -%}
+        {%- endif -%}
+    {%- endfor -%}
+    {%- if not columns -%}
+        {{ exceptions.raise_compiler_error(
+            "assert_request_key_stays_discriminating found no columns in fct_http_request. "
+            "A comparison over nothing passes for everything, so this refuses to run.") }}
+    {%- endif -%}
+{%- endif %}
 
-with grouped as (
+with offending as (
 
-    select
-        partition_date,
-        request_key,
-        count(*) as rows_in_group
+    select request_key
     from {{ ref('fct_http_request') }}
-    group by 1, 2
-
-),
-
-per_day as (
-
-    select
-        partition_date,
-        sum(rows_in_group)                              as total_rows,
-        sum(rows_in_group - 1)                          as rows_beyond_first,
-        max(rows_in_group)                              as largest_group
-    from grouped
     group by 1
+    having count(distinct hash(
+        {%- for column in columns %}
+        {{ adapter.quote(column) }}{{ "," if not loop.last }}
+        {%- endfor %}
+    )) > 1
 
 )
 
 select
-    partition_date,
-    total_rows,
-    rows_beyond_first,
-    largest_group,
-    round(1.0 * rows_beyond_first / nullif(total_rows, 0), 4) as duplicate_share
-from per_day
-where total_rows >= 1000
-  and 1.0 * rows_beyond_first / nullif(total_rows, 0) > 0.40
+    request_key,
+    count(*)                                    as rows_sharing_key,
+    min(partition_date)                         as first_day,
+    max(partition_date)                         as last_day,
+    list_filter([
+        {%- for column in columns %}
+        case when count(distinct coalesce(cast({{ adapter.quote(column) }} as varchar), '<null>')) > 1
+             then '{{ column }}' end{{ "," if not loop.last }}
+        {%- endfor %}
+    ], c -> c is not null)                      as differing_columns
+from {{ ref('fct_http_request') }}
+where request_key in (select request_key from offending)
+group by 1

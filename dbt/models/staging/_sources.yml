@@ -527,12 +527,31 @@ sources:
             description: Overall bitrate of the primary media file.
           - name: media_source_count
             description: How many media sources the title has. More than one means several versions of the same film.
+          - name: original_language
+            description: >
+              ISO 639-1 code of the language the film was made in, as Jellyfin's
+              metadata provider reports it. New with Jellyfin 12.1.0 and sparse: 67 of
+              3,135 films on 2026-09-19, mostly `en` and `fr`. Null means not reported,
+              not unknown to the world.
+          - name: part_count
+            description: >
+              How many files make up the film, when it is split across several (CD1,
+              CD2). Null for a single-file film; every one of the 34 reported on
+              2026-09-19 was 2.
+          - name: iso_type
+            description: The disc format when the film is a disc image -- `Dvd` or `BluRay`. Null for an ordinary file.
+          - name: video_3d_format
+            description: The 3D layout of a stereoscopic film, e.g. `HalfSideBySide`. Null for 2D.
           - name: _unmapped
             description: >
               JSON. Any field Jellyfin returned that nothing here reads, kept rather
               than dropped. Fields deliberately not stored -- `Path` above all -- are
-              excluded from it, so a non-null value here is always a prompt to add a
-              column rather than noise.
+              excluded from it, and so are fields that arrived empty, so a non-null
+              value here is always a prompt to add a column rather than noise.
+
+              Null on every partition before 2026-09-19 whatever Jellyfin sent:
+              projecting the row to its schema overwrote the value the snapshot had
+              computed. Those fields are lost for that period, not absent.
 
       - name: jellyfin_title_streams
         description: >
@@ -874,10 +893,16 @@ sources:
             description: Overall bitrate of the primary media file.
           - name: media_source_count
             description: How many media sources the item has.
+          - name: original_language
+            description: >
+              ISO 639-1 code of the language the series or episode was made in, when
+              Jellyfin reports one. New with Jellyfin 12.1.0 and rare -- see
+              jellyfin_titles.original_language.
           - name: _unmapped
             description: >
               JSON. Any field Jellyfin returned that nothing here reads, kept rather
-              than dropped -- the same convention as jellyfin_titles._unmapped.
+              than dropped -- the same convention as jellyfin_titles._unmapped, and
+              null on every partition before 2026-09-19 for the same reason.
 
       - name: jellyfin_searches
         description: >

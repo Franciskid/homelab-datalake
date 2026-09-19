@@ -127,8 +127,28 @@ CONSUMED = frozenset(
         "People", "Chapters", "RemoteTrailers", "ExternalUrls", "ParentId", "Type",
         "MediaType", "VideoType", "HasSubtitles", "IsFolder", "Width", "Height",
         "IndexNumber", "ParentIndexNumber", "CustomRating", "DateLastMediaAdded",
+        "OriginalLanguage", "PartCount", "IsoType", "Video3DFormat",
     }
 )
+
+
+def _leftovers(item: dict, consumed: frozenset[str], not_stored: frozenset[str]) -> dict:
+    """What an item carries that nothing here reads, leaving out keys with no value.
+
+    An empty value has nothing in it to lose, and reporting one makes the unmapped
+    warning permanent: on 2026-09-19 every item carried `ChannelId` and 907 films carried
+    `AspectRatio`, all of them empty, and the check had been naming both every day. A
+    key that starts carrying something is reported the day it does, which is the point.
+    """
+    return {
+        key: value for key, value in item.items()
+        if key not in consumed and key not in not_stored and not _is_empty(value)
+    }
+
+
+def _is_empty(value) -> bool:
+    # 0 and False are answers, not absences, so only these count.
+    return value is None or value == "" or value == [] or value == {}
 
 
 @dataclass
@@ -377,6 +397,13 @@ def _title_row(item: dict, snapshot_day: date) -> dict:
         "file_size_bytes": primary_source.get("Size"),
         "file_bitrate": primary_source.get("Bitrate"),
         "media_source_count": len(sources) if item.get("MediaSources") else 0,
+        # Sparse on purpose, as the server fills them: measured 2026-09-19 over 3,135
+        # films, 67 carry an original language, 34 a part count (every one of them 2),
+        # 2 an ISO type and 1 a 3D format. OriginalLanguage is new with Jellyfin 12.1.0.
+        "original_language": item.get("OriginalLanguage") or None,
+        "part_count": item.get("PartCount"),
+        "iso_type": item.get("IsoType") or None,
+        "video_3d_format": item.get("Video3DFormat") or None,
     }
 
 
@@ -456,10 +483,7 @@ def snapshot(snapshot_day: date, base_url: str | None = None, api_key: str | Non
     seen_genres: dict[str, None] = {}
     for item in items:
         out.types[str(item.get("Type") or "unknown")] += 1
-        leftovers = {
-            key: value for key, value in item.items()
-            if key not in CONSUMED and key not in NOT_STORED
-        }
+        leftovers = _leftovers(item, CONSUMED, NOT_STORED)
         out.unmapped.update(leftovers)
         row = _title_row(item, snapshot_day)
         row["_unmapped"] = (
@@ -534,6 +558,7 @@ _LIBRARY_ITEM_CONSUMED = frozenset(
         "Genres", "GenreItems", "RemoteTrailers", "ExternalUrls", "ParentId", "Type",
         "MediaType", "VideoType", "HasSubtitles", "IsFolder", "SeriesId", "SeriesName",
         "SeasonId", "SeasonName", "IndexNumber", "ParentIndexNumber",
+        "OriginalLanguage",
     }
 )
 
@@ -646,6 +671,9 @@ def _library_item_row(item: dict, snapshot_day: date) -> dict:
         "file_size_bytes": primary_source.get("Size"),
         "file_bitrate": primary_source.get("Bitrate"),
         "media_source_count": len(sources) if item.get("MediaSources") else 0,
+        # Present on a handful of series and episodes since Jellyfin 12.1.0; the film
+        # snapshot carries the same column.
+        "original_language": item.get("OriginalLanguage") or None,
     }
 
 
@@ -681,10 +709,7 @@ def library_items_snapshot(snapshot_day: date, base_url: str | None = None,
         out.total_reported = len(items)
 
     for item in items:
-        leftovers = {
-            key: value for key, value in item.items()
-            if key not in _LIBRARY_ITEM_CONSUMED and key not in _LIBRARY_ITEM_NOT_STORED
-        }
+        leftovers = _leftovers(item, _LIBRARY_ITEM_CONSUMED, _LIBRARY_ITEM_NOT_STORED)
         out.unmapped.update(leftovers)
         row = _library_item_row(item, snapshot_day)
         row["_unmapped"] = (
