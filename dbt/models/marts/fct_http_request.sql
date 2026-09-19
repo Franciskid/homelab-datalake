@@ -9,11 +9,32 @@
 -- sit beside. See homelab_datalake.privacy for the 2026-09-14 decision.
 
 select
-    md5(
-        npm_instance || '|' || cast(requested_at as varchar) || '|' ||
-        coalesce(client_hash, '') || '|' || coalesce(path, '') || '|' ||
-        cast(status as varchar) || '|' || cast(bytes_sent as varchar)
-    )                                   as request_key,
+    -- Every field the log records about a request, so two rows share a key exactly when
+    -- nothing recorded tells them apart. Until 19 Sep 2026 this was six fields, and it
+    -- merged requests the log *could* tell apart: 718k rows of Keycloak's OIDC endpoint
+    -- differing only in their `state` and `nonce`, plus smaller sets differing in
+    -- method, user agent or host. query_string arrived in this table on 14 Sep and was
+    -- never added here -- assert_request_key_stays_discriminating now fails the build
+    -- on exactly that drift, for any column.
+    --
+    -- A JSON array rather than a '|'-joined string: the old form was ambiguous once a
+    -- field could contain the separator, and query strings and user agents can. Nulls
+    -- serialise as null, distinct from an empty string.
+    md5(to_json([
+        npm_instance,
+        cast(requested_at as varchar),
+        client_hash,
+        request_host,
+        scheme,
+        method,
+        path,
+        query_string,
+        cast(status as varchar),
+        upstream_status,
+        upstream_target,
+        cast(bytes_sent as varchar),
+        user_agent
+    ]))                                 as request_key,
 
     partition_date,
     npm_instance,

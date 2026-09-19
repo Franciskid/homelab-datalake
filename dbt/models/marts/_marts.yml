@@ -12,20 +12,25 @@ models:
     columns:
       - name: request_key
         description: >
-          Surrogate key: md5 over instance, timestamp, client hash, path, status and
-          bytes. Deliberately not unique. Two genuinely distinct requests can agree on
-          all six -- a scanner asking for /login twice in the same second from the same
-          address -- and nothing in an access log tells them apart.
+          Surrogate key: md5 over every field the log records about a request --
+          instance, timestamp, client hash, host, scheme, method, path, query string,
+          status, upstream status and target, bytes and user agent. Deliberately not
+          unique. Two requests identical in all of those -- a player retrying one
+          playlist within the same second -- are indistinguishable in the log, and they
+          share a key.
 
-          What is tested is that it keeps discriminating, and it is tested per day --
-          an all-history average only ever climbs, so one abnormal day poisons every
-          build after it, which is what froze this lake for eight days in Sep 2026.
-          assert_request_key_inputs_stay_populated fails the build when a column
-          feeding the key stops carrying information, which is the case that makes
-          the numbers wrong. assert_request_key_stays_discriminating warns when a
-          day's duplicate share passes 40%; measured over 40 days, the median day is
-          6.2%, the 95th percentile 18.1%, and the worst -- a scanner flood on 3 Sep
-          2026 -- 37.1%.
+          It was six fields until 19 Sep 2026 and merged requests the log could tell
+          apart, chiefly Keycloak OIDC redirects differing only in `state` and `nonce`.
+          Both ways a key can fail are tested, and both fail the build.
+          assert_request_key_stays_discriminating: no two rows share a key while
+          differing in any column of this table, read from the warehouse, so a column
+          added here and not to the key is caught. assert_request_key_inputs_stay_populated:
+          no input has stopped carrying information, which makes rows identical rather
+          than different and so cannot show up in the first.
+
+          How often a day repeats itself is deliberately not tested. It measured a
+          camera login loop, not the key -- see the discriminating test for the ten
+          days it warned on.
         tests: [not_null]
       - name: partition_date
         description: '{{ doc("req_partition_date") }}'

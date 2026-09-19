@@ -1,7 +1,9 @@
--- The failure mode assert_request_key_stays_discriminating was written to catch,
--- watched directly instead of through a proxy.
+-- The failure mode assert_request_key_stays_discriminating cannot see, watched directly.
+-- That test catches a key merging rows that differ; this one catches inputs that have
+-- stopped differing, which makes rows identical and so passes it.
 --
--- `request_key` is md5 over six columns. If one of them stops carrying information --
+-- `request_key` is md5 over every recorded field (thirteen since 19 Sep 2026; six
+-- before). The core ones are checked below. If one of them stops carrying information --
 -- client_hash null across the board after a hashing change, bytes_sent always zero
 -- after NPM changes its log format, a path that never parses -- the key keeps being
 -- produced and keeps looking like a key, while quietly collapsing rows that are not
