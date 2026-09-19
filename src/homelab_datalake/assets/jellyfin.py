@@ -1361,13 +1361,14 @@ def jellyfin_users_raw(context: AssetExecutionContext, lake: LakeStorage):
 # history to backfill and no `_history_raw` counterpart -- the plugin only ever keeps
 # `retentionDays` (7 by default) of entries, and nothing existed on the server before
 # this version shipped, so every earlier hourly partition is simply empty rather than
-# unfilled. Collection starts the day this pipeline shipped, the same reasoning
-# LIBRARY_ITEMS_START uses.
+# unfilled. Collection starts at the hour the AI Search plugin began logging on the
+# server: 2026-09-18 23:05 UTC, so the hour 2026-09-18-23:00 contains real entries
+# that earlier hourly partitions do not.
 #
 # Two raw datasets per partition, one asset, the same shape `jellyfin_library_raw`
 # uses for titles and genres: a search has many results, and flattening them into the
 # search row would mean a delimited string or result_1/result_2/result_3.
-SEARCHES_START = "2026-09-19-00:00"
+SEARCHES_START = "2026-09-18-23:00"
 searches_partitions = HourlyPartitionsDefinition(start_date=SEARCHES_START, end_offset=1)
 
 SEARCHES_PREFIX = layout.prefix("jellyfin_searches")
