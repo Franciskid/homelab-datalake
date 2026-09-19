@@ -521,6 +521,16 @@ models:
       - name: is_current
         description: Whether this is the version seen in the most recent snapshot.
         tests: [not_null]
+      - name: retired_on
+        description: >
+          The snapshot date a title that has left the library was last seen on, set on
+          its final version only and null everywhere else. A retired title has no
+          current version at all, so without this column "deleted" and "the snapshot
+          missed it" look identical -- `is_current = false` on every row either way.
+
+          'La Cité des Anges' was the first, last seen 16 Sep 2026. Filter it out of
+          any "what is in the library now" question; `is_current` already does that,
+          and this says why.
       - name: title
         description: '{{ doc("lib_title") }}'
       - name: community_rating

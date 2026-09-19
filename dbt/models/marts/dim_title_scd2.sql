@@ -44,7 +44,12 @@ flagged as (
 
 versioned as (
 
-    select *, sum(is_change) over (partition by item_id order by snapshot_date) as version
+    select
+        *,
+        sum(is_change) over (partition by item_id order by snapshot_date) as version,
+        -- The last day this title was seen at all, carried on every one of its rows so
+        -- the final select can tell "this version ended" from "this title ended".
+        max(snapshot_date) over (partition by item_id) as title_last_seen
     from flagged
 
 )
@@ -60,6 +65,15 @@ select
     case when max(snapshot_date) = (select max(snapshot_date) from snapshots)
          then null else max(snapshot_date) end                    as valid_to,
     max(snapshot_date) = (select max(snapshot_date) from snapshots) as is_current,
+    -- The day a title that has left the library was last seen, on its final version
+    -- only. A deleted title has no current version, and until 17 Sep 2026 -- the day
+    -- the first one was deleted, 'La Cité des Anges' -- nothing here said whether that
+    -- meant "gone" or "broken". It is a fact worth stating rather than inferring: an
+    -- absence cannot be told apart from a snapshot that failed to list the title, which
+    -- is exactly what a half-collected snapshot looks like.
+    case when any_value(title_last_seen) < (select max(snapshot_date) from snapshots)
+              and max(snapshot_date) = any_value(title_last_seen)
+         then any_value(title_last_seen) end                      as retired_on,
     any_value(title)                                              as title,
     any_value(community_rating)                                   as community_rating,
     any_value(video_codec)                                        as video_codec,

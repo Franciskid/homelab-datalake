@@ -44,6 +44,7 @@ from __future__ import annotations
 import json
 import os
 import re
+from collections import Counter
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from datetime import time as dtime
@@ -140,10 +141,19 @@ class LibrarySnapshot:
     unmapped: set[str] = field(default_factory=set)
     total_reported: int = 0
     pages: int = 0
+    #: `Type` of every item the server sent back, counted. A movie snapshot that
+    #: contains anything else means the query no longer means what it says -- see
+    #: `CollapseBoxSetItems` in `fetch_page`, which is how BoxSets first arrived here.
+    types: Counter[str] = field(default_factory=Counter)
 
     @property
     def count(self) -> int:
         return len(self.titles)
+
+    @property
+    def foreign_types(self) -> dict[str, int]:
+        """Counts of anything returned that is not a Movie."""
+        return {name: n for name, n in sorted(self.types.items()) if name != "Movie"}
 
 
 def resolution_class(height: int | None) -> str | None:
@@ -385,6 +395,19 @@ def fetch_page(base_url: str, api_key: str, start_index: int, limit: int,
             "EnableTotalRecordCount": "true",
             "SortBy": "Id",  # stable order, so a re-run reads the same rows
             "SortOrder": "Ascending",
+            # Asked for explicitly because the server's default changed underneath us.
+            # Jellyfin 12.1.0 collapses every movie that belongs to a collection into
+            # the BoxSet that holds it: on 2026-09-19 `IncludeItemTypes=Movie` answered
+            # TotalRecordCount=1068 -- 882 standalone movies plus 186 BoxSets -- for a
+            # library that /Items/Counts still reported as 3,135 movies. The 2,253
+            # collected ones were not gone, they were folded away, and the snapshot
+            # wrote that fiction as the library's state for the day.
+            #
+            # `ExcludeItemTypes=BoxSet` does not undo it (measured: still 1068); the
+            # collapsing happens before the type filter, so the only fix is to say
+            # what this query means. A snapshot of the library must not depend on a
+            # display preference, which is what the default follows.
+            "CollapseBoxSetItems": "false",
         }
     )
     url = f"{base_url.rstrip('/')}/Items?{query}"
@@ -432,6 +455,7 @@ def snapshot(snapshot_day: date, base_url: str | None = None, api_key: str | Non
 
     seen_genres: dict[str, None] = {}
     for item in items:
+        out.types[str(item.get("Type") or "unknown")] += 1
         leftovers = {
             key: value for key, value in item.items()
             if key not in CONSUMED and key not in NOT_STORED
