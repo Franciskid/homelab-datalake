@@ -1111,13 +1111,30 @@ models:
           second, late confirmation of a portal cycle whose closing an earlier event had
           already recorded correctly -- two rows, two separate incidents that day,
           neither one the app doing this by itself.
+
+          `semantic_subject_outside_zone` and `gate_motion_not_visible` arrived together
+          on 17 Sep 2026 with `src/services/attention-evidence-adjudication.js`, a module
+          written that morning (07:35) whose first event reached the lake at 08:31. It
+          adjudicates between a broad semantic answer and a narrower measurement, and
+          `create-app.js` takes its verdict as a dismissal reason
+          (`outcome.dismissalReason || evidenceRejection?.reason`). The first fires when
+          the full-clip object tracker followed every subject the model claimed and none
+          of them entered the zone polygon; the second when the model called a state
+          change with no subject and the gate verifier saw the gate never move.
+
+          Only the first has appeared in the lake so far -- 11 events between 17 and
+          19 Sep, all `motion` rules. `gate_motion_not_visible` is accepted here anyway,
+          for the reason this column's history keeps teaching: the value is in the
+          running app's source, so the day it fires is not the day to find out. An
+          enumeration read off the data is a sample; this one is read off the source.
         tests:
           - accepted_values:
               values: ['semantic_no_event', 'semantic_state_unchanged', 'semantic_fallback',
                        'human_correction', 'recording_unavailable', 'recording_failed',
                        'unchanged_state', 'analysis_failed', 'superseded_reanalysis',
                        'duplicate', 'duplicate_late_confirmation', 'stable_state',
-                       'ambiguous_legacy_state', 'pixel_replay_no_crossing']
+                       'ambiguous_legacy_state', 'pixel_replay_no_crossing',
+                       'semantic_subject_outside_zone', 'gate_motion_not_visible']
       - name: direction
         description: '{{ doc("cam_direction") }}'
         tests:
