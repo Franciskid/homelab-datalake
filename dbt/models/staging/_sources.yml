@@ -898,6 +898,17 @@ sources:
               ISO 639-1 code of the language the series or episode was made in, when
               Jellyfin reports one. New with Jellyfin 12.1.0 and rare -- see
               jellyfin_titles.original_language.
+          - name: index_number_end
+            description: >
+              On an episode file that holds several episodes (S01E01-E02), the number of
+              the last one; index_number is the first. Null for a single episode.
+          - name: part_count
+            description: How many files an episode is split across, when it is split. Null otherwise.
+          - name: extra_type
+            description: >
+              On a Video, the kind of extra it is -- Trailer, BehindTheScenes and so on,
+              as Jellyfin classifies it. Every one reported on 2026-09-19 was `Unknown`,
+              which is the server's own answer rather than a missing one.
           - name: _unmapped
             description: >
               JSON. Any field Jellyfin returned that nothing here reads, kept rather

@@ -132,3 +132,29 @@ def test_a_missing_end_date_is_null_not_a_sentinel():
     row = _library_item_row({"Id": "s1", "Type": "Series", "Status": "Continuing"}, DAY)
     assert row["end_date"] is None
     assert row["status"] == "Continuing"
+
+
+def test_the_fields_the_null_unmapped_column_was_hiding_are_decided():
+    """Seven fields surfaced on 2026-09-19, the day `_unmapped` stopped being
+    overwritten. Three are attributes of the item and get columns; four are the
+    broadcast schedule and image references the NOT_STORED list already excludes
+    siblings of. None of them should be reported as unmapped any more.
+    """
+    from homelab_datalake.parsing.jellyfin import library_items_snapshot
+
+    episode = {
+        "Id": "e1", "Name": "Pilot", "Type": "Episode",
+        "IndexNumber": 1, "IndexNumberEnd": 2, "PartCount": 2,
+        "ParentPrimaryImageItemId": "abc", "ParentPrimaryImageTag": "def",
+        "PrimaryImageAspectRatio": 0.7,
+    }
+    series = {"Id": "s1", "Name": "Show", "Type": "Series", "AirTime": "21:00"}
+    extra = {"Id": "v1", "Name": "Making of", "Type": "Video", "ExtraType": "Unknown"}
+
+    out = library_items_snapshot(DAY, items=[episode, series, extra])
+    rows = {row["item_id"]: row for row in out.items}
+
+    assert (rows["e1"]["index_number"], rows["e1"]["index_number_end"]) == (1, 2)
+    assert rows["e1"]["part_count"] == 2
+    assert rows["v1"]["extra_type"] == "Unknown"
+    assert out.unmapped == set()

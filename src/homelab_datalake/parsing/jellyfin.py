@@ -539,6 +539,9 @@ LIBRARY_ITEM_FIELDS = (
 #
 # Image and UI-only fields dropped for the same reason as the movie NOT_STORED list.
 # `AirDays` is a series' broadcast schedule -- never asked for, and not requested.
+# `AirTime` is the same schedule's time of day and goes with it. It, and the three
+# image references after it, only became visible on 2026-09-19, when `_unmapped` stopped
+# being overwritten on the way to disk; until then no one could see them to decide.
 _LIBRARY_ITEM_NOT_STORED = frozenset(
     {
         "Path", "MediaSources", "ImageTags", "ImageBlurHashes", "BackdropImageTags",
@@ -546,6 +549,8 @@ _LIBRARY_ITEM_NOT_STORED = frozenset(
         "ParentBackdropItemId", "ParentThumbImageTag", "ParentThumbItemId",
         "ScreenshotImageTags", "ChannelId", "AirDays", "SeriesPrimaryImageTag",
         "ParentLogoItemId", "ParentLogoImageTag", "DisplayOrder", "People",
+        "AirTime", "ParentPrimaryImageItemId", "ParentPrimaryImageTag",
+        "PrimaryImageAspectRatio",
     }
 )
 
@@ -558,7 +563,7 @@ _LIBRARY_ITEM_CONSUMED = frozenset(
         "Genres", "GenreItems", "RemoteTrailers", "ExternalUrls", "ParentId", "Type",
         "MediaType", "VideoType", "HasSubtitles", "IsFolder", "SeriesId", "SeriesName",
         "SeasonId", "SeasonName", "IndexNumber", "ParentIndexNumber",
-        "OriginalLanguage",
+        "OriginalLanguage", "IndexNumberEnd", "PartCount", "ExtraType",
     }
 )
 
@@ -661,6 +666,14 @@ def _library_item_row(item: dict, snapshot_day: date) -> dict:
         # this repo keeps the source's own fields rather than a derived reading.
         "index_number": item.get("IndexNumber"),
         "parent_index_number": item.get("ParentIndexNumber"),
+        # A file holding several episodes (S01E01-E02) carries its last one here;
+        # index_number is the first. 16 such files on 2026-09-19.
+        "index_number_end": item.get("IndexNumberEnd"),
+        # The same field the film snapshot keeps: an episode split across files.
+        "part_count": item.get("PartCount"),
+        # On a Video, what kind of extra it is (Trailer, BehindTheScenes, ...). All
+        # 152 reported on 2026-09-19 said `Unknown`, which is still the server's answer.
+        "extra_type": item.get("ExtraType") or None,
         "stream_count": len(streams),
         "remote_trailer_count": len(item.get("RemoteTrailers") or []),
         "external_urls": [
