@@ -117,6 +117,10 @@ _TITLE_SCHEMA = pa.schema(
         ("file_size_bytes", pa.int64()),
         ("file_bitrate", pa.int64()),
         ("media_source_count", pa.int32()),
+        ("original_language", pa.string()),
+        ("part_count", pa.int32()),
+        ("iso_type", pa.string()),
+        ("video_3d_format", pa.string()),
         ("_unmapped", pa.string()),
     ]
 )
@@ -438,6 +442,7 @@ _LIBRARY_ITEMS_SCHEMA = pa.schema(
         ("file_size_bytes", pa.int64()),
         ("file_bitrate", pa.int64()),
         ("media_source_count", pa.int32()),
+        ("original_language", pa.string()),
         ("_unmapped", pa.string()),
     ]
 )

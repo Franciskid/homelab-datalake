@@ -1,5 +1,6 @@
 """Jellyfin extraction tests. Items are injected, so no server is needed."""
 
+import json
 from datetime import UTC, date, datetime, timedelta, timezone
 
 import pytest
@@ -329,3 +330,63 @@ def test_a_shrink_is_refused_unless_the_day_is_named(monkeypatch):
 
     monkeypatch.setenv(SHRINK_OVERRIDE_VAR, "all")
     assert _shrink_permitted(date(2027, 1, 1)) is True
+
+
+# --------------------------------------------------------------------------------
+# `_unmapped`: kept, as the check says, rather than overwritten on the way to disk
+# --------------------------------------------------------------------------------
+#
+# The snapshot computes each item's leftovers and puts them on the row as `_unmapped`,
+# because the payload is gone by the time the asset projects the row to its schema.
+# `project()` skipped that value and then wrote its own leftovers over it -- none, for
+# a row built to the schema -- so on 2026-09-19 `_unmapped` was null on every one of
+# 3,135 films and 16,378 library items while `no_unmapped_fields` named the fields
+# every day as kept. These run the real path: snapshot, then project.
+
+
+def test_a_field_nobody_reads_survives_projection_into_the_row_written():
+    from homelab_datalake.assets.jellyfin import _TITLE_SCHEMA
+    from homelab_datalake.projection import project
+
+    out = snapshot(DAY, items=[item(Type="Movie", BrandNewField="kept")])
+    projected, seen = project(out.titles, _TITLE_SCHEMA)
+
+    assert json.loads(projected[0]["_unmapped"]) == {"BrandNewField": "kept"}
+    assert "BrandNewField" in seen
+
+
+def test_the_same_holds_for_the_wider_library():
+    from homelab_datalake.assets.jellyfin import _LIBRARY_ITEMS_SCHEMA
+    from homelab_datalake.parsing.jellyfin import library_items_snapshot
+    from homelab_datalake.projection import project
+
+    series = {"Id": "s1", "Name": "Show", "Type": "Series", "BrandNewField": 3}
+    out = library_items_snapshot(DAY, items=[series])
+    projected, _ = project(out.items, _LIBRARY_ITEMS_SCHEMA)
+
+    assert json.loads(projected[0]["_unmapped"]) == {"BrandNewField": 3}
+
+
+def test_an_empty_value_is_not_reported_as_unmapped():
+    """Nothing to lose, and reporting it made the warning permanent.
+
+    Every item carried `ChannelId` and 907 films carried `AspectRatio`, all empty.
+    """
+    out = snapshot(DAY, items=[item(ChannelId=None, AspectRatio="", Extra=[], More={})])
+    assert out.unmapped == set()
+    assert out.titles[0]["_unmapped"] is None
+
+
+def test_a_zero_or_false_is_an_answer_and_is_still_reported():
+    out = snapshot(DAY, items=[item(NewCount=0, NewFlag=False)])
+    assert {"NewCount", "NewFlag"} <= out.unmapped
+
+
+def test_the_fields_twelve_one_added_have_columns():
+    out = snapshot(DAY, items=[item(
+        OriginalLanguage="ja", PartCount=2, IsoType="Dvd", Video3DFormat="HalfSideBySide",
+    )])
+    row = out.titles[0]
+    assert (row["original_language"], row["part_count"], row["iso_type"],
+            row["video_3d_format"]) == ("ja", 2, "Dvd", "HalfSideBySide")
+    assert out.unmapped == set()
