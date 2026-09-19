@@ -61,6 +61,9 @@ PEOPLE_PREFIX = layout.prefix("jellyfin_title_people")
 # fiction as history -- which SCD2 would then faithfully preserve.
 MAX_SHRINK_RATIO = 0.20
 
+#: Comma-separated ISO days (or `all`) whose shrink an operator has vouched for.
+SHRINK_OVERRIDE_VAR = "JELLYFIN_ALLOW_SHRINK"
+
 _TITLE_SCHEMA = pa.schema(
     [
         ("dt", pa.date32()),
@@ -221,6 +224,33 @@ def jellyfin_library_raw(context: AssetExecutionContext, lake: LakeStorage):
             "or an unreachable server, not a real state -- refusing to write it."
         )
 
+    # Everything below refuses *before* the write, for the reason the 2026-09-19
+    # snapshot demonstrated: the shrink check used to be yielded after it, so the
+    # fiction was already in the lake and in the warehouse by the time anything said
+    # so -- and a failing check is not a failing run, so the alert sensor never fired
+    # either. A snapshot that cannot be trusted must not be written at all.
+    if result.foreign_types:
+        raise ValueError(
+            f"Jellyfin returned {result.foreign_types} for {day} on a query that asked "
+            "for Movie only. The item-type filter is not holding, so these rows would "
+            "land in jellyfin_titles as if they were films -- refusing to write it. "
+            "This is what Jellyfin 12.1.0's CollapseBoxSetItems default did on "
+            "2026-09-19; see fetch_page."
+        )
+
+    previous = _previous_count(lake, day)
+    shrunk = library_shrank(result.count, previous)
+    if shrunk and not _shrink_permitted(day):
+        raise ValueError(
+            f"Jellyfin returned {result.count} titles for {day}, down from {previous} "
+            f"-- more than the {MAX_SHRINK_RATIO:.0%} a real library moves in a day. "
+            "That is a missing mount, a scan in flight or a query that stopped meaning "
+            "what it says, and SCD2 would preserve it as history: every title absent "
+            "today would be recorded as having left the library. Refusing to write it. "
+            f"If the library really did shrink, set {SHRINK_OVERRIDE_VAR}={day.isoformat()} "
+            "for one run."
+        )
+
     written = 0
     for prefix, rows, schema in (
         (TITLE_PREFIX, result.titles, _TITLE_SCHEMA),
@@ -241,7 +271,6 @@ def jellyfin_library_raw(context: AssetExecutionContext, lake: LakeStorage):
 
     with_tmdb = sum(1 for t in result.titles if t["tmdb_id"])
     coverage = with_tmdb / result.count
-    previous = _previous_count(lake, day)
 
     context.log.info(
         "dt=%s %d titles (previous snapshot: %s), %.1f%% with a TMDB id",
@@ -266,12 +295,17 @@ def jellyfin_library_raw(context: AssetExecutionContext, lake: LakeStorage):
         },
     )
 
-    shrunk = previous is not None and result.count < previous * (1 - MAX_SHRINK_RATIO)
+    # Reached only when the snapshot was written, so this records the shrink that was
+    # explicitly permitted rather than one nobody saw: an unpermitted one raised above.
     yield AssetCheckResult(
         check_name=CHECK_NOT_SHRUNK,
         passed=not shrunk,
         severity=AssetCheckSeverity.ERROR,
-        metadata={"titles": result.count, "previous": previous or 0},
+        metadata={
+            "titles": result.count,
+            "previous": previous or 0,
+            "shrink_permitted": shrunk,
+        },
     )
 
     yield AssetCheckResult(
@@ -287,6 +321,26 @@ def jellyfin_library_raw(context: AssetExecutionContext, lake: LakeStorage):
         severity=AssetCheckSeverity.WARN,
         metadata={"fields": MetadataValue.text(", ".join(sorted(result.unmapped)) or "none")},
     )
+
+
+def library_shrank(count: int, previous: int | None) -> bool:
+    """Whether today's title count is too far below the last snapshot's to be real.
+
+    A first snapshot has nothing to compare against and is never a shrink.
+    """
+    return previous is not None and count < previous * (1 - MAX_SHRINK_RATIO)
+
+
+def _shrink_permitted(day: date) -> bool:
+    """Whether an operator has said this day's shrink is real.
+
+    Named per day rather than as a boolean on purpose: a flag someone sets once and
+    forgets turns the guard off for every later run, which is how a guard becomes a
+    comment. `all` exists for a bulk rebuild and is meant to be passed for one command,
+    not left in the environment.
+    """
+    allowed = {v.strip() for v in os.environ.get(SHRINK_OVERRIDE_VAR, "").split(",")}
+    return "all" in allowed or day.isoformat() in allowed
 
 
 def _previous_count(lake: LakeStorage, day: date) -> int | None:

@@ -4,9 +4,15 @@ from datetime import UTC, date, datetime, timedelta, timezone
 
 import pytest
 
+from homelab_datalake.assets.jellyfin import (
+    SHRINK_OVERRIDE_VAR,
+    _shrink_permitted,
+    library_shrank,
+)
 from homelab_datalake.parsing.jellyfin import (
     FIELDS,
     _parse_timestamp,
+    fetch_page,
     resolution_class,
     snapshot,
 )
@@ -210,3 +216,116 @@ def test_playback_fields_are_never_requested_on_the_library_snapshot():
 def test_snapshot_is_idempotent():
     items = [item(Id=f"id{i}") for i in range(20)]
     assert snapshot(DAY, items=items).titles == snapshot(DAY, items=items).titles
+
+
+# --------------------------------------------------------------------------------
+# the 19 Sep 2026 collapse: a query that stopped meaning what it says
+# --------------------------------------------------------------------------------
+#
+# Jellyfin 12.1.0 changed the default of `CollapseBoxSetItems`: a movie that belongs
+# to a collection is folded into the BoxSet holding it, and the BoxSet is returned in
+# its place. `IncludeItemTypes=Movie` answered TotalRecordCount=1068 -- 882 standalone
+# films plus 186 collections -- for a library /Items/Counts still reported as 3,135
+# films. Nothing failed: the snapshot wrote 1,068 rows, 184 of them collections
+# described as films, and SCD2 recorded 2,260 titles as having left the library.
+
+
+def test_the_query_says_it_wants_collections_left_alone():
+    """The parameter is the fix, so it is the thing worth pinning.
+
+    Measured against the real server on 2026-09-19: without it 1,068 items come back,
+    with it 3,135. `ExcludeItemTypes=BoxSet` does not substitute -- the collapsing
+    happens before the type filter, so that query still answered 1,068.
+    """
+    captured = {}
+
+    class FakeResponse:
+        def read(self):
+            return b'{"Items": [], "TotalRecordCount": 0}'
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    def fake_urlopen(request, timeout=None):
+        captured["url"] = request.full_url
+        return FakeResponse()
+
+    import urllib.request
+
+    original = urllib.request.urlopen
+    urllib.request.urlopen = fake_urlopen
+    try:
+        fetch_page("https://jellyfin.example", "key", 0, 500)
+    finally:
+        urllib.request.urlopen = original
+
+    assert "CollapseBoxSetItems=false" in captured["url"]
+
+
+def test_the_types_that_came_back_are_counted():
+    out = snapshot(DAY, items=[item(Id="a", Type="Movie"), item(Id="b", Type="Movie")])
+    assert out.types == {"Movie": 2}
+    assert out.foreign_types == {}
+
+
+def test_a_collection_among_the_films_is_reported_as_foreign():
+    """The shape of the 19 Sep snapshot, in miniature.
+
+    A BoxSet has no runtime, no codec and no TMDB id, so it lands as a film with
+    almost every column null -- which is why this cannot be left to the shrink guard
+    alone: a collapse that swapped rows one-for-one would not shrink anything.
+    """
+    out = snapshot(
+        DAY, items=[item(Id="a", Type="Movie"), item(Id="set", Type="BoxSet", Name="#Pixar")]
+    )
+    assert out.foreign_types == {"BoxSet": 1}
+    assert out.types["Movie"] == 1
+
+
+def test_an_item_with_no_type_is_still_counted_rather_than_ignored():
+    out = snapshot(DAY, items=[item(Id="a", Type=None)])
+    assert out.foreign_types == {"unknown": 1}
+
+
+# --------------------------------------------------------------------------------
+# the shrink guard, as the pure predicate the asset composes
+# --------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "count, previous, shrank",
+    [
+        (3143, 3143, False),
+        (3135, 3143, False),        # a handful of deletions is an ordinary day
+        (2515, 3143, False),        # just inside a fifth
+        (2514, 3143, True),         # just outside it
+        (1068, 3143, True),         # 19 Sep 2026
+        (3143, None, False),        # nothing to compare against
+        (0, 3143, True),
+    ],
+)
+def test_the_shrink_guard_draws_the_line_at_a_fifth(count, previous, shrank):
+    assert library_shrank(count, previous) is shrank
+
+
+def test_a_shrink_is_refused_unless_the_day_is_named(monkeypatch):
+    """The override is per day, so it cannot be set once and left on.
+
+    A guard that can be disabled permanently by a flag somebody set during one
+    incident is a comment, not a guard.
+    """
+    monkeypatch.delenv(SHRINK_OVERRIDE_VAR, raising=False)
+    assert _shrink_permitted(date(2026, 9, 19)) is False
+
+    monkeypatch.setenv(SHRINK_OVERRIDE_VAR, "2026-09-19")
+    assert _shrink_permitted(date(2026, 9, 19)) is True
+    assert _shrink_permitted(date(2026, 9, 20)) is False
+
+    monkeypatch.setenv(SHRINK_OVERRIDE_VAR, "2026-09-19, 2026-09-20")
+    assert _shrink_permitted(date(2026, 9, 20)) is True
+
+    monkeypatch.setenv(SHRINK_OVERRIDE_VAR, "all")
+    assert _shrink_permitted(date(2027, 1, 1)) is True
