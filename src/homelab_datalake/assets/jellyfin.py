@@ -443,6 +443,9 @@ _LIBRARY_ITEMS_SCHEMA = pa.schema(
         ("file_bitrate", pa.int64()),
         ("media_source_count", pa.int32()),
         ("original_language", pa.string()),
+        ("index_number_end", pa.int32()),
+        ("part_count", pa.int32()),
+        ("extra_type", pa.string()),
         ("_unmapped", pa.string()),
     ]
 )
