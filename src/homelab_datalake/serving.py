@@ -29,13 +29,16 @@ cost worth optimising.
 
 from __future__ import annotations
 
+import logging
 import os
 from dataclasses import dataclass
 from pathlib import Path
 
 import duckdb
 
-from homelab_datalake.mcp.semantic import validate
+from homelab_datalake.mcp.semantic import create_dataset_views, validate
+
+logger = logging.getLogger(__name__)
 
 # Absolute, for the same reason DUCKDB_PATH is: this file is opened by the Dagster
 # asset that publishes it and by the MCP server that reads it, and those two do not
@@ -205,6 +208,26 @@ def connect(serving_path: str = SERVING_PATH) -> duckdb.DuckDBPyConnection:
     # The path comes from configuration, never from a caller, and is escaped anyway.
     escaped = str(path).replace("'", "''")
     con.execute(f"ATTACH '{escaped}' AS {SERVING_ALIAS} (READ_ONLY);")
-    con.execute(f"USE {SERVING_ALIAS};")
     con.execute("SET TimeZone='UTC';")
+    # The `datasets.*` SQL vocabulary, built here rather than on every cursor: it is
+    # catalogue metadata, created once per connection, not per query. It has to
+    # happen *before* `USE serving` below -- `serving` is attached read-only, so once
+    # it is the current catalogue, `CREATE SCHEMA` has nowhere writable to land. The
+    # views are defined in this connection's own in-memory catalogue instead, against
+    # `serving.marts.*`; `search_path` (set on every cursor -- see
+    # `homelab_datalake.mcp.warehouse.Warehouse.cursor`) is what then lets both
+    # `marts.*` and `datasets.*` resolve unqualified from the same query.
+    #
+    # A dataset whose mart is not in this file yet -- a fresh checkout ahead of its
+    # first dbt build -- does not stop the rest from getting a view; see
+    # `create_dataset_views`. Errors are not raised here because a caller that cannot
+    # get the SQL vocabulary must still be able to query through the tools that do
+    # not need it, rather than losing the whole connection.
+    problems = create_dataset_views(con, source_catalog=SERVING_ALIAS)
+    if problems:
+        logger.warning(
+            "%d dataset view(s) could not be created against %s: %s",
+            len(problems), serving_path, problems,
+        )
+    con.execute(f"USE {SERVING_ALIAS};")
     return con

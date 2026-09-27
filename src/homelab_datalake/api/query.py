@@ -55,6 +55,7 @@ from dataclasses import dataclass, field
 import duckdb
 
 from homelab_datalake import layout
+from homelab_datalake.mcp import semantic
 from homelab_datalake.resources import LakeStorage
 
 logger = logging.getLogger(__name__)
@@ -82,8 +83,13 @@ MEMORY_LIMIT = os.environ.get("DATALAKE_API_MEMORY_LIMIT", "2GB")
 
 # The schemas the lake is mounted under, in the order an unqualified name resolves.
 # Marts first: somebody typing a bare table name is asking about answers far more
-# often than about landed records.
-SEARCH_PATH = (layout.LAYER_MARTS, layout.LAYER_CURATED, layout.LAYER_RAW)
+# often than about landed records. `datasets` last: it is a much smaller vocabulary
+# (fourteen names against several dozen mart tables) built *from* marts, so a bare
+# name is far more likely to mean the mart than the semantic-layer view of it -- and
+# the two vocabularies do not collide on a name in practice (`llm_spend` is not a
+# mart table, `fct_llm_call` is not a dataset name), so the ordering mostly only
+# matters for defining a tie-break rule at all.
+SEARCH_PATH = (layout.LAYER_MARTS, layout.LAYER_CURATED, layout.LAYER_RAW, semantic.DATASETS_SCHEMA)
 
 _READ_ONLY_TYPES = frozenset({duckdb.StatementType.SELECT})
 _EXPLAIN = duckdb.StatementType.EXPLAIN
@@ -466,6 +472,11 @@ class LakeSession:
         # change, so the cache needs no invalidation of its own.
         self._enum_values: dict[str, list | None] = {}
         self._enum_lock = threading.Lock()
+        # {dataset_name: reason} for any `datasets.*` view that did not bind -- see
+        # `_build()`. Exposed the same way `missing` is: named rather than silently
+        # absent, so a caller that goes looking (or a future /health check) can see
+        # why a name it expected is not queryable.
+        self.dataset_view_problems: dict[str, str] = {}
         self._con = self._build()
 
     def _build(self) -> duckdb.DuckDBPyConnection:
@@ -492,6 +503,15 @@ class LakeSession:
                 # failure. Mounting a view that cannot bind would make every query
                 # against any table fail, so it is left out and named instead.
                 self.missing[dataset.qualified_name] = str(error).splitlines()[0]
+
+        # The semantic layer's own SQL vocabulary, over the marts just mounted above.
+        # Same catalogue as `marts` itself here -- this is the one caller of
+        # `create_dataset_views` that does not need `source_catalog`, because
+        # `LakeSession` never attaches the marts from anywhere else; they are views
+        # in this same in-memory connection. Must run before the guard settings
+        # below: `lock_configuration` refuses `CREATE SCHEMA`/`CREATE VIEW` too, not
+        # only writes to the lake.
+        self.dataset_view_problems = semantic.create_dataset_views(con)
 
         if not self.writable:
             for name, value in guard_settings(self.lake).items():

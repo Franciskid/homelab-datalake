@@ -1,32 +1,47 @@
 """The MCP server: typed tools over the marts.
 
-There is one tool per dataset rather than one `query(dataset=...)` tool, and that is
-a deliberate ergonomic choice rather than duplication. A model choosing between
-`llm_spend` and `camera_activity` is choosing between two things it can tell apart
-from their names. A model filling in `dataset="llm_spend"` on a generic tool has to
-have read the enumeration first, and gets no help from the tool description it is
-actually looking at. The four wrappers share one validated implementation, so the
-surface is wide and the code is not.
+One generic `query_dataset(dataset=..., ...)` tool serves every registered dataset,
+rather than one hand-written tool per dataset. That used to be a deliberate choice
+the other way -- a model choosing between `llm_spend` and `camera_activity` picks
+between two things it can tell apart from their names, where `dataset="llm_spend"` on
+a generic tool needs the enumeration read first. The wrapper-per-dataset design held
+up while there were four; at fourteen (`media_playback`, `agent_tool_calls`,
+`automation_runs`, and the rest) it stopped being wide-but-thin and started being a
+dataset added to the registry that a model could not reach at all, because nobody had
+written it a sixth tool. That happened: `media_playback` and eight others were fully
+described by `list_datasets` and `describe_dataset` and had no way to be queried, and
+an agent asked what was watched last week spent eight runs trying anyway -- calling
+`media_library` with `media_playback`'s own field names, an argument FastMCP silently
+dropped because nothing in the schema was listening for it. `query_dataset`'s
+`dataset` parameter is a JSON-schema `enum` generated from the registry at import
+time (see `_DATASET_NAMES` below), so a dataset that reaches `DATASETS` reaches the
+tool in the same commit, with no second tool to write.
 
-`describe_dataset` exists for the same reason. Without it the model must guess which
-values a dimension takes, and guessing produces a filter that matches nothing --
-which then looks like "no activity in August" rather than "no such workload". Giving
-it the real values turns a plausible wrong answer into a correct one.
+`describe_dataset` exists for the same reason it always did. Without it the model
+must guess which values a dimension takes, and guessing produces a filter that
+matches nothing -- which then looks like "no activity in August" rather than "no
+such workload". Giving it the real values turns a plausible wrong answer into a
+correct one. It now also names `datasets.<name>`, the SQL vocabulary view described
+in `homelab_datalake.mcp.semantic` -- the same names, so a caller who moves from
+this tool to writing SQL by hand (the Python sandbox next door) never has to
+translate a rename it was never told about.
 """
 
 from __future__ import annotations
 
 import base64
+import difflib
+import json
 import os
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 from urllib.parse import urlparse
 
 from mcp.server.auth.settings import AuthSettings
 from mcp.server.mcpserver import MCPServer
 from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import BlobResourceContents, ContentBlock, EmbeddedResource
-from pydantic import Field
+from pydantic import ConfigDict, Field, create_model, model_validator
 
 from homelab_datalake.api import relations
 from homelab_datalake.api.catalogue import DEFAULT_MANIFEST_PATH
@@ -36,17 +51,32 @@ from homelab_datalake.mcp.deliverables import ExportError, write_workbook
 from homelab_datalake.mcp.semantic import (
     ALL_GRAINS,
     DATASETS,
-    TOTAL_GRAIN,
+    dataset_catalogue_text,
+    dataset_view_name,
     describe_entry,
     get_dataset,
     measure_entry,
 )
 from homelab_datalake.mcp.warehouse import Warehouse
 
-# How many distinct values describe_dataset will list for one dimension. Enough to
-# be useful for filtering, few enough that a high-cardinality column (request_host,
-# model) does not fill the context with a list nobody reads.
+# How many distinct values describe_dataset will list for one dimension, in full
+# detail. Enough to be useful for filtering, few enough that a high-cardinality
+# column (request_host, model) does not fill the context with a list nobody reads.
 MAX_SAMPLE_VALUES = 25
+
+# The same idea, tighter, for describe_dataset's compact form: an enum worth showing
+# without being asked is one a caller can scan at a glance, which a cap of 25 no
+# longer is once there can be several dozen dimensions on the page at once.
+COMPACT_MAX_VALUES = 15
+
+# The character budgets discovery is held to, measured as len(json.dumps(result,
+# separators=(",", ":"))) -- the smallest a client's own JSON encoder will ever
+# produce, so passing this is a real guarantee and not one that depends on how much
+# whitespace happens to be lying around. See the module-level test in
+# test_mcp_server.py that runs this over the real registry, not a fixture.
+LIST_DATASETS_BUDGET = 4_000
+DESCRIBE_DATASET_BUDGET = 4_000
+DESCRIBE_SCHEMA_BUDGET = 6_000
 
 # Auth is decided at construction, from the environment, rather than patched on
 # afterwards: a server that exists for a moment without its verifier is a server that
@@ -85,12 +115,13 @@ server = MCPServer(
     token_verifier=_verifier,
     auth=_auth,
     instructions=(
-        "Analytics over a self-hosted homelab: LLM spend, web traffic, camera events "
-        "and the media library.\n\n"
-        "These tools do not accept SQL. Pick a dataset tool, a date range, and the "
-        "dimensions and measures you want by name; call describe_dataset first if you "
-        "are unsure which values a dimension takes, because a filter that matches "
-        "nothing returns an empty result that looks exactly like a quiet period.\n\n"
+        "Analytics over a self-hosted homelab: LLM spend, web traffic, camera events, "
+        "the media library and playback, and the AI platform's own database.\n\n"
+        "These tools do not accept SQL. Call list_datasets for the names, then "
+        "query_dataset with a dataset name, a date range, and the dimensions and "
+        "measures you want by name; call describe_dataset first if you are unsure "
+        "which values a dimension takes, because a filter that matches nothing "
+        "returns an empty result that looks exactly like a quiet period.\n\n"
         "The `grain` parameter decides whether you get totals or rows. Every value "
         "except one aggregates. `grain='event'` does not: it returns the individual "
         "records, each with its own exact timestamp, and it is the only way to answer "
@@ -148,10 +179,38 @@ def _run(dataset: str, **kwargs) -> dict:
 # --- discovery ----------------------------------------------------------------
 
 
+def _first_sentence(text: str) -> str:
+    """The first sentence of a description, as a standalone sentence.
+
+    Good enough for a one-line summary because every dataset's `description` was
+    written to lead with what one row is -- the rest is caveats and history, which
+    belong to describe_dataset, not to a listing whose whole job is to be short.
+    """
+    first = (text or "").strip().split(". ", 1)[0].strip()
+    return first if first.endswith((".", "!", "?")) else f"{first}."
+
+
+def _short(text: str, limit: int = 140) -> str:
+    """`text`, cut to at most `limit` characters at a word boundary.
+
+    Used where a full description would be the single biggest thing on the page --
+    `describe_schema`'s table listing, mainly -- and a reader who wants the rest
+    already knows to ask for one table by name.
+    """
+    text = (text or "").strip()
+    if len(text) <= limit:
+        return text
+    cut = text.rfind(" ", 0, limit)
+    return text[: cut if cut > 20 else limit].rstrip(" .,;:") + "…"
+
+
 @server.tool(
     description=(
-        "List the datasets that can be queried, with what each one covers. Call this "
-        "first if you do not already know which dataset answers the question."
+        "List the datasets that can be queried, with a one-line summary of what one "
+        "row is, whether it is an event stream or a snapshot, and the dates it "
+        "covers. Call this first if you do not already know which dataset answers "
+        "the question, then describe_dataset(dataset=name) for its dimensions, "
+        "measures and fields before calling query_dataset."
     )
 )
 def list_datasets() -> dict:
@@ -159,79 +218,347 @@ def list_datasets() -> dict:
     for dataset in DATASETS.values():
         entry: dict[str, Any] = {
             "name": dataset.name,
-            "description": dataset.description,
             "kind": dataset.kind,
-            # Named here as well as in describe_dataset, so a caller that intends to
-            # write its own SQL never has to call a second tool to learn the one
-            # thing that SQL cannot do without.
-            "table": dataset.table,
-            "dimensions": dataset.dimension_names,
-            "measures": dataset.measure_names,
-            "default_measures": list(dataset.default_measures),
-            "fields": dataset.field_names,
-            "supports_event_grain": bool(dataset.attributes),
+            "summary": _first_sentence(dataset.description),
         }
         try:
             with _warehouse.cursor() as cursor:
                 lo, hi = q.available_range(cursor, dataset)
             entry["covers"] = {"from": lo, "to": hi}
         except Exception as error:  # noqa: BLE001 - one unreadable dataset must not
-            # hide the other three; the reason travels with the entry instead.
+            # hide the others; the reason travels with the entry instead.
             entry["covers"] = {"error": str(error)}
         out.append(entry)
     return {
         "datasets": out,
         "grains": ALL_GRAINS,
-        "grain_note": (
-            "grain='event' returns the individual records with their own timestamps "
-            "instead of aggregating them. Use it whenever the question is 'each' or "
-            "'every' or asks for an exact time; the other grains cannot express that."
-        ),
-        "sql_note": (
-            "The dimensions, measures and fields named above are this layer's "
-            "vocabulary, not necessarily the mart's column names. Before writing your "
-            "own SQL against `table`, call describe_dataset(dataset) -- it shows the "
-            "exact SQL for every name that is not literally a column."
+        "next": (
+            "describe_dataset(dataset=name) for its dimensions, measures and "
+            "fields; query_dataset(dataset=name, ...) to run a question."
         ),
     }
 
 
+def _dataset_schema_lines() -> list[str]:
+    return [
+        f"{dataset_view_name(dataset).replace(chr(34), '')} -- "
+        f"{_short(_first_sentence(dataset.description), 55)}"
+        for dataset in DATASETS.values()
+    ]
+
+
 @server.tool(
     description=(
-        "Every table in the warehouse: what it holds, its documented columns, its "
-        "primary key, its declared foreign keys with the exact ON clause, and which "
-        "models it is built from. Name a table by its `query_as` value -- `schema` is "
-        "dbt's internal build schema and does not exist in the database you query. "
-        "Call this before writing SQL, rather than guessing a name and retrying on "
-        "the binder error, and call it before telling anyone the warehouse does not "
-        "hold something. Every edge is a declared and enforced relationship, not a "
-        "guess from matching column names."
+        "Every table in the warehouse: the `datasets.*` views (the semantic layer's "
+        "own SQL vocabulary -- see describe_dataset) and the raw dbt models under "
+        "`marts`/`curated`/`raw`. With no `table`, lists every queryable name with a "
+        "one-line summary. With `table`, returns that one table's documented "
+        "columns, primary key, declared foreign keys with the exact ON clause, and "
+        "which models it is built from -- for a `datasets.*` view, its columns and a "
+        "pointer to describe_dataset instead, since a semantic-layer view carries no "
+        "dbt-declared keys of its own. Name a mart table by its `query_as` value -- "
+        "`schema` is dbt's internal build schema and does not exist in the database "
+        "you query. Call this before writing SQL, rather than guessing a name and "
+        "retrying on the binder error, and before telling anyone the warehouse does "
+        "not hold something: every edge is a declared and enforced relationship, not "
+        "a guess from matching column names. Prefer `datasets.*` for SQL you write "
+        "by hand; its columns are already spelled like describe_dataset's names."
     )
 )
-def describe_schema() -> dict:
+def describe_schema(
+    table: Annotated[
+        str | None,
+        Field(description=(
+            "A query_as value from a prior call (mart or datasets.* view). Omit to "
+            "list every queryable name."
+        )),
+    ] = None,
+) -> dict:
     """The join graph, from the same dbt manifest the descriptions come from.
 
     Read through the API's own module rather than re-derived here, so the graph an
-    agent is given and the graph the SQL console shows cannot disagree.
+    agent is given and the graph the SQL console shows cannot disagree. The
+    `datasets.*` rows are not dbt models -- they carry no keys or joins of their
+    own in the manifest -- so they are synthesised here from the same registry
+    describe_dataset reads, and listed first: the preferred surface, per the tool
+    description above.
     """
     try:
-        return relations.build(DEFAULT_MANIFEST_PATH)
+        graph = relations.build(DEFAULT_MANIFEST_PATH)
     except Exception as error:  # noqa: BLE001 - a caller that cannot get the graph
         # should be told so and fall back to describe_dataset, not see the tool vanish.
         return _describe_error(error)
 
+    dataset_lines = _dataset_schema_lines()
+    mart_lines = [
+        f"{t['query_as']} -- {_short(t['description'] or '(undocumented)', 24)}"
+        for t in graph["tables"]
+    ]
+
+    if table is None:
+        return {
+            "datasets": dataset_lines,
+            "tables": mart_lines,
+            "format": "'query_as -- one-line summary', one per queryable name.",
+            "preferred": (
+                "Prefer `datasets.*` above for hand-written SQL: those columns are "
+                "spelled exactly like describe_dataset's dimension/field names, with "
+                "no mart-specific rename to remember. `tables` are the underlying "
+                "dbt models, for anything the semantic layer does not expose yet. "
+                "Call describe_schema(table=...) with either kind of name for detail."
+            ),
+        }
+
+    requested = table.strip()
+    bare = requested.split(".")[-1].strip('"')
+    if bare in DATASETS:
+        spec = DATASETS[bare]
+        try:
+            with _warehouse.cursor() as cursor:
+                columns = [
+                    {"name": name, "type": type_name}
+                    for name, type_name in _dataset_column_types(cursor, spec).items()
+                ]
+        except Exception as error:  # noqa: BLE001
+            return _describe_error(error)
+        return {
+            "query_as": dataset_view_name(spec).replace('"', ""),
+            "description": spec.description,
+            "columns": columns,
+            "primary_key": [],
+            "references": [],
+            "referenced_by": [],
+            "note": (
+                "This is a semantic-layer view, not a dbt model -- it carries no "
+                "declared keys or joins of its own. Call "
+                f"describe_dataset(dataset={spec.name!r}) for its dimensions, "
+                "measures, fields and the values each dimension takes."
+            ),
+        }
+
+    by_query_as = {t["query_as"]: t for t in graph["tables"]}
+    if requested in by_query_as:
+        return by_query_as[requested]
+
+    known = [t["query_as"] for t in graph["tables"]] + [
+        dataset_view_name(d).replace('"', "") for d in DATASETS.values()
+    ]
+    return _describe_error(ValueError(
+        f"no table or dataset named {table!r}. "
+        f"Close matches: {difflib.get_close_matches(table, known, n=5, cutoff=0.3)}. "
+        "Call describe_schema() with no table to list every name."
+    ))
+
+
+# DuckDB's own spelling for a type, shortened for the compact listing -- unabridged
+# in full detail, via `_full_dimension_entry`/`describe_entry`, which never call
+# this. `timestamp with time zone` alone costs the budget over 200 characters on
+# camera_activity's nine timestamp columns; the abbreviation is still unambiguous,
+# since nothing in this registry uses a bare, zone-less `timestamp`.
+_SHORT_TYPE = {
+    "timestamp with time zone": "timestamptz",
+    "time with time zone": "timetz",
+    "boolean": "bool",
+    "integer": "int",
+    "bigint": "bigint",
+    "double precision": "double",
+}
+
+
+def _dataset_column_types(cursor, dataset) -> dict[str, str]:
+    """DuckDB's own type for every column of `datasets.<name>`, from the view itself.
+
+    Reading it off the view rather than guessing from the registry is what makes
+    this free of the layer's own renames: the view already did the renaming, so its
+    `description` is simply what the connection reports back.
+    """
+    # S608: `dataset_view_name` returns a literal built from the registry, never
+    # from caller input.
+    cursor.execute(f"SELECT * FROM {dataset_view_name(dataset)} LIMIT 0")  # noqa: S608
+    return {
+        column[0]: _SHORT_TYPE.get(str(column[1]).lower(), str(column[1]).lower())
+        for column in cursor.description
+    }
+
+
+def _low_cardinality_values(cursor, dataset, item, cap: int) -> list | None:
+    """`item`'s distinct values, or None when there are more than `cap`.
+
+    One extra fetched so "there are more than we are showing" is known rather than
+    inferred from hitting the cap exactly.
+    """
+    rows = cursor.execute(
+        f"SELECT DISTINCT {item.sql} FROM {dataset.table} LIMIT {cap + 1}"  # noqa: S608
+    ).fetchall()
+    values = [r[0] for r in rows]
+    return None if len(values) > cap else _ordered(values)
+
+
+def _full_dimension_entry(cursor, spec, dim) -> dict:
+    entry: dict[str, Any] = describe_entry(dim)
+    values = _low_cardinality_values(cursor, spec, dim, MAX_SAMPLE_VALUES)
+    entry["values"] = (
+        values if values is not None
+        else "many distinct values -- filter by an exact value you know"
+    )
+    return entry
+
+
+def _full_field_entries(spec) -> list[dict]:
+    return [describe_entry(a) for a in spec.attributes] + [
+        describe_entry(d) for d in spec.dimensions if d.name not in set(spec.attribute_names)
+    ]
+
+
+def _full_detail(cursor, spec) -> dict:
+    """Everything the pre-`query_dataset` describe_dataset returned, unabridged."""
+    return {
+        "dimensions": [_full_dimension_entry(cursor, spec, dim) for dim in spec.dimensions],
+        "measures": [measure_entry(m) for m in spec.measures],
+        "default_measures": list(spec.default_measures),
+        "fields": _full_field_entries(spec),
+        "default_fields": list(spec.default_fields),
+        "record_order": spec.record_order,
+        "description": spec.description,
+        "sql_note": (
+            f"Writing SQL by hand? Prefer {dataset_view_name(spec).replace(chr(34), '')} "
+            "-- its columns are already spelled like the names below, with no mart "
+            "rename to remember. Querying the mart directly still works: a "
+            "dimension or field with a `sql` key must be written using that exact "
+            "expression there; one with no `sql` key is spelled exactly as its "
+            "`name`. Every measure carries `sql` and is always computed -- a "
+            "measure is never a bare column. Use the `values` listed below verbatim."
+        ),
+        "grain_note": (
+            "Every grain except 'event' aggregates. 'event' returns one row per "
+            "record with the fields listed above, including exact timestamps -- ask "
+            "for it when the question wants each occurrence rather than a count of "
+            "them. Dimensions can be used as fields too; measures cannot, because "
+            "there is nothing to aggregate over a single row."
+        ) if spec.attributes else (
+            "This dataset has no row-level fields, so grain='event' is not available."
+        ),
+    }
+
+
+def _compact_dim_line(cursor, spec, dim, types: dict[str, str], include_values: bool) -> str:
+    """`name`, `name:type`, or `name:type=[v1,v2,...]` for a low-cardinality one."""
+    line = f"{dim.name}:{types[dim.name]}" if types.get(dim.name) else dim.name
+    if not include_values:
+        return line
+    values = _low_cardinality_values(cursor, spec, dim, COMPACT_MAX_VALUES)
+    if values is not None:
+        line += "=" + json.dumps(values, separators=(",", ":"))
+    return line
+
+
+def _compact_field_line(attr, types: dict[str, str]) -> str:
+    return f"{attr.name}:{types[attr.name]}" if types.get(attr.name) else attr.name
+
+
+def _compact_measure_line(measure, include_sql: bool) -> str:
+    """`name (unit)`, plus `= <sql>` only when the budget allows it."""
+    line = f"{measure.name} ({measure.unit})" if measure.unit else measure.name
+    return f"{line} = {measure.sql}" if include_sql else line
+
+
+def _compact_detail(
+    cursor, spec, types: dict[str, str], measure_sql: bool, dim_values: bool = True,
+) -> dict:
+    """The terse form: one line per name, encoded as a string rather than an object.
+
+    A dict-per-entry (`{"name": ..., "type": ...}`) was tried first and measured: at
+    camera_activity's 32 dimensions and 46 attributes, the repeated keys alone came
+    to more than the budget before a single value was counted. `"name:type"` says
+    the same thing in a quarter of the bytes, which is what buys back the room for
+    an enum on the dimensions worth showing one on.
+
+    `measure_sql` and `dim_values` are the two knobs `describe_dataset` below pulls,
+    in that order, when even this does not fit -- tried rich first, and only turned
+    off for the one dataset (of fourteen, measured against the fixture) that needs
+    the first one, with the second held in reserve for real data whose enums run
+    larger than the fixture's. Per-entry descriptions and the `sql` an old dimension
+    or field entry carried are gone entirely, not truncated: `datasets.<name>`
+    (named once, up top) is what makes them unnecessary -- a caller writing SQL
+    selects from the view by the name shown here and it simply binds.
+    """
+    dimensions = [
+        _compact_dim_line(cursor, spec, dim, types, dim_values) for dim in spec.dimensions
+    ]
+    fields = [_compact_field_line(attr, types) for attr in spec.attributes]
+    measures = [_compact_measure_line(m, measure_sql) for m in spec.measures]
+    return {
+        "description": _short(spec.description, 160),
+        "dimensions": dimensions,
+        "measures": measures,
+        "fields": fields,
+        "fields_note": (
+            "Attributes only -- dimensions above are also selectable as fields at "
+            "grain='event'."
+        ) if spec.attributes else "This dataset has no row-level fields.",
+        "default_measures": list(spec.default_measures),
+        # default_fields is left out of the compact form on purpose, not trimmed
+        # for budget -- see describe_dataset(detail='full') for it. Unlike
+        # default_measures, which applies silently whenever `measures` is omitted
+        # at every non-event grain, a caller of grain='event' still gets the same
+        # defaults from query_dataset without having asked to see them first.
+        "sql_note": (
+            f"SQL runs against {dataset_view_name(spec).replace(chr(34), '')}; "
+            "columns are the names before any ':'. A line reads 'name', "
+            "'name:type', or 'name:type=[enum]'; a measure reads 'name (unit)', "
+            "plus '= <sql>' when it fit. detail='full' or names=[...] for more."
+        ) + ("" if dim_values else (
+            " Enum values are omitted here for space; call describe_dataset with "
+            "detail='full' or names=[...] to see what a dimension takes."
+        )),
+    }
+
+
+def _named_detail(cursor, spec, names: list[str]) -> dict:
+    """Full detail, filtered to just the requested names -- whichever kind they are."""
+    wanted = set(names)
+    dims = [
+        _full_dimension_entry(cursor, spec, d) for d in spec.dimensions if d.name in wanted
+    ]
+    fields = [e for e in _full_field_entries(spec) if e["name"] in wanted]
+    measures = [measure_entry(m) for m in spec.measures if m.name in wanted]
+    found = {e["name"] for e in (*dims, *fields, *measures)}
+    payload: dict[str, Any] = {"dimensions": dims, "fields": fields, "measures": measures}
+    missing = sorted(wanted - found)
+    if missing:
+        payload["not_found"] = (
+            f"{missing} matched nothing on {spec.name!r}. Call describe_dataset "
+            "with no `names` to see what is there."
+        )
+    return payload
+
 
 @server.tool(
     description=(
-        "Describe one dataset: every dimension and measure with what it means, the "
-        "dates it covers, the actual values each low-cardinality dimension takes, and "
-        "the exact SQL behind any name that is not itself a column -- read this before "
-        "writing SQL by hand, not just before filtering. Use the listed values when "
-        "building filters rather than guessing at them."
+        "Describe one dataset: its dimensions, measures and fields, the dates it "
+        "covers, and the values each low-cardinality dimension takes -- call this "
+        "before building a filter rather than guessing at a value, and before "
+        "writing SQL by hand against its `datasets.*` view. detail='compact' (the "
+        "default) is a scan-sized listing: name, type, and an enum only where one is "
+        "cheap to show. detail='full' adds full descriptions, exact measure SQL, "
+        "and a much higher enum cap. `names` overrides `detail` and returns full "
+        "detail for just those dimension/measure/field names, once a compact call "
+        "has told you which ones matter."
     )
 )
 def describe_dataset(
     dataset: Annotated[str, Field(description="One of the names from list_datasets.")],
+    detail: Annotated[
+        Literal["compact", "full"],
+        Field(description="'compact' (default) for a scan-sized listing, 'full' for everything."),
+    ] = "compact",
+    names: Annotated[
+        list[str] | None,
+        Field(description=(
+            "Dimension, measure or field names to return full detail for, "
+            "regardless of `detail`. Omit to describe the whole dataset."
+        )),
+    ] = None,
 ) -> dict:
     try:
         spec = get_dataset(dataset)
@@ -241,76 +568,48 @@ def describe_dataset(
     try:
         with _warehouse.cursor() as cursor:
             lo, hi = q.available_range(cursor, spec)
-            dimensions = []
-            for dim in spec.dimensions:
-                entry: dict[str, Any] = describe_entry(dim)
-                # One extra, so "there are more than we are showing" is known rather
-                # than inferred from hitting the cap exactly.
-                rows = cursor.execute(
-                    f"SELECT DISTINCT {dim.sql} FROM {spec.table} "  # noqa: S608
-                    f"LIMIT {MAX_SAMPLE_VALUES + 1}"
-                ).fetchall()
-                values = [r[0] for r in rows]
-                if len(values) > MAX_SAMPLE_VALUES:
-                    entry["values"] = "many distinct values -- filter by an exact value you know"
-                else:
-                    entry["values"] = _ordered(values)
-                dimensions.append(entry)
+            types = _dataset_column_types(cursor, spec)
+            if names:
+                body = _named_detail(cursor, spec, names)
+            elif detail == "full":
+                body = _full_detail(cursor, spec)
+            else:
+                # Tried richest first -- measure SQL and every dimension's enum
+                # included -- and only stripped back for the datasets that do not
+                # fit as measured against the real registry (camera_activity, of
+                # fourteen, needs the first step; none has needed the second against
+                # the fixture, which is kept as a safety margin for enums that run
+                # larger against real data than the fixture's).
+                body = _compact_detail(cursor, spec, types, measure_sql=True)
+                oversize = len(json.dumps(body, separators=(",", ":"))) > DESCRIBE_DATASET_BUDGET
+                if oversize:
+                    body = _compact_detail(cursor, spec, types, measure_sql=False)
+                    oversize = len(json.dumps(body, separators=(",", ":"))) > DESCRIBE_DATASET_BUDGET
+                if oversize:
+                    body = _compact_detail(
+                        cursor, spec, types, measure_sql=False, dim_values=False,
+                    )
     except Exception as error:  # noqa: BLE001 - reported to the caller as data
         return _describe_error(error)
 
-    return {
+    body.update({
         "name": spec.name,
-        "description": spec.description,
-        "kind": spec.kind,
-        # The physical table, because `name` above is what this layer calls the
-        # dataset and nothing outside this layer answers to it. A caller writing its
-        # own SQL -- the platform's Python workbench relays statements straight to
-        # DuckDB -- reads `camera_activity` here, writes `FROM camera_activity`, and
-        # gets "Table with name camera_activity does not exist". That happened on
-        # 11 Sep 2026, and the rewrite that followed silently changed a filter value
-        # from 'entrée' to 'in', so a weekly report said nobody had entered.
-        # Describing a dataset without naming the table it lives in is describing
-        # half of it.
+        "view": dataset_view_name(spec).replace('"', ""),
         "table": spec.table,
-        "sql_note": (
-            f"Writing SQL yourself? Query {spec.table} directly -- {spec.name!r} above "
-            "is this layer's name for it, not a table name. Below, a dimension or "
-            "field with a `sql` key must be written using that exact expression; one "
-            "with no `sql` key is spelled exactly as its `name`. Every measure carries "
-            "`sql` and is always computed -- a measure is never a bare column. Use the "
-            "dimension `values` listed below verbatim; they are the values that "
-            "dimension's SQL expression actually returns."
-        ),
+        "kind": spec.kind,
         "covers": {"from": lo, "to": hi},
-        "dimensions": dimensions,
-        "measures": [measure_entry(m) for m in spec.measures],
-        "default_measures": list(spec.default_measures),
-        "fields": [
-            describe_entry(a) for a in spec.attributes
-        ] + [
-            describe_entry(d) for d in spec.dimensions if d.name not in set(spec.attribute_names)
-        ],
-        "default_fields": list(spec.default_fields),
-        "record_order": spec.record_order,
         "grains": ALL_GRAINS,
-        "grain_note": (
-            "Every grain except 'event' aggregates. 'event' returns one row per record "
-            "with the fields listed above, including exact timestamps -- ask for it "
-            "when the question wants each occurrence rather than a count of them. "
-            "Dimensions can be used as fields too; measures cannot, because there is "
-            "nothing to aggregate over a single row."
-        ) if spec.attributes else (
-            "This dataset has no row-level fields, so grain='event' is not available."
-        ),
-    }
+    })
+    return body
 
 
-# --- the four dataset tools ---------------------------------------------------
+# --- query_dataset --------------------------------------------------------------
 #
-# The parameter documentation is deliberately repeated per tool rather than referred
-# to elsewhere: the model sees one tool's schema at the moment it calls it, and a
-# description that says "see list_datasets" is a description that does not help.
+# One tool, not one per dataset -- see the module docstring for why the old design
+# stopped fitting once the registry grew past the four datasets it was written for.
+# The parameter documentation below is deliberately spelled out in full rather than
+# referred to elsewhere: the model sees one tool's schema at the moment it calls it,
+# and a description that says "see list_datasets" is a description that does not help.
 
 Start = Annotated[str, Field(description="First day of the range, YYYY-MM-DD. Inclusive.")]
 End = Annotated[str, Field(description="Last day of the range, YYYY-MM-DD. Inclusive.")]
@@ -396,80 +695,47 @@ ExportLimit = Annotated[
 ]
 
 
+# The enum, generated from the registry at import time rather than written out by
+# hand: a dataset that reaches `DATASETS` reaches this tool in the same commit, with
+# no second list to keep in sync and no way to add a fifteenth dataset that the tool
+# schema quietly does not know about. See test_query_dataset_enum_matches_registry.
+_DATASET_NAMES = tuple(sorted(DATASETS))
+DatasetName = Literal[_DATASET_NAMES]
+
+_DATASET_PARAM_DESCRIPTION = (
+    "Which dataset to query. Call describe_dataset(dataset=name) first if you are "
+    "unsure which fields or values it has. One line per dataset, name (kind) -- "
+    "what one row is, and the caveat that most often makes a plausible query wrong:\n"
+    + dataset_catalogue_text()
+)
+
+
 @server.tool(
     description=(
-        "LLM cost and usage from the LiteLLM ledger: spend, tokens, latency and "
-        "failures by model, provider or workload. Answers questions like 'what did I "
-        "spend on Claude last month' and 'which workload burns the most tokens'. "
-        "Prompts and completions are not stored and cannot be retrieved."
+        "Run a question against any dataset in the registry: a date range, and the "
+        "dimensions, measures or fields you want by name. Call describe_dataset "
+        "first for the exact names a dataset takes -- a name that does not exist on "
+        "it is refused with the ones that do, and with the other datasets it exists "
+        "on instead, if any.\n\n"
+        "`grain` decides whether you get totals or rows. Every value except one "
+        "aggregates. `grain='event'` does not: it returns the individual records, "
+        "each with its own exact timestamp, and it is the only way to answer a "
+        "question about when something happened or to list each occurrence. If the "
+        "question contains 'each', 'every', 'exact', or a time of day, reach for it "
+        "first -- an hour-of-day dimension is a bucket, not a time.\n\n"
+        "Every result carries a `notes` list. Read it before summarising: it is "
+        "where truncation, empty results and snapshot semantics are reported. If a "
+        "result has no rows, say so -- do not estimate, and do not describe it as a "
+        "decline."
     )
 )
-def llm_spend(
+def query_dataset(
+    dataset: Annotated[DatasetName, Field(description=_DATASET_PARAM_DESCRIPTION)],
     start: Start, end: End, grain: Grain = "day", dimensions: Dimensions = None,
     measures: Measures = None, fields: Fields = None, filters: Filters = None,
     order_by: OrderBy = None, descending: Descending = None, limit: Limit = None,
 ) -> dict:
-    return _run("llm_spend", start=start, end=end, grain=grain, dimensions=dimensions,
-                measures=measures, fields=fields, filters=filters, order_by=order_by,
-                descending=descending, limit=limit)
-
-
-@server.tool(
-    description=(
-        "HTTP traffic through the reverse proxy: requests, distinct visitors, error "
-        "rates, bytes and geography, by host, status or client type. Client addresses "
-        "are hashed at ingestion, so counts and locations work but no individual "
-        "visitor can be identified or looked up."
-    )
-)
-def web_traffic(
-    start: Start, end: End, grain: Grain = "day", dimensions: Dimensions = None,
-    measures: Measures = None, fields: Fields = None, filters: Filters = None,
-    order_by: OrderBy = None, descending: Descending = None, limit: Limit = None,
-) -> dict:
-    return _run("web_traffic", start=start, end=end, grain=grain, dimensions=dimensions,
-                measures=measures, fields=fields, filters=filters, order_by=order_by,
-                descending=descending, limit=limit)
-
-
-@server.tool(
-    description=(
-        "Camera attention events from the NVR: which camera and zone, the exact "
-        "instant it happened, how many people, vehicles and animals were counted, "
-        "what the vision model concluded, whether a person later corrected it, and "
-        "the clip it belongs to.\n\n"
-        "At the default grain this aggregates -- activity by hour, zone or camera. "
-        "For the events themselves, with `happened_at` to the microsecond, ask for "
-        "grain='event'. That is what answers 'every time the gate opened and when'; "
-        "started_hour_of_day is a bucket and cannot. To count openings rather than "
-        "observations, filter state_changed=true. Contains no footage."
-    )
-)
-def camera_activity(
-    start: Start, end: End, grain: Grain = "day", dimensions: Dimensions = None,
-    measures: Measures = None, fields: Fields = None, filters: Filters = None,
-    order_by: OrderBy = None, descending: Descending = None, limit: Limit = None,
-) -> dict:
-    return _run("camera_activity", start=start, end=end, grain=grain, dimensions=dimensions,
-                measures=measures, fields=fields, filters=filters, order_by=order_by,
-                descending=descending, limit=limit)
-
-
-@server.tool(
-    description=(
-        "The film library as it stood on a given day: titles, runtime, resolution, "
-        "codecs and ratings. This is a snapshot rather than a stream of events, so a "
-        "date range selects WHICH day to report, and the answer describes that one "
-        "day. Counts must not be summed across days -- that counts each film once per "
-        "day it existed."
-    )
-)
-def media_library(
-    start: Start, end: End, grain: Grain = TOTAL_GRAIN, dimensions: Dimensions = None,
-    measures: Measures = None, fields: Fields = None, filters: Filters = None,
-    order_by: OrderBy = None, descending: Descending = None, limit: Limit = None,
-) -> dict:
-    return _run("media_library", start=start, end=end, grain=grain, dimensions=dimensions,
+    return _run(dataset, start=start, end=end, grain=grain, dimensions=dimensions,
                 measures=measures, fields=fields, filters=filters, order_by=order_by,
                 descending=descending, limit=limit)
 
@@ -530,11 +796,11 @@ def _as_attachment(written) -> EmbeddedResource:
         "refused rather than exported, because a sheet with no rows reads as 'zero'. "
         "Read `delivery` in the result before writing your answer: an export too large "
         "to travel says so there, and is on the datalake host instead. Parameters are "
-        "the same as the dataset tools."
+        "the same as query_dataset."
     )
 )
 def export_workbook(
-    dataset: Annotated[str, Field(description="Dataset name, as in list_datasets.")],
+    dataset: Annotated[DatasetName, Field(description="Dataset name, as in list_datasets.")],
     title: Annotated[str, Field(description="What the workbook answers; also its filename.")],
     start: Start, end: End, grain: Grain = "day", dimensions: Dimensions = None,
     measures: Measures = None, fields: Fields = None, filters: Filters = None,
@@ -586,6 +852,67 @@ def export_workbook(
         return [summary]
 
     return [summary, _as_attachment(written)]
+
+
+# --- refusing an argument no tool declared --------------------------------------
+#
+# FastMCP validates a call's arguments against a pydantic model built from the
+# function signature, and that model's default is `extra="ignore"` -- an argument
+# no parameter declares is silently dropped before the tool ever runs, rather than
+# refused. That is how `media_library` was called with `dataset: "media_playback"`
+# for eight runs straight: the model kept adding an argument the tool had no
+# parameter for, the schema said nothing, and the call quietly ran against the
+# wrong dataset instead of failing with a message that would have said why.
+#
+# `extra="forbid"` fixes the silent half of that on its own -- a call with an
+# unknown key then raises `pydantic.ValidationError`, which `MCPServer` already
+# turns into a tool error carrying the field name. `_reject_unknown_arguments`
+# below exists for the other half: a bare "extra fields not permitted" does not
+# say what *would* have worked, and a model correcting a wrong call needs that in
+# the same message it is already reading, not a second tool call to learn it. A
+# `model_validator(mode="before")` runs ahead of pydantic's own extra check and
+# raises first, with the valid names attached.
+#
+# Applied once here, after every `@server.tool` above has registered, to every
+# tool in the manager -- new tools added later are covered with no extra line,
+# which is the same "no code change" property `query_dataset`'s enum has, for the
+# same reason: the alternative is a list that is right the day it is written and
+# silently stops being checked against anything.
+
+
+def _reject_unknown_arguments(server: MCPServer) -> None:
+    for tool in server._tool_manager.list_tools():
+        # accessor exists for the registered tools; see the module docstring above
+        # for why patching the arg model in place is the chosen fix.
+        model = tool.fn_metadata.arg_model
+        valid = sorted({field.alias or name for name, field in model.model_fields.items()})
+        tool_name = tool.name
+
+        def _check(cls, data, _valid=valid, _tool=tool_name):
+            if isinstance(data, dict):
+                unknown = sorted(set(data) - set(_valid))
+                if unknown:
+                    names = ", ".join(repr(u) for u in unknown)
+                    raise ValueError(
+                        f"unknown argument{'s' if len(unknown) > 1 else ''} {names} "
+                        f"for {_tool}; valid: {', '.join(_valid) or '(none)'}"
+                    )
+            return data
+
+        hardened = create_model(
+            model.__name__,
+            __base__=model,
+            __validators__={
+                "_reject_unknown_arguments": model_validator(mode="before")(classmethod(_check)),
+            },
+        )
+        hardened.model_config = ConfigDict(**{**model.model_config, "extra": "forbid"})
+        hardened.model_rebuild(force=True)
+        tool.fn_metadata.arg_model = hardened
+        tool.parameters = hardened.model_json_schema(by_alias=True)
+
+
+_reject_unknown_arguments(server)
 
 
 def main() -> None:

@@ -82,16 +82,31 @@ flowchart LR
 
 ### MCP tools
 
-The MCP server offers datasets in a shared vocabulary: web traffic, model
-spend, camera activity, and the media library. A caller chooses dimensions,
-measures, filters, and a time range. The server validates those choices and
-builds the query.
+The MCP server offers datasets in a shared vocabulary -- web traffic, model
+spend, camera activity, the media library and playback, and the AI platform's
+own conversations, runs and automations, fourteen in all. A caller chooses a
+dataset, dimensions, measures, filters, and a time range. The server validates
+those choices and builds the query.
+
+- `list_datasets` -- every dataset with a one-line summary, whether it is an
+  event stream or a snapshot, and the dates it covers.
+- `describe_dataset` -- one dataset's dimensions, measures and fields, and the
+  values a low-cardinality dimension takes. Compact by default; `detail='full'`
+  or `names=[...]` for exact measure SQL and full descriptions.
+- `query_dataset` -- one generic tool for every dataset in the registry, so a
+  dataset added to it is queryable the same day, with no new tool to write.
+- `describe_schema` -- every queryable name, mart tables and the `datasets.*`
+  semantic-layer views alike, with declared foreign keys for the marts.
+- `export_workbook` -- the same parameters as `query_dataset`, delivered as a
+  formatted Excel workbook with a provenance sheet.
 
 For example, an agent can group model spending by day and model without
-inventing table names or deciding how cost should be aggregated. It can also
-discover datasets, read their descriptions, and export an Excel workbook with
-information about where the result came from. This interface is read-only and
-does not accept arbitrary SQL.
+inventing table names or deciding how cost should be aggregated. This
+interface is read-only, does not accept arbitrary SQL, and refuses an unknown
+argument rather than silently ignoring it. For anyone writing SQL by hand
+against the warehouse instead (the HTTP API below), every dataset also has a
+`datasets.<name>` view whose columns are spelled exactly like the names above
+-- no mart-specific rename to remember.
 
 ### Data workspace and Python
 

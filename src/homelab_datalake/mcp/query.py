@@ -31,6 +31,7 @@ import duckdb
 
 from homelab_datalake.mcp.semantic import (
     ALL_GRAINS,
+    DATASETS,
     EVENT_GRAIN,
     GRAINS,
     TOTAL_GRAIN,
@@ -115,14 +116,50 @@ def _parse_day(value: str, field_name: str) -> date:
         ) from None
 
 
+# Which property of a Dataset holds the names for each kind an error can be about.
+# `dimension` covers a filter's dimension name too -- see the filters loop in
+# `run_query`, which raises through the same message shape below rather than
+# through `_validated_names` (a filter checks membership, not a requested list).
+_KIND_ATTR = {"dimension": "dimension_names", "measure": "measure_names", "field": "field_names"}
+
+def _elsewhere(name: str, kind: str, exclude: str) -> list[str]:
+    """Other dataset names whose `kind` vocabulary already includes `name`.
+
+    This is the fix for a failure mode worse than a typo: `media_library` and
+    `media_playback` are both "the media dataset" to a model that has not read
+    which one carries `started_at`, and the old error -- the field is not here,
+    here is everything that is -- left it to guess a second time rather than
+    pointing at the dataset that actually has the field it asked for.
+    """
+    attr = _KIND_ATTR[kind]
+    return sorted(
+        ds.name for ds in DATASETS.values()
+        if ds.name != exclude and name in getattr(ds, attr)
+    )
+
+
+def _unavailable(name: str, kind: str, available, dataset: Dataset) -> QueryError:
+    # The requested dataset's own names are listed in full, not truncated -- a
+    # message that hid the one name the caller actually needed to fix a typo would
+    # not be compact, it would be wrong. "Compactly" is what the routing sentence
+    # below is for: naming the *other* datasets that have this name, not repeating
+    # each one's own vocabulary, which is what a model would otherwise do next.
+    elsewhere = _elsewhere(name, kind, dataset.name)
+    routing = (
+        f" It exists on: {', '.join(elsewhere)} -- pass dataset={elsewhere[0]!r} instead."
+        if elsewhere else ""
+    )
+    return QueryError(
+        f"{kind} {name!r} is not available on dataset {dataset.name!r}. "
+        f"Available {kind}s: {sorted(available)}.{routing}"
+    )
+
+
 def _validated_names(requested, available: list[str], kind: str, dataset: Dataset) -> list[str]:
     out = []
     for name in requested:
         if name not in available:
-            raise QueryError(
-                f"{kind} {name!r} is not available on dataset {dataset.name!r}. "
-                f"Available {kind}s: {sorted(available)}."
-            )
+            raise _unavailable(name, kind, available, dataset)
         if name not in out:  # a repeat is a mistake, not a second column
             out.append(name)
     return out
@@ -362,10 +399,7 @@ def run_query(
 
     for name in filters:
         if name not in dataset.dimension_names:
-            raise QueryError(
-                f"cannot filter on {name!r}: it is not a dimension of {dataset.name!r}. "
-                f"Available dimensions: {sorted(dataset.dimension_names)}."
-            )
+            raise _unavailable(name, "dimension", dataset.dimension_names, dataset)
     filters = {k: (v if isinstance(v, list) else [v]) for k, v in filters.items()}
     # How many distinct values a dimension may hold and still be checked against.
     # Above this it is not an enumeration but an identifier, and a filter on one is

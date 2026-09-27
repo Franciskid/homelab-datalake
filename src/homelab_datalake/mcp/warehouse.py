@@ -19,6 +19,15 @@ import threading
 import duckdb
 
 from homelab_datalake import serving
+from homelab_datalake.mcp.semantic import DATASETS_SCHEMA
+
+# Both catalogues a cursor needs to see unqualified: `marts.*` from the read-only
+# serving file, `datasets.*` from the views `serving.connect()` builds in the
+# connection's own in-memory catalogue. `search_path` takes `catalog.schema` pairs,
+# not bare schema names, when the schema is not in the current catalogue -- see the
+# measurements in `homelab_datalake.serving.connect`'s docstring neighbourhood for
+# why a bare `datasets` there does not resolve.
+_SEARCH_PATH = f"{serving.SERVING_ALIAS}.marts,memory.{DATASETS_SCHEMA}"
 
 
 class Warehouse:
@@ -60,6 +69,7 @@ class Warehouse:
         cursor = self.connection().cursor()
         cursor.execute(f"USE {serving.SERVING_ALIAS};")
         cursor.execute("SET TimeZone='UTC';")
+        cursor.execute(f"SET search_path='{_SEARCH_PATH}';")
         return cursor
 
     def close(self) -> None:

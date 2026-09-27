@@ -1397,6 +1397,189 @@ def get_dataset(name: str) -> Dataset:
         ) from None
 
 
+# --- the SQL vocabulary: one view per dataset -----------------------------------
+#
+# A model asked to write its own SQL was handed the mart's raw column names via the
+# `sql` key on each dimension and attribute -- and kept mixing them up with this
+# layer's names anyway, because a tool result that says "the dimension is called
+# `person`, and by the way its SQL is `user_name`" is two names for a caller to
+# remember at the moment it is composing a WHERE clause. `datasets.<name>` closes
+# that gap by being a real view: a caller that wants to write SQL selects from it and
+# never needs to know a rename happened at all. Dimensions and attributes both become
+# plain columns, spelled exactly as this layer names them; measures stay computed
+# expressions -- summing a column and calling the sum a column would be a lie about
+# what a measure is -- and their SQL is already written in terms of these same names
+# in the overwhelming case (see `field_collisions` below for what is checked, not
+# assumed, about that).
+#
+# The view lives in a schema that is *not* the one the mart tables live in, because
+# the file the MCP layer reads (`serving.duckdb`, see `homelab_datalake.serving`) is
+# opened read-only -- a reader is never the writer, and that is deliberate, not an
+# oversight to route around. `datasets.*` is created instead in the connection's own
+# in-memory catalogue, defined against the read-only one via a plain cross-catalogue
+# reference, with `search_path` doing the work of making `marts.*` and `datasets.*`
+# both resolve unqualified from the same cursor. See `homelab_datalake.serving.connect`
+# and `homelab_datalake.mcp.warehouse.Warehouse.cursor` for where that is wired up, and
+# `homelab_datalake.api.query.LakeSession` for the Python-sandbox side, which mounts
+# the marts in its own single in-memory catalogue and so needs none of that trick.
+
+DATASETS_SCHEMA = "datasets"
+
+
+def dataset_view_name(dataset: Dataset) -> str:
+    """How a caller writing SQL names this dataset -- `datasets.<name>`."""
+    return f'{DATASETS_SCHEMA}."{dataset.name}"'
+
+
+def field_collisions(dataset: Dataset) -> list[tuple[str, str, str]]:
+    """Names declared as both a dimension and an attribute with different SQL.
+
+    The view selects one column per name; if a dimension and an attribute of the
+    same dataset disagree about what that name means, picking one silently would be
+    guessing which the caller wanted. Checked directly rather than assumed safe --
+    see `test_no_dataset_has_a_field_collision` -- so a dataset added later that
+    happens to reuse a name is reported, not resolved by whichever loop ran first.
+
+    Returns `(name, dimension_sql, attribute_sql)` triples; empty when the dataset's
+    dimensions and attributes agree everywhere they share a name (there is nothing
+    wrong with sharing a name when the SQL behind it is identical -- attributes and
+    dimensions are different *uses* of a column, not necessarily different columns).
+    """
+    dims = {d.name: d.sql for d in dataset.dimensions}
+    attrs = {a.name: a.sql for a in dataset.attributes}
+    return [
+        (name, dims[name], attrs[name])
+        for name in sorted(set(dims) & set(attrs))
+        if dims[name] != attrs[name]
+    ]
+
+
+def dataset_view_select(dataset: Dataset) -> str:
+    """The view's column list: every field, spelled as this layer's own name for it.
+
+    `field_names` is dimensions-plus-attributes, deduplicated -- the same union
+    `describe_dataset` already publishes as `fields`, so the view's columns and what
+    describe_dataset says a caller may select are, by construction, the same set.
+    Measures are not here: a measure is always an aggregate, never a column, so it
+    has nothing to be selected as.
+    """
+    parts = []
+    for name in dataset.field_names:
+        item = dataset.field(name)
+        parts.append(f'{item.sql} AS "{name}"')
+    return ", ".join(parts)
+
+
+def dataset_view_create_statement(dataset: Dataset, source_catalog: str = "") -> str:
+    """The `CREATE OR REPLACE VIEW` statement for one dataset's SQL vocabulary.
+
+    `source_catalog`, when given, is prepended to `dataset.table` in the FROM
+    clause -- `dataset.table` is itself only `schema.table` (`marts.fct_llm_call`),
+    which resolves unqualified only when the mart's catalogue is *also* the
+    connection's current one. That holds for `LakeSession`, which mounts the whole
+    lake into one in-memory catalogue and stays on it. It does not hold for
+    `serving.connect`: the mart lives in the read-only attached `serving` catalogue,
+    while the view itself has to be created in the connection's writable in-memory
+    one, so the FROM clause needs `serving.marts.fct_llm_call` even though nothing
+    else in this module ever needs to know the attached name.
+    """
+    select = dataset_view_select(dataset)
+    table = f"{source_catalog}.{dataset.table}" if source_catalog else dataset.table
+    # S608: every fragment is either a literal from this module, `dataset.table`
+    # (likewise a literal declared here), or `source_catalog` (an attached-database
+    # alias the caller controls, never caller input) -- nothing in this string
+    # reaches from outside. Same posture as `validation_statements` above.
+    return (
+        f"CREATE OR REPLACE VIEW {dataset_view_name(dataset)} AS "  # noqa: S608
+        f"SELECT {select} FROM {table}"
+    )
+
+
+def create_dataset_views(con, datasets=None, source_catalog: str = "") -> dict[str, str]:
+    """Create `datasets.<name>` for every dataset that binds; report the rest.
+
+    Run against a connection whose current catalogue is writable -- the caller's
+    job, not this function's, since the two callers (the MCP warehouse and the
+    Python-sandbox LakeSession) hold that connection very differently; see
+    `source_catalog` on `dataset_view_create_statement` for the other half of that
+    difference. A dataset whose underlying mart is not there yet (a fresh checkout,
+    a dataset added to the registry before its dbt model has ever been built) does
+    not stop the rest from being created: the same posture `LakeSession._build()`
+    already takes with `self.missing` for the marts themselves, applied here to the
+    layer built on top of them. Returns `{dataset_name: reason}` for anything
+    skipped, empty when every dataset's view was created.
+    """
+    con.execute(f"CREATE SCHEMA IF NOT EXISTS {DATASETS_SCHEMA};")
+    problems: dict[str, str] = {}
+    for dataset in (DATASETS.values() if datasets is None else datasets):
+        collisions = field_collisions(dataset)
+        if collisions:
+            problems[dataset.name] = "field name collision: " + "; ".join(
+                f"{name!r} is {dim_sql!r} as a dimension and {attr_sql!r} as an "
+                "attribute"
+                for name, dim_sql, attr_sql in collisions
+            )
+            continue
+        try:
+            con.execute(dataset_view_create_statement(dataset, source_catalog))
+        except Exception as error:  # noqa: BLE001 - one dataset's mart not existing
+            # yet must not stop the rest of the registry from getting its view.
+            problems[dataset.name] = str(error).splitlines()[0]
+    return problems
+
+
+# --- the compact catalogue: one line per dataset --------------------------------
+#
+# `query_dataset`'s `dataset` parameter is the one place every call has to read a
+# name off a list before anything else can happen, so this is deliberately short --
+# a model choosing between fourteen names needs "what is one row, and the one thing
+# that would make a plausible query wrong", not the essay describe_dataset gives
+# once a name has already been picked. A caveat lives here only when getting it
+# wrong produces a query that runs and returns a confidently incorrect answer,
+# rather than an error -- the same bar `query.py`'s own runtime notes apply.
+
+_CATALOGUE_CAVEATS: dict[str, str] = {
+    "camera_activity": (
+        "filter state_changed=true for openings/closings rather than every "
+        "observation; no footage is stored here."
+    ),
+    "media_library": (
+        "a snapshot: a date range picks which day to report, never sum counts "
+        "across days."
+    ),
+    "media_playback": (
+        "play_duration_seconds is how long the player was open, not proof anything "
+        "was watched to completion."
+    ),
+    "media_searches": (
+        "filter semantic_ran, not semantic_enabled, for whether semantic search "
+        "actually ran on a given request."
+    ),
+    "ai_gateway_calls": (
+        "zero tokens on a streamed call is a real state, not evidence the call was "
+        "free."
+    ),
+    "agent_tool_calls": (
+        "never passes through the LLM gateway, so ai_gateway_calls does not see "
+        "these calls."
+    ),
+}
+
+
+def dataset_catalogue_line(dataset: Dataset) -> str:
+    """One line: what a row is, event or snapshot, and the caveat that matters."""
+    caveat = _CATALOGUE_CAVEATS.get(dataset.name)
+    line = f"{dataset.name} ({dataset.kind}) -- {dataset.description.split('. ')[0].strip().rstrip('.')}."
+    if caveat:
+        line += f" {caveat}"
+    return line
+
+
+def dataset_catalogue_text() -> str:
+    """The full one-line-per-dataset catalogue, in a stable (sorted) order."""
+    return "\n".join(dataset_catalogue_line(DATASETS[name]) for name in sorted(DATASETS))
+
+
 def validation_statements(dataset: Dataset) -> list[tuple[str, str]]:
     """Statements that bind every expression this dataset declares, and return nothing.
 

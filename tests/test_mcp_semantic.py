@@ -9,12 +9,18 @@ into a test failure.
 
 from dataclasses import replace
 
+import duckdb
 import pytest
 
 from homelab_datalake.mcp.semantic import (
     DATASETS,
     GRAINS,
+    Dimension,
+    create_dataset_views,
+    dataset_view_create_statement,
+    dataset_view_name,
     describe_entry,
+    field_collisions,
     get_dataset,
     measure_entry,
     missing_columns,
@@ -275,3 +281,109 @@ def test_the_camera_dataset_carries_the_exact_timestamps():
     assert {"happened_at", "started_at", "occurred_at", "state_observed_at"} <= fields
     assert {"count_person", "count_vehicle", "count_animal"} <= fields
     assert "state_changed" in set(get_dataset("camera_activity").dimension_names)
+
+
+# --------------------------------------------------------------------------------
+# datasets.<name>: the SQL vocabulary view
+# --------------------------------------------------------------------------------
+#
+# The view is what lets a caller write `SELECT person FROM datasets.media_playback`
+# and have it simply work, rather than needing to know `person` is `user_name` on
+# the mart. These bind it against a database shaped like the real marts -- built
+# fresh per test, writably, rather than through the session-scoped `con` fixture:
+# the views have to be *created*, and `con` is opened read-only on purpose (see its
+# docstring in conftest.py), the same posture the real serving file takes.
+
+
+@pytest.fixture
+def writable_marts(tmp_path):
+    """A database shaped like the real marts, open for writing.
+
+    `build_marts` is the same fixture-builder `marts_db`/`con` use, just not opened
+    read-only here -- `create_dataset_views` has to `CREATE VIEW`, which a read-only
+    handle refuses.
+    """
+    from tests.conftest import build_marts
+
+    path = str(tmp_path / "warehouse.duckdb")
+    build_marts(path)
+    connection = duckdb.connect(path)
+    connection.execute("SET TimeZone='UTC';")
+    yield connection
+    connection.close()
+
+
+def test_no_dataset_has_a_field_collision():
+    """A dimension and an attribute of the same name must agree on their SQL, or
+    the view has no way to know which one a caller meant."""
+    for dataset in DATASETS.values():
+        assert field_collisions(dataset) == [], dataset.name
+
+
+def test_field_collisions_catches_a_real_one():
+    """The check has to fail on the case it exists for, or it is decoration."""
+    dataset = get_dataset("llm_spend")
+    # `call_key` is already an attribute; adding a same-named dimension with a
+    # different `sql` is exactly the ambiguity the view cannot resolve by itself.
+    colliding = replace(
+        dataset,
+        dimensions=(*dataset.dimensions, Dimension("call_key", "not_call_key", "collides")),
+    )
+    assert field_collisions(colliding) == [("call_key", "not_call_key", "call_key")]
+
+
+@pytest.mark.parametrize("dataset", DATASETS.values(), ids=lambda d: d.name)
+def test_every_dataset_view_binds_and_exposes_exactly_the_declared_names(dataset, writable_marts):
+    """`select * from datasets.<name> limit 0` must return exactly `field_names`,
+    in the same order -- the promise `describe_dataset` makes about the view.
+    """
+    problems = create_dataset_views(writable_marts, datasets=[dataset])
+    assert problems == {}, problems
+    # S608: `dataset_view_name` is a literal built from the registry, not caller input.
+    columns = [
+        row[0] for row in
+        writable_marts.execute(
+            f"SELECT * FROM {dataset_view_name(dataset)} LIMIT 0"  # noqa: S608
+        ).description
+    ]
+    assert columns == dataset.field_names
+
+
+def test_create_dataset_views_reports_a_collision_rather_than_guessing(writable_marts):
+    dataset = get_dataset("llm_spend")
+    colliding = replace(
+        dataset,
+        dimensions=(*dataset.dimensions, Dimension("call_key", "not_call_key", "collides")),
+    )
+    problems = create_dataset_views(writable_marts, datasets=[colliding])
+    assert "llm_spend" in problems
+    assert "collision" in problems["llm_spend"]
+    # No view was created for it -- a guess would be worse than nothing.
+    with pytest.raises(duckdb.Error):
+        writable_marts.execute(
+            f"SELECT * FROM {dataset_view_name(colliding)} LIMIT 0"  # noqa: S608
+        )
+
+
+def test_create_dataset_views_skips_a_missing_mart_without_failing_the_rest(writable_marts):
+    """A dataset added to the registry ahead of its first dbt build must not block
+    every other dataset's view from being created."""
+    missing = replace(get_dataset("llm_spend"), name="not_built_yet", table="marts.fct_nothing_here")
+    problems = create_dataset_views(writable_marts, datasets=[missing, get_dataset("web_traffic")])
+    assert "not_built_yet" in problems
+    assert "web_traffic" not in problems
+    row = writable_marts.execute(
+        f"SELECT count(*) FROM {dataset_view_name(get_dataset('web_traffic'))}"  # noqa: S608
+    ).fetchone()
+    assert row[0] > 0
+
+
+def test_dataset_view_create_statement_needs_a_source_catalog_when_the_mart_is_elsewhere():
+    """`serving.connect` creates the view in its own in-memory catalogue while the
+    mart lives in a separately-attached, read-only one -- so the FROM clause has to
+    name that catalogue explicitly, or the statement cannot bind."""
+    dataset = get_dataset("llm_spend")
+    bare = dataset_view_create_statement(dataset)
+    qualified = dataset_view_create_statement(dataset, source_catalog="serving")
+    assert "FROM marts.fct_llm_call" in bare
+    assert "FROM serving.marts.fct_llm_call" in qualified
