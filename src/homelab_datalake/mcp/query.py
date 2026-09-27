@@ -118,51 +118,113 @@ def _parse_day(value: str, field_name: str) -> date:
 
 # Which property of a Dataset holds the names for each kind an error can be about.
 # `dimension` covers a filter's dimension name too -- see the filters loop in
-# `run_query`, which raises through the same message shape below rather than
-# through `_validated_names` (a filter checks membership, not a requested list).
+# `run_query`, which notes through the same dict this builds rather than through
+# `_validate_names` (a filter checks membership, not a requested list).
 _KIND_ATTR = {"dimension": "dimension_names", "measure": "measure_names", "field": "field_names"}
 
-def _elsewhere(name: str, kind: str, exclude: str) -> list[str]:
-    """Other dataset names whose `kind` vocabulary already includes `name`.
+# Ties for the best dataset are reported as a short list rather than guessed
+# between; this is how many make it into that list before it stops being short.
+_MAX_ROUTED_CANDIDATES = 5
 
-    This is the fix for a failure mode worse than a typo: `media_library` and
-    `media_playback` are both "the media dataset" to a model that has not read
-    which one carries `started_at`, and the old error -- the field is not here,
-    here is everything that is -- left it to guess a second time rather than
-    pointing at the dataset that actually has the field it asked for.
+
+def _dataset_vocabulary(dataset: Dataset) -> set[str]:
+    """Every name `dataset` answers to, across all three kinds at once.
+
+    Used only for routing a failed call to a better dataset -- the kind a name was
+    *requested* as does not have to match the kind it would resolve to on a
+    different dataset. `person` is a dimension on media_playback; a call that
+    asked for it as a `field` (perfectly legal, since every dimension is also a
+    field at grain='event') is just as well served by finding it here.
     """
-    attr = _KIND_ATTR[kind]
-    return sorted(
-        ds.name for ds in DATASETS.values()
-        if ds.name != exclude and name in getattr(ds, attr)
-    )
+    return set(dataset.dimension_names) | set(dataset.measure_names) | set(dataset.field_names)
 
 
-def _unavailable(name: str, kind: str, available, dataset: Dataset) -> QueryError:
-    # The requested dataset's own names are listed in full, not truncated -- a
-    # message that hid the one name the caller actually needed to fix a typo would
-    # not be compact, it would be wrong. "Compactly" is what the routing sentence
-    # below is for: naming the *other* datasets that have this name, not repeating
-    # each one's own vocabulary, which is what a model would otherwise do next.
-    elsewhere = _elsewhere(name, kind, dataset.name)
-    routing = (
-        f" It exists on: {', '.join(elsewhere)} -- pass dataset={elsewhere[0]!r} instead."
-        if elsewhere else ""
-    )
-    return QueryError(
-        f"{kind} {name!r} is not available on dataset {dataset.name!r}. "
-        f"Available {kind}s: {sorted(available)}.{routing}"
-    )
+def _route(requested_names: set[str], exclude: str) -> list[tuple[str, list[str]]]:
+    """Other datasets, ranked by how many of `requested_names` they answer to.
+
+    Returns `(dataset_name, matched_names)`, best first (most matches, then name),
+    for every dataset that covers at least one of the requested names.
+    """
+    candidates = [
+        (ds.name, sorted(requested_names & _dataset_vocabulary(ds)))
+        for ds in DATASETS.values() if ds.name != exclude
+    ]
+    candidates = [(name, matched) for name, matched in candidates if matched]
+    candidates.sort(key=lambda c: (-len(c[1]), c[0]))
+    return candidates
 
 
-def _validated_names(requested, available: list[str], kind: str, dataset: Dataset) -> list[str]:
-    out = []
+def _routing_sentence(requested_names: set[str], exclude: str) -> str:
+    """The part of the error that says where to look instead.
+
+    This is the fix for a failure mode worse than a typo, and for a second one
+    layered on top of it. `media_library` and `media_playback` are both "the
+    media dataset" to a model that has not read which one carries `started_at` --
+    the old error just listed the field as missing. Naming *every* dataset that
+    had either `started_at` or `person`, alphabetically, was not much better: a
+    call for both routed to `agent_runs` (which merely also has a column called
+    `started_at`) ahead of `media_playback` (which has both). Ranking by how much
+    of the actual request each candidate covers, and recommending outright only
+    when exactly one of them is best, is what makes the routing itself trustworthy
+    rather than another guess to check.
+    """
+    if not requested_names:
+        return ""
+    candidates = _route(requested_names, exclude)
+    if not candidates:
+        return ""
+    best = len(candidates[0][1])
+    winners = [c for c in candidates if len(c[1]) == best]
+    if len(winners) == 1:
+        name, matched = winners[0]
+        return (
+            f" {name!r} covers {len(matched)} of the {len(requested_names)} name(s) "
+            f"you asked for ({', '.join(matched)}) -- pass dataset={name!r} instead."
+        )
+    top = candidates[:_MAX_ROUTED_CANDIDATES]
+    listing = "; ".join(f"{name!r} covers {', '.join(matched)}" for name, matched in top)
+    return f" No single dataset covers all of it; closest matches: {listing}."
+
+
+def _validate_names(requested, available: list[str]) -> tuple[list[str], list[str]]:
+    """Split `requested` into (valid, invalid), deduplicating each.
+
+    Never raises -- a caller collects the invalid names across every kind in the
+    call (dimensions, measures, fields, filter keys) before deciding whether, and
+    how, to fail, so one bad call produces one error naming everything wrong with
+    it rather than the first thing an arbitrary check order happened to reach.
+    """
+    valid: list[str] = []
+    invalid: list[str] = []
     for name in requested:
         if name not in available:
-            raise _unavailable(name, kind, available, dataset)
-        if name not in out:  # a repeat is a mistake, not a second column
-            out.append(name)
-    return out
+            if name not in invalid:
+                invalid.append(name)
+        elif name not in valid:  # a repeat is a mistake, not a second column
+            valid.append(name)
+    return valid, invalid
+
+
+def _unavailable_many(
+    invalid_by_kind: dict[str, list[str]], requested_names: set[str], dataset: Dataset,
+) -> QueryError:
+    """One error for every unavailable name in the call, not just the first.
+
+    Grouped by kind, so 'fields X, Y are not available; available fields: [...]'
+    is said once rather than X's clause and Y's clause each repeating the same
+    list of what the dataset does have.
+    """
+    clauses = []
+    for kind, names in invalid_by_kind.items():
+        available = sorted(getattr(dataset, _KIND_ATTR[kind]))
+        plural = "s" if len(names) > 1 else ""
+        verb = "are" if len(names) > 1 else "is"
+        shown = ", ".join(repr(n) for n in names)
+        clauses.append(
+            f"{kind}{plural} {shown} {verb} not available on dataset {dataset.name!r}. "
+            f"Available {kind}s: {available}."
+        )
+    return QueryError(" ".join(clauses) + _routing_sentence(requested_names, dataset.name))
 
 
 def available_range(con: duckdb.DuckDBPyConnection, dataset: Dataset) -> tuple[str | None, str | None]:
@@ -339,6 +401,11 @@ def run_query(
 ) -> QueryResult:
     dataset = get_dataset(dataset_name)
     records = grain == EVENT_GRAIN
+    # Captured from the raw arguments, before any defaulting below -- this is what
+    # "the names you asked for" means to the routing error, and a dataset's own
+    # defaults (`default_measures`, `default_fields`) are not something the caller
+    # asked for, they are what happens when the caller asked for nothing at all.
+    requested_names = set(dimensions or []) | set(measures or []) | set(fields or []) | set(filters or {})
     dimensions = list(dimensions or [])
     fields = list(fields or [])
     filters = dict(filters or {})
@@ -384,22 +451,43 @@ def run_query(
             "Ask for a narrower window, or use a coarser grain over a shorter one."
         )
 
-    dimensions = _validated_names(dimensions, dataset.dimension_names, "dimension", dataset)
-    measures = _validated_names(measures, dataset.measure_names, "measure", dataset)
+    # Every unavailable name in the call is collected here -- dimensions, measures,
+    # fields and filter keys alike -- before anything is raised, so one bad call
+    # produces one error naming everything wrong with it (and one routing
+    # recommendation built from the whole request) rather than whichever check
+    # this function happens to run first.
+    invalid_by_kind: dict[str, list[str]] = {}
+
+    def _note_invalid(kind: str, names) -> None:
+        if not names:
+            return
+        bucket = invalid_by_kind.setdefault(kind, [])
+        for name in names:
+            if name not in bucket:
+                bucket.append(name)
+
+    dimensions, invalid = _validate_names(dimensions, dataset.dimension_names)
+    _note_invalid("dimension", invalid)
+
+    measures, invalid = _validate_names(measures, dataset.measure_names)
+    _note_invalid("measure", invalid)
+
     if records:
-        fields = _validated_names(
-            fields or list(dataset.default_fields), dataset.field_names, "field", dataset
-        )
-        if not fields:
-            fields = list(dataset.field_names)
-    elif not measures:
+        fields, invalid = _validate_names(fields or list(dataset.default_fields), dataset.field_names)
+        _note_invalid("field", invalid)
+    elif not measures and not invalid_by_kind:
         raise QueryError(
             f"at least one measure is required. Available: {sorted(dataset.measure_names)}."
         )
 
-    for name in filters:
-        if name not in dataset.dimension_names:
-            raise _unavailable(name, "dimension", dataset.dimension_names, dataset)
+    _note_invalid("dimension", [name for name in filters if name not in dataset.dimension_names])
+
+    if invalid_by_kind:
+        raise _unavailable_many(invalid_by_kind, requested_names, dataset)
+
+    if records and not fields:
+        fields = list(dataset.field_names)
+
     filters = {k: (v if isinstance(v, list) else [v]) for k, v in filters.items()}
     # How many distinct values a dimension may hold and still be checked against.
     # Above this it is not an enumeration but an identifier, and a filter on one is

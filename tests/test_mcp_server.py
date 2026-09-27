@@ -35,8 +35,26 @@ def call(server, name, arguments=None):
     return result.structured_content or json.loads(result.content[0].text)
 
 
-def _size(payload) -> int:
-    return len(json.dumps(payload, separators=(",", ":")))
+def wire_size(server, name, arguments=None) -> int:
+    """The byte count a real caller receives for this call, not this process's own
+    idea of it.
+
+    FastMCP pretty-prints (`indent=2`) any non-string return on its way to the
+    wire, which measurably inflates a dict answer well past `len(json.dumps(...,
+    separators=(",", ":")))` of the same payload -- production measured
+    `list_datasets` at 3,623 bytes by that compact measure and 4,643 over the wire,
+    enough on its own to blow a 4,000-byte budget the compact measure said it met.
+    The three discovery tools return their own pre-serialised compact JSON string
+    (see `_compact_json` in server.py) specifically so this number and that one
+    agree; this helper is what actually checks that they do, against the same
+    `call_tool` path a real client goes through.
+    """
+    result = asyncio.run(server.call_tool(name, arguments or {}))
+    assert result.structured_content is None, (
+        f"{name}: a discovery tool must return text, not structured content, or "
+        "wire_size is not measuring what a caller actually receives"
+    )
+    return len(result.content[0].text)
 
 
 # --------------------------------------------------------------------------------
@@ -155,8 +173,8 @@ def test_listing_datasets_reports_what_each_one_covers(tools):
 
 
 def test_list_datasets_stays_inside_its_budget(tools):
-    payload = call(tools, "list_datasets")
-    assert _size(payload) < server_module.LIST_DATASETS_BUDGET, _size(payload)
+    size = wire_size(tools, "list_datasets")
+    assert size < server_module.LIST_DATASETS_BUDGET, size
 
 
 # --------------------------------------------------------------------------------
@@ -181,8 +199,7 @@ def test_describe_dataset_compact_is_the_default(tools):
 
 def test_describe_dataset_compact_stays_inside_its_budget(tools):
     for name in DATASETS:
-        payload = call(tools, "describe_dataset", {"dataset": name})
-        size = _size(payload)
+        size = wire_size(tools, "describe_dataset", {"dataset": name})
         assert size < server_module.DESCRIBE_DATASET_BUDGET, (name, size)
 
 
@@ -270,8 +287,8 @@ def test_describe_schema_lists_datasets_first_and_the_marts(tools):
 
 
 def test_describe_schema_stays_inside_its_budget(tools):
-    out = call(tools, "describe_schema")
-    assert _size(out) < server_module.DESCRIBE_SCHEMA_BUDGET, _size(out)
+    size = wire_size(tools, "describe_schema")
+    assert size < server_module.DESCRIBE_SCHEMA_BUDGET, size
 
 
 def test_describe_schema_of_a_dataset_view_points_at_describe_dataset(tools):
@@ -317,16 +334,44 @@ def test_a_bad_call_returns_the_reason_rather_than_raising(tools):
     assert payload["row_count"] == 0
 
 
-def test_an_unavailable_field_routes_to_the_dataset_that_has_it(tools):
-    """The fix for the failure this whole change started from: an agent called
+def test_an_unavailable_field_routes_to_the_dataset_that_uniquely_has_it(tools):
+    """The exact failure this whole change started from: an agent called
     `media_library` with `media_playback`'s field names, eight times, with no hint
-    about which dataset it should have called instead."""
+    about which dataset it should have called instead.
+
+    `started_at` alone would route to several datasets alphabetically -- agent_runs
+    among them, which merely happens to also have a column by that name. Asking for
+    `started_at` AND `person` together must recommend media_playback specifically,
+    because it is the only dataset that has both.
+    """
     payload = call(tools, "query_dataset", {
         "dataset": "media_library", "start": "2026-08-25", "end": "2026-08-27",
-        "grain": "event", "fields": ["started_at", "title"],
+        "grain": "event", "fields": ["started_at", "person"],
     })
-    assert "media_playback" in payload["error"]
-    assert "It exists on" in payload["error"]
+    assert "pass dataset='media_playback'" in payload["error"]
+    # Not the wrong, alphabetically-first recommendation the old routing gave.
+    assert "pass dataset='agent_runs'" not in payload["error"]
+
+
+def test_an_unavailable_field_error_names_every_bad_field_at_once(tools):
+    """Not just the first one a fixed check order happened to reach."""
+    payload = call(tools, "query_dataset", {
+        "dataset": "media_library", "start": "2026-08-25", "end": "2026-08-27",
+        "grain": "event", "fields": ["started_at", "person"],
+    })
+    assert "'started_at'" in payload["error"]
+    assert "'person'" in payload["error"]
+
+
+def test_an_unavailable_name_with_no_single_best_dataset_lists_the_top_few(tools):
+    """When nothing uniquely covers the most of what was asked, the error must not
+    guess between the candidates that tie -- it lists them instead."""
+    payload = call(tools, "query_dataset", {
+        "dataset": "media_library", "start": "2026-08-25", "end": "2026-08-27",
+        "grain": "event", "fields": ["started_at"],
+    })
+    assert "No single dataset covers all of it" in payload["error"]
+    assert "closest matches" in payload["error"]
 
 
 def test_an_unknown_dataset_is_refused_by_the_schema(tools):

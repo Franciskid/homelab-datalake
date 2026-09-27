@@ -166,6 +166,23 @@ def _describe_error(error: Exception) -> dict:
     return {"error": str(error), "rows": [], "row_count": 0}
 
 
+def _compact_json(payload: dict) -> str:
+    """A tool's dict answer, serialised the way it is actually measured against.
+
+    FastMCP's own serialisation of a non-string return -- `pydantic_core.to_json(...,
+    indent=2)` -- is pretty-printed, and pretty-printing is not free: measured on
+    production data, `list_datasets` grew from 3,623 bytes (this module's own
+    `json.dumps(..., separators=(",", ":"))`) to 4,643 over the wire, enough on its
+    own to blow the 4,000-byte budget describe_dataset and describe_schema are also
+    held to. The three discovery tools return the compact string themselves instead
+    of a dict, which `_convert_to_content` (in the mcp library) passes through
+    unchanged rather than re-encoding -- so what this function produces is exactly
+    what a caller receives, verified against `server.call_tool(...)`'s own result,
+    not just against this process's own idea of the size.
+    """
+    return json.dumps(payload, separators=(",", ":"))
+
+
 def _run(dataset: str, **kwargs) -> dict:
     try:
         with _warehouse.cursor() as cursor:
@@ -211,9 +228,20 @@ def _short(text: str, limit: int = 140) -> str:
         "covers. Call this first if you do not already know which dataset answers "
         "the question, then describe_dataset(dataset=name) for its dimensions, "
         "measures and fields before calling query_dataset."
-    )
+    ),
+    # Returning the compact JSON text itself, rather than a dict for the framework
+    # to serialise, is what keeps this tool inside its budget on the wire -- see
+    # `_compact_json`. `structured_output=False` stops the framework treating a
+    # plain `str` return as a value to wrap in its own {"result": ...} schema,
+    # which would otherwise put the *parsed* payload one key deeper than every
+    # caller of this tool (including this module's own tests) expects it.
+    structured_output=False,
 )
-def list_datasets() -> dict:
+def list_datasets() -> str:
+    return _compact_json(_list_datasets_data())
+
+
+def _list_datasets_data() -> dict:
     out = []
     for dataset in DATASETS.values():
         entry: dict[str, Any] = {
@@ -263,7 +291,8 @@ def _dataset_schema_lines() -> list[str]:
         "not hold something: every edge is a declared and enforced relationship, not "
         "a guess from matching column names. Prefer `datasets.*` for SQL you write "
         "by hand; its columns are already spelled like describe_dataset's names."
-    )
+    ),
+    structured_output=False,  # see list_datasets -- keeps this on its wire budget
 )
 def describe_schema(
     table: Annotated[
@@ -273,7 +302,11 @@ def describe_schema(
             "list every queryable name."
         )),
     ] = None,
-) -> dict:
+) -> str:
+    return _compact_json(_describe_schema_data(table))
+
+
+def _describe_schema_data(table: str | None = None) -> dict:
     """The join graph, from the same dbt manifest the descriptions come from.
 
     Read through the API's own module rather than re-derived here, so the graph an
@@ -544,7 +577,8 @@ def _named_detail(cursor, spec, names: list[str]) -> dict:
         "and a much higher enum cap. `names` overrides `detail` and returns full "
         "detail for just those dimension/measure/field names, once a compact call "
         "has told you which ones matter."
-    )
+    ),
+    structured_output=False,  # see list_datasets -- keeps this on its wire budget
 )
 def describe_dataset(
     dataset: Annotated[str, Field(description="One of the names from list_datasets.")],
@@ -559,6 +593,12 @@ def describe_dataset(
             "regardless of `detail`. Omit to describe the whole dataset."
         )),
     ] = None,
+) -> str:
+    return _compact_json(_describe_dataset_data(dataset, detail, names))
+
+
+def _describe_dataset_data(
+    dataset: str, detail: str = "compact", names: list[str] | None = None,
 ) -> dict:
     try:
         spec = get_dataset(dataset)

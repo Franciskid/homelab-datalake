@@ -301,6 +301,32 @@ def test_an_unknown_field_names_the_real_ones(con):
     assert "exact_time" in message and "happened_at" in message
 
 
+def test_an_unavailable_pair_of_fields_routes_to_the_dataset_with_both(con):
+    """Ranking, not alphabetical order: `started_at` alone exists on several
+    datasets (llm_spend, camera_activity, agent_runs, automation_runs, and
+    media_playback), so a query naming it plus `person` -- which only
+    media_playback also has -- must recommend media_playback specifically, not
+    whichever of the `started_at`-only datasets happens to sort first.
+    """
+    with pytest.raises(QueryError) as error:
+        run_query(con, "media_library", grain="event",
+                  fields=["started_at", "person"], start="2026-08-25", end="2026-08-27")
+    message = str(error.value)
+    assert "'started_at'" in message and "'person'" in message  # both named, not just the first
+    assert "pass dataset='media_playback'" in message
+    assert "pass dataset='agent_runs'" not in message
+
+
+def test_an_unavailable_name_with_no_unique_winner_lists_candidates_instead(con):
+    """A tie for the best match must not be guessed between."""
+    with pytest.raises(QueryError) as error:
+        run_query(con, "media_library", grain="event",
+                  fields=["started_at"], start="2026-08-25", end="2026-08-27")
+    message = str(error.value)
+    assert "No single dataset covers all of it" in message
+    assert "pass dataset=" not in message
+
+
 def test_a_dimension_may_be_used_as_a_field(con):
     """The obvious export is a timestamp next to the things you would group by."""
     result = run_query(con, "camera_activity", grain="event",

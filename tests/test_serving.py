@@ -109,6 +109,49 @@ def test_a_reader_survives_the_nightly_swap(warehouse_file, tmp_path):
     assert after < before, "the reader is still serving the replaced file"
 
 
+def test_the_datasets_views_survive_the_nightly_swap_too(warehouse_file, tmp_path):
+    """`datasets.*` is built fresh inside `serving.connect`, not carried over from
+    the old connection -- so it has to still be there, and still be correct, on
+    the *new* connection `Warehouse` opens after a reconnect.
+
+    This is the property that makes "every path that opens a serving connection
+    goes through `serving.connect`" worth stating: `Warehouse.connection()` has
+    exactly one line that builds a connection (`serving.connect(self._path)`), so
+    a swap that reopens the file always reopens it through the one function that
+    knows how to (re)build the views. If a future change added a second, more
+    direct way to reconnect -- `duckdb.connect` inline, say -- this is the test
+    that would catch it losing the SQL vocabulary silently rather than erroring.
+    """
+    target = tmp_path / "serving.duckdb"
+    serving.publish(warehouse_file, str(target))
+
+    warehouse = Warehouse(str(target))
+    with warehouse.cursor() as cursor:
+        before = cursor.execute('SELECT count(*) FROM datasets."llm_spend"').fetchone()[0]
+        before_columns = [
+            row[0] for row in
+            cursor.execute('SELECT * FROM datasets."llm_spend" LIMIT 0').description
+        ]
+
+    # A new build lands with a different row count, published under the same name --
+    # the same swap `test_a_reader_survives_the_nightly_swap` exercises for `marts`.
+    con = duckdb.connect(warehouse_file)
+    con.execute("DELETE FROM marts.fct_llm_call WHERE call_key LIKE 'c1%'")
+    con.close()
+    serving.publish(warehouse_file, str(target))
+
+    with warehouse.cursor() as cursor:
+        after = cursor.execute('SELECT count(*) FROM datasets."llm_spend"').fetchone()[0]
+        after_columns = [
+            row[0] for row in
+            cursor.execute('SELECT * FROM datasets."llm_spend" LIMIT 0').description
+        ]
+    warehouse.close()
+
+    assert after < before, "the view is still bound to the replaced file"
+    assert after_columns == before_columns, "the rebuilt view must expose the same names"
+
+
 def test_a_plain_connect_would_have_served_stale_data(warehouse_file, tmp_path):
     """Why the serving copy is opened by ATTACH and not by duckdb.connect(path).
 
