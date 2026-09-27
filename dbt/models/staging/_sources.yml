@@ -148,6 +148,17 @@ sources:
               nginx's $gzip_ratio for the response. Null when the response was not
               compressed, which is itself a fact about the response. Absent from the
               `combined` format, which does not log it.
+          - name: request_time_seconds
+            description: >
+              nginx's $request_time: seconds from the first byte of the request to the
+              last byte of the response, transfer to the client included. NPM only
+              logs it since 23 Sep 2026, so every earlier row is null. The mcp_api
+              lines carry the same figure from their own log.
+          - name: upstream_response_time
+            description: >
+              nginx's $upstream_response_time, kept as the raw text because a retried
+              request logs one duration per upstream tried ("0.012, 0.340"). Null when
+              nothing was proxied, and on every NPM row before 23 Sep 2026.
           - name: has_query
             description: >
               Whether the request carried a query string. The string itself is still
