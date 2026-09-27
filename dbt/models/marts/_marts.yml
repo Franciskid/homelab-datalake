@@ -1138,6 +1138,13 @@ models:
           for the reason this column's history keeps teaching: the value is in the
           running app's source, so the day it fires is not the day to find out. An
           enumeration read off the data is a sample; this one is read off the source.
+
+          `state_already_held` came in with the app's c199b74 on 19 Sep 2026 ("Stop
+          announcing gate openings that never happened"), set in `create-app.js` when
+          a gate-state reading repeats the position the zone already holds and no
+          clip filmed it moving -- the comparator recovering from its own dip, not a
+          real change. First seen 20 Sep, it stopped every nightly build from 21 Sep,
+          and the serving copy the agents read stayed frozen at 20 Sep for a week.
         tests:
           - accepted_values:
               values: ['semantic_no_event', 'semantic_state_unchanged', 'semantic_fallback',
@@ -1145,7 +1152,8 @@ models:
                        'unchanged_state', 'analysis_failed', 'superseded_reanalysis',
                        'duplicate', 'duplicate_late_confirmation', 'stable_state',
                        'ambiguous_legacy_state', 'pixel_replay_no_crossing',
-                       'semantic_subject_outside_zone', 'gate_motion_not_visible']
+                       'semantic_subject_outside_zone', 'gate_motion_not_visible',
+                       'state_already_held']
       - name: direction
         description: '{{ doc("cam_direction") }}'
         tests:

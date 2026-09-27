@@ -54,6 +54,18 @@ echo "  OK    scripts"
 
 say "2/4  Build and start"
 ssh "$FRA" "cd $DIR && docker compose up -d --build"
+# data.fraserv.fr is only up if nginx can resolve its two upstreams by name. When it
+# cannot, every request is a 502 and nothing in this stack logs an error -- the only
+# trace is NPM's own error log. That is how a lost network attachment went unseen
+# for four days in September 2026.
+for upstream in datalake-oauth2-proxy datalake-mcp; do
+  if ssh "$FRA" "docker exec npm-npm-1 getent hosts $upstream" >/dev/null; then
+    echo "  OK    nginx resolves $upstream"
+  else
+    echo "  FAIL  nginx cannot resolve $upstream -- data.fraserv.fr will answer 502"
+    exit 1
+  fi
+done
 
 say "3/4  Confirm the image carries this working copy"
 # Compares a checksum of the deployed tree against the same checksum computed here.

@@ -152,6 +152,13 @@ services:
       OAUTH2_PROXY_SESSION_COOKIE_MINIMAL: "true"
     expose:
       - "4180"
+    # On NPM's network as well as this project's, so nginx can reach it by name.
+    # Declared here rather than by `docker network connect npm-npm-1 ...`, which is
+    # how it was done before: that attachment belonged to the NPM container, so when
+    # NPM was recreated on 2026-09-23 it went with it and data.fraserv.fr answered
+    # 502 ("could not be resolved") for four days. Joining from this side survives a
+    # recreate of either stack.
+    networks: [default, npm]
 
   # The MCP server: typed analytical tools over the marts, for models to call.
   #
@@ -174,6 +181,9 @@ services:
       MCP_PUBLIC_URL: https://data.fraserv.fr/mcp
     expose:
       - "3333"
+    # NPM's network too, for the same reason as oauth2-proxy: /mcp is proxied here
+    # by container name.
+    networks: [default, npm]
     volumes:
       # Read-only: this container answers questions, it does not build anything. If
       # it could write to the warehouse volume it could also take the write lock and
@@ -308,3 +318,12 @@ networks:
   # outcome: a warehouse that starts without its source would write empty days.
   fraserv_reseau:
     external: true
+
+  # Nginx Proxy Manager's network, created by its compose project
+  # (/home/francois/dev/Docker/NPM). Only oauth2-proxy and the MCP server join it:
+  # they are the two things nginx proxies to, and Dagster itself stays unreachable
+  # from there. External for the same reason as fraserv_reseau -- this project is a
+  # guest, and a missing proxy network should fail `compose up` loudly.
+  npm:
+    external: true
+    name: npm_default
