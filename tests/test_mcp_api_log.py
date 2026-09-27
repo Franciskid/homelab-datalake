@@ -48,19 +48,14 @@ def test_a_full_line_maps_onto_the_same_shape_npm_log_produces():
     # "-" is nginx's absent marker; the contract may or may not send it literally,
     # and either way it must not read as a referer of "-".
     assert r.referer is None
+    assert r.request_time_seconds == pytest.approx(0.041)
+    assert r.upstream_response_time == "0.038"
 
 
-def test_fields_the_contract_has_no_column_for_are_simply_not_carried():
-    """request_length, request_time and upstream_response_time are read and dropped.
-
-    Not an oversight: the existing raw schema has no request-size or latency
-    columns for the NPM lines either (see the module docstring), so this host
-    getting one would make host_source change what a column means.
-    """
+def test_request_length_still_has_no_column():
     r = parse_line(LINE)
     assert isinstance(r, ParsedLine)
-    for absent in ("request_length", "request_time", "upstream_response_time"):
-        assert not hasattr(r, absent)
+    assert not hasattr(r, "request_length")
 
 
 def test_scheme_is_left_null_like_the_combined_npm_format():

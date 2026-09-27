@@ -126,6 +126,8 @@ _SCHEMA = pa.schema(
         ("user_agent", pa.string()),
         ("referer", pa.string()),
         ("gzip_ratio", pa.string()),
+        ("request_time_seconds", pa.float64()),
+        ("upstream_response_time", pa.string()),
         ("sent_to", pa.string()),
         # Raw, alongside its redacted counterparts below -- see the 2026-09-14
         # decision in homelab_datalake.privacy. Null for every row landed before

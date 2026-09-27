@@ -43,6 +43,23 @@ def test_proxy_format_fields():
     assert r.upstream_status == "200"
     assert r.cache_status is None  # "-" is absent, not the string "-"
     assert r.referer is None
+    assert r.request_time_seconds is None
+
+
+def test_proxy_format_with_request_duration():
+    line = PROXY + " [Request-time 2.345] [Upstream-time 2.301]"
+    r = parse_line(line)
+    assert isinstance(r, ParsedLine)
+    assert r.request_time_seconds == pytest.approx(2.345)
+    assert r.upstream_response_time == "2.301"
+
+
+def test_standard_format_with_request_duration_and_no_upstream():
+    line = STANDARD + " [Request-time 0.007] [Upstream-time -]"
+    r = parse_line(line)
+    assert isinstance(r, ParsedLine)
+    assert r.request_time_seconds == pytest.approx(0.007)
+    assert r.upstream_response_time is None
 
 
 def test_standard_format_has_no_upstream_fields():

@@ -212,6 +212,8 @@ def _build_row(parsed: ParsedLine, day: date, host: str, salt: str, geo: GeoEnri
         # somebody followed from a URL somebody typed.
         "referer": parsed.referer,
         "gzip_ratio": parsed.gzip_ratio,
+        "request_time_seconds": parsed.request_time_seconds,
+        "upstream_response_time": parsed.upstream_response_time,
         "sent_to": parsed.sent_to,
         # Raw, private-warehouse-only -- see the note on query_string above.
         "client_address": parsed.client,

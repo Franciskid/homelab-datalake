@@ -60,6 +60,10 @@ JOB_NOTES: dict[str, str] = {
         "Sentinel's view of Chateau and Ferme through the status page: UP/DOWN state, "
         "incidents, cpu, memory and disk. Added 2026-09-15."
     ),
+    "site-latency": (
+        "One-minute public HTTPS probes for NPM sites: response time, HTTP status and availability. "
+        "Prometheus keeps 30 days; the lake retains the raw samples beyond that."
+    ),
     "prometheus": "Prometheus's own health: scrape durations, TSDB size, rule evaluations.",
     # Retired on 2026-09-15. They scraped node-exporter and the GPU exporter a second
     # time (every 15 s and every 5 s). Kept because before that date they are real,

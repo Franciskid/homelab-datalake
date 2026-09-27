@@ -14,20 +14,17 @@ UTC day, `access-YYYY-MM-DD.log` -- under this field contract:
     status
     body_bytes_sent
     request_length          total request size, headers included -- no column takes it
-    request_time            nginx's own latency figure -- no column takes it either
+    request_time            nginx's own latency figure, stored in seconds
     upstream_status
-    upstream_response_time  -- also has no column
+    upstream_response_time  stored as raw text to retain retry timings
     user_agent
     referer
 
 This module turns one line of that log into the same `ParsedLine` shape
 `parsing.npm_log` produces, so the rest of the pipeline -- redaction, geo, the
 schema, the dbt models -- does not need to know this host's format is different
-from NPM's three. Three of the contract's fields (`request_length`, `request_time`,
-`upstream_response_time`) are read and then not kept: the existing raw schema has no
-request-size or latency columns for the NPM lines either, and giving this host one
-that fraserv and amb rows leave null would make host_source change what a column
-means rather than just where a row came from.
+from NPM's three. `request_length` is read and not kept; request duration and raw
+upstream duration now share the same columns as NPM's timed access logs.
 """
 
 from __future__ import annotations
@@ -35,7 +32,7 @@ from __future__ import annotations
 import json
 from datetime import datetime
 
-from homelab_datalake.parsing.npm_log import ParsedLine, Rejected
+from homelab_datalake.parsing.npm_log import ParsedLine, Rejected, _duration_or_none
 
 #: What `assets.npm_access` records on every row parsed by this module, the same
 #: way `proxy`/`standard`/`combined` name NPM's three.
@@ -93,6 +90,8 @@ def parse_line(line: str) -> ParsedLine | Rejected:
         cache_status=None,  # the gateway has nothing in front of it that caches
         sent_to=None,       # one upstream; nothing here to name
         gzip_ratio=None,    # not in the contract
+        request_time_seconds=_duration_or_none(record.get("request_time")),
+        upstream_response_time=_none_if_blank(record.get("upstream_response_time")),
     )
 
 

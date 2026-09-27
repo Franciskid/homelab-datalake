@@ -21,6 +21,7 @@ how a pipeline lies about its own completeness.
 from __future__ import annotations
 
 import re
+import math
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 
@@ -46,7 +47,9 @@ _PROXY = re.compile(
     r'"(?P<uri>.*?)"\s+'
     r"\[Client (?P<client>[^\]]*)\]\s+\[Length (?P<length>[^\]]*)\]\s+"
     r"\[Gzip (?P<gzip>[^\]]*)\]\s+\[Sent-to (?P<sent_to>[^\]]*)\]\s+"
-    r'"(?P<user_agent>.*?)"\s+"(?P<referer>.*?)"\s*$'
+    r'"(?P<user_agent>.*?)"\s+"(?P<referer>.*?)"'
+    r'(?:\s+\[Request-time (?P<request_time>[^\]]*)\]'
+    r'\s+\[Upstream-time (?P<upstream_time>[^\]]*)\])?\s*$'
 )
 
 _STANDARD = re.compile(
@@ -55,7 +58,9 @@ _STANDARD = re.compile(
     r'"(?P<uri>.*?)"\s+'
     r"\[Client (?P<client>[^\]]*)\]\s+\[Length (?P<length>[^\]]*)\]\s+"
     r"\[Gzip (?P<gzip>[^\]]*)\]\s+"
-    r'"(?P<user_agent>.*?)"\s+"(?P<referer>.*?)"\s*$'
+    r'"(?P<user_agent>.*?)"\s+"(?P<referer>.*?)"'
+    r'(?:\s+\[Request-time (?P<request_time>[^\]]*)\]'
+    r'\s+\[Upstream-time (?P<upstream_time>[^\]]*)\])?\s*$'
 )
 
 _COMBINED = re.compile(
@@ -95,6 +100,10 @@ class ParsedLine:
     #: `$gzip_ratio`, which both NPM formats log and neither used to keep. "-" when
     #: the response was not compressed, which is a fact about the response.
     gzip_ratio: str | None = None
+    # Nginx's total elapsed request time, including response transfer.
+    request_time_seconds: float | None = None
+    # Raw because retries may produce multiple upstream durations.
+    upstream_response_time: str | None = None
 
 
 @dataclass
@@ -158,6 +167,20 @@ def _dash_to_none(value: str | None) -> str | None:
     return None if value in ("", "-") else value
 
 
+def _duration_or_none(value: object) -> float | None:
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, str):
+        value = _dash_to_none(value)
+        if value is None:
+            return None
+    try:
+        duration = float(value)
+    except (TypeError, ValueError):
+        return None
+    return duration if math.isfinite(duration) and duration >= 0 else None
+
+
 def parse_line(line: str) -> ParsedLine | Rejected:
     """Parse one line. Never raises, never returns None -- a failure is a Rejected."""
     raw = line.rstrip("\n")
@@ -188,6 +211,8 @@ def parse_line(line: str) -> ParsedLine | Rejected:
             cache_status=_dash_to_none(groups.get("cache_status")),
             sent_to=_dash_to_none(groups.get("sent_to")),
             gzip_ratio=_dash_to_none(groups.get("gzip")),
+            request_time_seconds=_duration_or_none(groups.get("request_time")),
+            upstream_response_time=_dash_to_none(groups.get("upstream_time")),
         )
 
     m = _COMBINED.match(raw)
