@@ -94,7 +94,7 @@ EOF
 chmod 600 ~/amb-log-sync/credentials.env
 
 # 3. Get this directory onto amblevilleserv (scp, a checkout, whatever is already
-#    used to deploy infra/npm/ there) and confirm one run works:
+#    already used there) and confirm one run works:
 AMB_LOG_SYNC_CREDENTIALS_FILE=~/amb-log-sync/credentials.env \
   bash ~/amb-log-sync/sync-amb-logs.sh
 

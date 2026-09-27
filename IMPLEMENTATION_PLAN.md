@@ -526,7 +526,7 @@ first attempt failed. It goes in the **server** context instead, via
 real_ip_header CF-Connecting-IP;
 ```
 
-Deployed file and instructions: [`infra/npm/`](infra/npm/). Deploy is `nginx -t` gated —
+Deployed file and instructions: now in the `homelab-npm` repo (`fraserv/custom/server_proxy.conf`). Deploy is `nginx -t` gated —
 a bad file here takes every service offline.
 
 **Result, measured across all 44 proxy hosts on 27 August:**

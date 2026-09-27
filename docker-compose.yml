@@ -40,7 +40,7 @@ services:
     # No published port on purpose. Nginx Proxy Manager joins this network and
     # reaches the UI by container name, so Dagster -- which has no authentication of
     # its own -- is not listening anywhere an unauthenticated caller can reach.
-    # See infra/npm/http.conf.
+    # The vhost is fraserv/custom/http.conf in the homelab-npm repo.
     expose:
       - "3000"
     # Two networks. `default` is this project's own; `fraserv_reseau` is where the

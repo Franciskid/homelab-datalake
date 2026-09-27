@@ -46,7 +46,7 @@ from dataclasses import dataclass
 
 # Cloudflare's published ranges, from https://www.cloudflare.com/ips-v4 and ips-v6.
 # Used only to *label* an address as a CDN edge rather than a visitor. It is not a
-# trust decision -- nginx makes that, with its own list (see infra/npm/README.md).
+# trust decision -- nginx makes that, with its own list (see server_proxy.conf in the homelab-npm repo).
 # Refresh with scripts/check-cloudflare-ranges.sh, which reports drift.
 CLOUDFLARE_RANGES: tuple[str, ...] = (
     "173.245.48.0/20", "103.21.244.0/22", "103.22.200.0/22", "103.31.4.0/22",
