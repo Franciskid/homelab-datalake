@@ -634,3 +634,16 @@ defs = Definitions.merge(
         sensors=prometheus.SENSORS,
     ),
 )
+
+
+# --------------------------------------------------------------------------------
+# Finance, added 2026-09-29: the banking tracker's ledger. Merged separately for the same
+# reason as the block above.
+# --------------------------------------------------------------------------------
+
+from homelab_datalake.assets import finance  # noqa: E402
+
+defs = Definitions.merge(
+    defs,
+    Definitions(assets=finance.ASSETS, jobs=finance.JOBS, schedules=finance.SCHEDULES),
+)

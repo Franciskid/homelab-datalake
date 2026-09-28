@@ -1378,12 +1378,122 @@ AUTOMATION_RUNS = Dataset(
 )
 
 
+# --- Finance ------------------------------------------------------------------
+# The owner's own money, from the banking tracker. Amounts are signed (negative is money
+# out) and `*_home` figures are in the owner's home currency, converted by the tracker so
+# they match what the app shows. Type and category are separate questions: a Claude plan is
+# type `subscription`, category `technology`.
+
+FINANCE_TRANSACTIONS = Dataset(
+    name="finance_transactions",
+    table="marts.fct_finance_transaction",
+    kind="event",
+    date_column="booked_on",
+    description=(
+        "Every bank transaction, with category and type. One row each, with its account, "
+        "merchant, category (what it was for), category group, and type (purchase, "
+        "subscription, bill, income, refund, transfer). Spending and income "
+        "exclude transfers between the owner's own accounts. Dated by the bank's booking "
+        "date, which for a card payment is usually a day or three after the purchase."
+    ),
+    dimensions=(
+        Dimension("account_name", "account_name", "The account, e.g. 'CIC EUR · d0fe'."),
+        Dimension("bank", "bank", "The bank the account is held at."),
+        Dimension("category", "category", "Category key: technology, groceries, transport, ..."),
+        Dimension("category_label", "category_label", "The category as the app labels it."),
+        Dimension("category_group", "category_group",
+                  "Section of the category: housing, tech, daily, mobility, leisure, health, "
+                  "finance, income, other."),
+        Dimension("transaction_type", "transaction_type",
+                  "purchase, subscription, bill, income, refund, or transfer."),
+        Dimension("type_source", "type_source",
+                  "manual when the owner set the type, derived when the tracker inferred it."),
+        Dimension("direction", "direction", "inflow or outflow."),
+        Dimension("merchant", "merchant", "Merchant or counterparty, as the tracker cleaned it."),
+        Dimension("currency", "currency", "The transaction's own currency."),
+        Dimension("transfer_kind", "transfer_kind",
+                  "For transfers: internal (between own accounts), external_in, external_out."),
+        Dimension("is_spending", "is_spending", "Money out that is not a transfer."),
+        Dimension("is_income", "is_income", "Money in that is not a transfer."),
+        Dimension("needs_review", "needs_review", "True when the tracker could not categorise it."),
+    ),
+    measures=(
+        Measure("transactions", "count(*)", "Number of transactions.", "transactions"),
+        Measure("spending", "round(-sum(amount_home) FILTER (WHERE is_spending), 2)",
+                "Money spent, in the home currency, as a positive figure. Excludes transfers.",
+                "home currency"),
+        Measure("income", "round(sum(amount_home) FILTER (WHERE is_income), 2)",
+                "Money received, in the home currency. Excludes transfers.", "home currency"),
+        Measure("net", "round(sum(amount_home) FILTER (WHERE transaction_type <> 'transfer'), 2)",
+                "Income minus spending, in the home currency.", "home currency"),
+        Measure("amount_home_total", "round(sum(amount_home), 2)",
+                "Signed sum of every row, transfers included, in the home currency.", "home currency"),
+        Measure("average_spend", "round(avg(-amount_home) FILTER (WHERE is_spending), 2)",
+                "Mean spend per spending transaction, in the home currency.", "home currency"),
+    ),
+    default_measures=("transactions", "spending", "income"),
+    attributes=(
+        Attribute("transaction_key", "transaction_key", "The tracker's transaction id."),
+        Attribute("booked_on", "booked_on", "The bank's booking date."),
+        Attribute("booked_month", "booked_month", "booked_on truncated to the month."),
+        Attribute("account_id", "account_id", "The tracker's account id."),
+        Attribute("amount", "amount", "Signed amount in the transaction's own currency."),
+        Attribute("amount_home", "amount_home", "Signed amount in the home currency."),
+        Attribute("transfer_category", "transfer_category",
+                  "For a transfer, what the money was for, when the owner said."),
+        Attribute("recurring_series_id", "recurring_series_id",
+                  "The subscription or bill series this charge belongs to, if any."),
+        Attribute("tags", "tags", "JSON array of the owner's tags."),
+        Attribute("notes", "notes", "The owner's free-text note."),
+    ),
+    default_fields=(
+        "booked_on", "merchant", "amount_home", "category_label", "transaction_type", "account_name",
+    ),
+    record_order="booked_on",
+)
+
+
+FINANCE_BALANCES = Dataset(
+    name="finance_balances",
+    table="marts.fct_finance_account_balance",
+    kind="snapshot",
+    date_column="balance_date",
+    description=(
+        "Each account's balance per day. In its own currency and the home currency. A "
+        "snapshot: a query returns the latest day on or before the end of the "
+        "range. Balances only -- property and investment positions are not included."
+    ),
+    dimensions=(
+        Dimension("account_name", "account_name", "The account."),
+        Dimension("bank", "bank", "The bank the account is held at."),
+        Dimension("account_type", "account_type", "checking, savings, credit, investment or cash."),
+        Dimension("role", "role", "savings, investment or mortgage, when the owner set one."),
+        Dimension("currency", "currency", "The account's own currency."),
+    ),
+    measures=(
+        Measure("accounts", "count(*)", "Number of accounts.", "accounts"),
+        Measure("balance_home_total", "round(sum(balance_home), 2)",
+                "Sum of balances in the home currency.", "home currency"),
+    ),
+    default_measures=("accounts", "balance_home_total"),
+    attributes=(
+        Attribute("balance_date", "balance_date", "The UTC day the balance was read."),
+        Attribute("account_id", "account_id", "The tracker's account id."),
+        Attribute("balance", "balance", "Balance in the account's own currency."),
+        Attribute("balance_home", "balance_home", "Balance in the home currency."),
+        Attribute("home_currency", "home_currency", "The owner's home currency."),
+    ),
+    default_fields=("balance_date", "account_name", "balance", "currency", "balance_home"),
+    record_order="balance_date",
+)
+
+
 DATASETS: dict[str, Dataset] = {
     d.name: d for d in (
         LLM_SPEND, WEB_TRAFFIC, CAMERA_ACTIVITY, MEDIA_LIBRARY, MEDIA_PLAYBACK,
         MEDIA_SERVER_ACTIVITY, MEDIA_SEARCHES, MEDIA_SEARCH_RESULTS,
         AI_GATEWAY_CALLS, AGENT_RUNS, AGENT_TOOL_CALLS, CONVERSATIONS, EMAIL_SENDS,
-        AUTOMATION_RUNS,
+        AUTOMATION_RUNS, FINANCE_TRANSACTIONS, FINANCE_BALANCES,
     )
 }
 

@@ -1,0 +1,31 @@
+version: 2
+
+models:
+  - name: fct_finance_transaction
+    description: Current transactions.
+    columns:
+      - name: transaction_key
+        description: The tracker's transaction id.
+        tests: [not_null, unique]
+      - name: booked_on
+        description: The bank's booking date.
+      - name: booked_month
+        description: booked_on truncated to the month.
+      - name: amount_home
+        description: Signed amount in the home currency; negative is money out.
+      - name: transaction_type
+        description: purchase, subscription, bill, income, refund or transfer.
+      - name: is_spending
+        description: Money out that is not a transfer between the owner's own accounts.
+      - name: is_income
+        description: Money in that is not a transfer between the owner's own accounts.
+  - name: fct_finance_account_balance
+    description: Daily account balances.
+    columns:
+      - name: balance_date
+        description: The UTC day the balance was read.
+        tests: [not_null]
+      - name: balance_home
+        description: The balance in the home currency.
+  - name: dim_finance_recurring_series
+    description: Subscriptions and bills.

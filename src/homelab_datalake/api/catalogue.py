@@ -184,6 +184,7 @@ _RAW_INGEST_ASSET = {
     "radarr": "radarr_raw",
     "sonarr": "sonarr_raw",
     "jellyseerr": "jellyseerr_raw",
+    "banking_tracker": "finance_raw",
 }
 
 

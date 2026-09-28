@@ -1,0 +1,33 @@
+version: 2
+
+models:
+  - name: stg_finance_transactions
+    description: Current transactions.
+    columns:
+      - name: transaction_id
+        description: The tracker's transaction id.
+        tests: [not_null, unique]
+      - name: booked_on
+        description: The bank's booking date.
+      - name: amount
+        description: Signed amount in the transaction's currency; negative is money out.
+      - name: amount_home
+        description: The same amount in the owner's home currency, converted by the tracker.
+      - name: transaction_type
+        description: purchase, subscription, bill, income, refund or transfer.
+        tests:
+          - accepted_values: {values: ['purchase', 'subscription', 'bill', 'income', 'refund', 'transfer']}
+      - name: category_group
+        description: The picker section the category belongs to (housing, tech, daily, ...).
+  - name: stg_finance_accounts
+    description: Current accounts.
+    columns:
+      - name: account_id
+        description: The tracker's account id.
+        tests: [not_null, unique]
+  - name: stg_finance_recurring_series
+    description: Subscriptions and bills.
+    columns:
+      - name: series_id
+        description: The tracker's series id.
+        tests: [not_null, unique]

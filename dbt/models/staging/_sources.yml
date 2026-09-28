@@ -2078,3 +2078,19 @@ sources:
             description: When the user's account was created.
           - name: updated_at
             description: When the user's record last changed.
+      - name: finance_transactions
+        description: >
+          The banking tracker's transactions as a ledger: every version of every row, as
+          text, with _version_hash, _first_seen_at and _last_seen_at. Landed hourly by
+          assets/finance.py from the tracker's own export, so type, category group and
+          home-currency amount are what the app shows.
+      - name: finance_accounts
+        description: The tracker's accounts as a ledger. Balances are not versioned here; see finance_account_balances.
+      - name: finance_recurring_series
+        description: Subscriptions and bills the tracker detected, as a ledger.
+      - name: finance_categories
+        description: The category catalogue and each category's picker group, as a ledger.
+      - name: finance_account_balances
+        description: >
+          Each account's balance per day read, in its own currency and the home currency.
+          Rewritten by every run that day, so a day holds its last reading.
