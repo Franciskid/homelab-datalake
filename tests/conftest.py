@@ -586,6 +586,54 @@ FROM (SELECT i::INTEGER AS i FROM range(0, 70) t(i));
 """
 
 
+_FINANCE_TRANSACTIONS = """
+CREATE OR REPLACE TABLE marts.fct_finance_transaction AS
+SELECT
+    'tx' || i AS transaction_key,
+    (DATE '2026-09-01' + (i % 14)) AS booked_on,
+    DATE '2026-09-01' AS booked_month,
+    'acc-' || (i % 3) AS account_id,
+    'Account ' || (i % 3) AS account_name,
+    CASE WHEN i % 3 = 0 THEN 'CIC' ELSE 'Revolut' END AS bank,
+    'Merchant ' || (i % 7) AS merchant,
+    CASE WHEN i % 5 = 0 THEN 100.0 + i ELSE -(10.0 + i) END AS amount,
+    'EUR' AS currency,
+    CASE WHEN i % 5 = 0 THEN 100.0 + i ELSE -(10.0 + i) END AS amount_home,
+    CASE WHEN i % 5 = 0 THEN 'inflow' ELSE 'outflow' END AS direction,
+    CASE WHEN i % 4 = 0 THEN 'technology' ELSE 'groceries' END AS category,
+    CASE WHEN i % 4 = 0 THEN 'Technology' ELSE 'Groceries' END AS category_label,
+    CASE WHEN i % 4 = 0 THEN 'tech' ELSE 'daily' END AS category_group,
+    NULL::VARCHAR AS transfer_category,
+    CASE WHEN i % 5 = 0 THEN 'income' WHEN i % 4 = 0 THEN 'subscription'
+         WHEN i % 9 = 0 THEN 'transfer' ELSE 'purchase' END AS transaction_type,
+    'derived' AS type_source,
+    CASE WHEN i % 9 = 0 THEN 'internal' END AS transfer_kind,
+    CASE WHEN i % 4 = 0 THEN 'series-1' END AS recurring_series_id,
+    (i % 11 = 0) AS needs_review,
+    '[]' AS tags,
+    NULL::VARCHAR AS notes,
+    (i % 5 <> 0 AND i % 9 <> 0) AS is_spending,
+    (i % 5 = 0 AND i % 9 <> 0) AS is_income
+FROM (SELECT i::INTEGER AS i FROM range(0, 80) t(i));
+"""
+
+_FINANCE_BALANCES = """
+CREATE OR REPLACE TABLE marts.fct_finance_account_balance AS
+SELECT
+    (DATE '2026-09-01' + (i % 14)) AS balance_date,
+    'acc-' || (i % 3) AS account_id,
+    'Account ' || (i % 3) AS account_name,
+    CASE WHEN i % 3 = 0 THEN 'CIC' ELSE 'Revolut' END AS bank,
+    'checking' AS account_type,
+    NULL::VARCHAR AS role,
+    'EUR' AS currency,
+    1000.0 + i AS balance,
+    'EUR' AS home_currency,
+    1000.0 + i AS balance_home
+FROM (SELECT i::INTEGER AS i FROM range(0, 42) t(i));
+"""
+
+
 def build_marts(path: str) -> None:
     con = duckdb.connect(path)
     con.execute("SET TimeZone='UTC';")
@@ -594,7 +642,7 @@ def build_marts(path: str) -> None:
         _LLM, _HTTP, _CAMERA, _LIBRARY, _JELLYFIN_PLAYBACK, _JELLYFIN_ACTIVITY,
         _JELLYFIN_SEARCHES, _JELLYFIN_SEARCH_RESULTS,
         _AI_GATEWAY_CALLS, _AGENT_RUNS, _AGENT_TOOL_CALLS, _CONVERSATION_MESSAGES,
-        _EMAIL_SENDS, _AUTOMATION_RUNS,
+        _EMAIL_SENDS, _AUTOMATION_RUNS, _FINANCE_TRANSACTIONS, _FINANCE_BALANCES,
     ):
         con.execute(statement)
     con.close()

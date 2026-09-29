@@ -24,6 +24,7 @@ which runs the data pipelines, also hosts the AI platform's automation jobs.
 | Prometheus | Every raw sample it scrapes, streamed every minute: host, containers, GPU, the LLM gateway, and the status page's view of the other machines. | How the machines and services behaved at any moment, joined to what they were doing. |
 | Radarr, Sonarr, Jellyseerr | Requests, grabs, imports and the files they produced, with every version of each row. | How long a request takes to become watchable, and what was downloaded for it. |
 | Host logs and Keycloak | The server's journal and auth.log, and every sign-in across the single sign-on apps. | Who signed in where and when, and what the host was doing. |
+| Banking tracker | Accounts, every transaction with its category and type, recurring subscriptions and bills, and each account's daily balance, from the tracker's own export, every hour. Every version of a transaction is kept. | Where the money goes by category, type or merchant, what the subscriptions cost, and how balances move. |
 
 The datalake works with records and metadata. Camera recordings stay with the
 camera application, and media files stay with Jellyfin.

@@ -20,9 +20,15 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends git systemd \
  && rm -rf /var/lib/apt/lists/*
 
+# The lock first, on its own layer, so a code change does not reinstall every package.
+# Then the project itself with --no-deps: its dependencies are exactly the locked ones,
+# and `pip check` fails the build if pyproject.toml asks for something the lock lacks.
+COPY requirements.lock ./
+RUN pip install --no-cache-dir -r requirements.lock
+
 COPY pyproject.toml README.md ./
 COPY src ./src
-RUN pip install --no-cache-dir -e ".[geo]"
+RUN pip install --no-cache-dir --no-deps -e ".[geo]" && pip check
 
 COPY dbt ./dbt
 # Resolve dbt packages at build time. Installing them at runtime means every image

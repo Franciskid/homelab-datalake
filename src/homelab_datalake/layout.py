@@ -493,6 +493,42 @@ _STREAMED_RAW: tuple[Dataset, ...] = (
 
 RAW_DATASETS = RAW_DATASETS + _STREAMED_RAW
 
+# --------------------------------------------------------------------------------
+# finance, added 2026-09-29: the banking tracker's ledger (assets/finance.py)
+# --------------------------------------------------------------------------------
+#
+# Its own domain: nobody reads personal accounts beside proxy logs or model spend. Appended
+# after the other sections for the same merge reason they are.
+
+DOMAIN_FINANCE = "finance"
+
+_FINANCE_RAW: tuple[Dataset, ...] = (
+    _raw("finance_accounts", DOMAIN_FINANCE, "banking_tracker", "accounts",
+         "Bank and manual accounts, every version.", partition_column=None),
+    _raw("finance_transactions", DOMAIN_FINANCE, "banking_tracker", "transactions",
+         ("Every transaction with its category, type and home-currency amount, every "
+          "version: a recategorised or deleted transaction keeps its history."),
+         partition_column=None),
+    _raw("finance_recurring_series", DOMAIN_FINANCE, "banking_tracker", "recurring_series",
+         "Subscriptions and bills the tracker detected, every version.", partition_column=None),
+    _raw("finance_categories", DOMAIN_FINANCE, "banking_tracker", "categories",
+         "The category catalogue and the picker group each belongs to.", partition_column=None),
+    _raw("finance_account_balances", DOMAIN_FINANCE, "banking_tracker", "account_balances",
+         "Each account's balance, in its own and the home currency, per day read."),
+)
+
+_FINANCE_MARTS: tuple[Dataset, ...] = (
+    _mart("fct_finance_transaction", DOMAIN_FINANCE, "fct_finance_transaction",
+          "One row per current transaction, with account, category group and type.", None),
+    _mart("fct_finance_account_balance", DOMAIN_FINANCE, "fct_finance_account_balance",
+          "Each account's balance per day, in the home currency.", None),
+    _mart("dim_finance_recurring_series", DOMAIN_FINANCE, "dim_finance_recurring_series",
+          "Current subscriptions and bills, active or ended.", None),
+)
+
+RAW_DATASETS = RAW_DATASETS + _FINANCE_RAW
+MART_DATASETS = MART_DATASETS + _FINANCE_MARTS
+
 ALL_DATASETS: tuple[Dataset, ...] = RAW_DATASETS + CURATED_DATASETS + MART_DATASETS
 
 _BY_TABLE = {d.table: d for d in ALL_DATASETS}

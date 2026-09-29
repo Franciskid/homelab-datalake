@@ -98,6 +98,9 @@ services:
     environment:
       # Prometheus's published port, reached from this container over the LAN address.
       PROMETHEUS_URL: ${PROMETHEUS_URL:-http://192.168.1.26:9090}
+      # The banking tracker's backend, published on the host like Prometheus. Its service key
+      # (FINANCE_INTERNAL_KEY) comes from .env. See assets/finance.py.
+      FINANCE_EXPORT_URL: ${FINANCE_EXPORT_URL:-http://192.168.1.26:4001/internal/finance/export}
 
   # Keycloak SSO in front of the Dagster UI.
   #
@@ -283,6 +286,9 @@ services:
     environment:
       # Prometheus's published port, reached from this container over the LAN address.
       PROMETHEUS_URL: ${PROMETHEUS_URL:-http://192.168.1.26:9090}
+      # The banking tracker's backend, published on the host like Prometheus. Its service key
+      # (FINANCE_INTERNAL_KEY) comes from .env. See assets/finance.py.
+      FINANCE_EXPORT_URL: ${FINANCE_EXPORT_URL:-http://192.168.1.26:4001/internal/finance/export}
 
 volumes:
   dagster_home:

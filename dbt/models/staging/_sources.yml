@@ -2078,3 +2078,172 @@ sources:
             description: When the user's account was created.
           - name: updated_at
             description: When the user's record last changed.
+      - name: finance_transactions
+        description: >
+          The banking tracker's transactions as a ledger: every version of every row, as
+          text, with _version_hash, _first_seen_at and _last_seen_at. Landed hourly by
+          assets/finance.py from the tracker's own export, so type, category group and
+          home-currency amount are what the app shows.
+        columns:
+          - name: transaction_id
+            description: The tracker's transaction id.
+          - name: booked_on
+            description: The bank's booking date.
+          - name: account_id
+            description: The tracker's account id.
+          - name: account_name
+            description: The account's name in the tracker.
+          - name: merchant
+            description: The counterparty, as the bank labels it.
+          - name: amount
+            description: Signed amount in the transaction's currency; negative is money out.
+          - name: currency
+            description: ISO code of the currency the amounts on this row are in.
+          - name: amount_home
+            description: Signed amount in the home currency, converted by the tracker; negative is money out.
+          - name: direction
+            description: inflow or outflow.
+          - name: category
+            description: What the money was for, as a category key (groceries, technology, internet...).
+          - name: category_label
+            description: The category's display name.
+          - name: category_group
+            description: The picker section the category belongs to (housing, tech, daily, ...).
+          - name: transfer_category
+            description: What a transfer paid for, when the owner said (travel, shopping...).
+          - name: type
+            description: purchase, subscription, bill, income, refund or transfer.
+          - name: type_source
+            description: manual when the owner picked the type, derived when the tracker inferred it.
+          - name: transfer_kind
+            description: internal, external_in or external_out for a detected transfer, else null.
+          - name: recurring_series_id
+            description: The subscription or bill series this charge belongs to, if any.
+          - name: needs_review
+            description: The tracker wants the owner to check this transaction.
+          - name: tags
+            description: The owner's tags, as a JSON array of labels.
+          - name: notes
+            description: The owner's note on the transaction.
+          - name: _version_hash
+            description: Hash of the row's tracked values; a new hash is a new version.
+          - name: _first_seen_at
+            description: When the lake first saw this version of the row.
+          - name: _last_seen_at
+            description: When the lake last saw this version of the row in an export.
+      - name: finance_accounts
+        description: The tracker's accounts as a ledger. Balances are not versioned here; see finance_account_balances.
+        columns:
+          - name: account_id
+            description: The tracker's account id.
+          - name: account_name
+            description: The account's name in the tracker.
+          - name: bank
+            description: The bank or broker holding the account.
+          - name: account_type
+            description: checking, savings, credit or investment.
+          - name: role
+            description: What the owner uses the account for (savings, investment, mortgage), if set.
+          - name: currency
+            description: ISO code of the currency the amounts on this row are in.
+          - name: balance
+            description: The balance in the account's own currency.
+          - name: balance_home
+            description: The balance converted to the home currency by the tracker.
+          - name: source
+            description: synced from a bank connection, or manual.
+          - name: account_group
+            description: The heading the app lists the account under, usually its bank.
+          - name: opened_at
+            description: When the account was opened, when the tracker knows.
+          - name: _version_hash
+            description: Hash of the row's tracked values; a new hash is a new version.
+          - name: _first_seen_at
+            description: When the lake first saw this version of the row.
+          - name: _last_seen_at
+            description: When the lake last saw this version of the row in an export.
+      - name: finance_recurring_series
+        description: Subscriptions and bills the tracker detected, as a ledger.
+        columns:
+          - name: series_id
+            description: The tracker's series id.
+          - name: series_name
+            description: The subscription or bill's name.
+          - name: type
+            description: subscription or bill.
+          - name: status
+            description: active, or ended when a charge its cadence expected never came.
+          - name: category
+            description: Category key of the series' charges.
+          - name: account_id
+            description: The tracker's account id.
+          - name: account_name
+            description: The account's name in the tracker.
+          - name: frequency
+            description: monthly, quarterly or annual.
+          - name: currency
+            description: ISO code of the currency the amounts on this row are in.
+          - name: predicted_next_amount
+            description: The expected next charge, in the series currency.
+          - name: monthly_projected_amount
+            description: The charge spread over one month, in the series currency.
+          - name: monthly_projected_home
+            description: The monthly projection in the home currency.
+          - name: next_due_date
+            description: When the next charge is expected.
+          - name: first_seen
+            description: Date of the first charge in the series.
+          - name: last_seen
+            description: Date of the latest charge in the series.
+          - name: charge_count
+            description: How many charges the series holds.
+          - name: _version_hash
+            description: Hash of the row's tracked values; a new hash is a new version.
+          - name: _first_seen_at
+            description: When the lake first saw this version of the row.
+          - name: _last_seen_at
+            description: When the lake last saw this version of the row in an export.
+      - name: finance_categories
+        description: The category catalogue and each category's picker group, as a ledger.
+        columns:
+          - name: category_key
+            description: The category key transactions carry.
+          - name: category_label
+            description: The category's display name.
+          - name: kind
+            description: expense, income, housing, investment, tax or transfer.
+          - name: category_group
+            description: The picker section the category belongs to (housing, tech, daily, ...).
+          - name: _version_hash
+            description: Hash of the row's tracked values; a new hash is a new version.
+          - name: _first_seen_at
+            description: When the lake first saw this version of the row.
+          - name: _last_seen_at
+            description: When the lake last saw this version of the row in an export.
+      - name: finance_account_balances
+        description: >
+          Each account's balance per day read, in its own currency and the home currency.
+          Rewritten by every run that day, so a day holds its last reading.
+        columns:
+          - name: dt
+            description: The UTC day the balance was read.
+          - name: captured_at
+            description: When the balance was read from the tracker.
+          - name: account_id
+            description: The tracker's account id.
+          - name: account_name
+            description: The account's name in the tracker.
+          - name: bank
+            description: The bank or broker holding the account.
+          - name: account_type
+            description: checking, savings, credit or investment.
+          - name: role
+            description: What the owner uses the account for (savings, investment, mortgage), if set.
+          - name: currency
+            description: ISO code of the currency the amounts on this row are in.
+          - name: balance
+            description: The balance in the account's own currency.
+          - name: home_currency
+            description: The owner's home currency, e.g. EUR.
+          - name: balance_home
+            description: The balance converted to the home currency by the tracker.
