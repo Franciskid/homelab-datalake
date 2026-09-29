@@ -37,6 +37,8 @@ dbt/target/
 dbt/dbt_packages/
 dbt/logs/
 package-lock.yml
+# dbt's own lock is kept: it pins dbt_utils the way requirements.lock pins Python.
+!dbt/package-lock.yml
 dbt/.user.yml
 
 # Generated workbooks. These contain real figures from the warehouse and are

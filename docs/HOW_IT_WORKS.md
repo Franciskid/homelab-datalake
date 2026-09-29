@@ -160,7 +160,8 @@ The files are in `src/homelab_datalake/assets/`.
 | `publish.py` | `lake_curated`, `lake_marts` | `curated/*` and `marts/*` in the lake |
 | `warehouse.py` | `warehouse_serving` | `serving.duckdb` |
 
-The job `analytics_daily` runs steps 2 to 5. It runs at 04:15 UTC each day.
+The job `analytics_daily` runs steps 2 to 5. Despite its name it runs every hour, at
+:55 UTC, after the last hourly source lands.
 
 ### How a publish replaces
 

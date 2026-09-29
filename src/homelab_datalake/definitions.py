@@ -6,8 +6,9 @@ The schedules build *yesterday* at 03:00, after logrotate has moved. Building
 today's partition on a schedule would produce a partial day that a later run would
 have to correct, which is exactly the ambiguity daily partitions exist to remove.
 
-The sources land between 03:00 and 03:45, and `analytics_daily` at 04:15 turns them
-into marts and publishes the serving copy. That last job is what makes the numbers
+The nightly sources land between 03:00 and 03:45, the hourly ones through each hour,
+and `analytics_daily` at :55 every hour turns them into marts and publishes the serving
+copy. That last job is what makes the numbers
 the MCP layer serves the same age as the data underneath -- before it existed the
 sources refreshed nightly and the marts refreshed whenever somebody remembered to
 run dbt, which is a way of being wrong that never announces itself.
@@ -128,7 +129,7 @@ ai_platform_snapshot_job = define_asset_job(
     default_status=DefaultScheduleStatus.STOPPED,
     description=(
         "Today's snapshot of every AI-platform config/entity table at 05:00 UTC, "
-        "after the existing 03:xx sources and the 04:15 analytics build."
+        "after the existing 03:xx sources and the 03:55 analytics build."
     ),
 )
 def ai_platform_snapshot_schedule(context: ScheduleEvaluationContext):
@@ -489,17 +490,18 @@ analytics_job = define_asset_job(
 
 @schedule(
     job=analytics_job,
-    cron_schedule="15 4 * * *",
+    cron_schedule="55 * * * *",
     default_status=DefaultScheduleStatus.STOPPED,
     description=(
-        "04:15 UTC, after the last source lands at 03:45. Half an hour of slack rather "
-        "than the couple of minutes the runs actually take: a retry on a slow source "
-        "should still finish before the marts are built, and a mart built from a "
-        "partition that had not landed yet is silently short by a day."
+        "Hourly at :55, after the last hourly source (finance, :50), so the marts are "
+        "never more than an hour behind what landed. The nightly sources are done by "
+        "03:45 and picked up at 03:55. A run takes about eight minutes and the MCP "
+        "reads the published serving copy, so an hourly rebuild never blocks a reader. "
+        "The job keeps its old name: renaming it would orphan its run history."
     ),
 )
 def analytics_daily_schedule(context: ScheduleEvaluationContext):
-    yield RunRequest(run_key=f"analytics-{context.scheduled_execution_time:%Y-%m-%d}")
+    yield RunRequest(run_key=f"analytics-{context.scheduled_execution_time:%Y-%m-%dT%H}")
 
 
 @run_failure_sensor(
