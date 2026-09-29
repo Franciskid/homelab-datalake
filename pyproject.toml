@@ -22,6 +22,10 @@ dependencies = [
     # this file only asks for `dagster>=1.9`. Bump this and the dagster pins in
     # apps/dagster-automations/ together, or not at all.
     "dagster-postgres==0.29.20",
+    # dagster 1.13's Postgres run storage breaks on SQLAlchemy 2.1: every run launch
+    # fails on `NOTIFY $1` and the webserver's GraphQL answers "connection is closed".
+    # Nothing else pins it, so a plain rebuild picked 2.1 up. Lift with the dagster bump.
+    "sqlalchemy>=2.0,<2.1",
     "dbt-core>=1.9",
     "dbt-duckdb>=1.9",
     "duckdb>=1.1",
