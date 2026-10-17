@@ -182,6 +182,18 @@ def inventory(storage: LakeStorage, prefix: str) -> dict[str, Object]:
     return found
 
 
+def _comparable_etag(etag: str | None) -> bool:
+    """Whether an ETag can be compared with another object's at all.
+
+    An S3 ETag is the object's MD5 only while the object arrived in one part. A
+    multipart upload gets `<md5 of the part md5s>-<part count>` instead, which depends
+    on how the *upload* was chunked rather than on the bytes. Two identical objects
+    written with different part sizes therefore carry different ETags, and so do an
+    object and a server-side copy of itself.
+    """
+    return etag is not None and "-" not in etag
+
+
 def _same(left: Object, right: Object) -> bool:
     """Whether the backup already holds these bytes.
 
@@ -189,10 +201,26 @@ def _same(left: Object, right: Object) -> bool:
     partition is replaced by a whole new PUT, never edited -- so a key that matches on
     both is the object, and comparing content would mean downloading the lake nightly
     to learn nothing.
+
+    Which makes size the load-bearing half and the ETag a bonus, and that order
+    matters, because the ETag is not always available to compare. It is absent on the
+    local backend. It is also *incomparable* whenever either side was uploaded in
+    parts: `_copy` below hands the copy to MinIO, which re-chunks it, so a 68 MB
+    partition that arrived in nine parts and reads `fb8ec0bd...-9` in the lake reads a
+    plain MD5 in the backup. Comparing those two can only ever return False.
+
+    That is not a hypothetical. Until 2026-10-17 this function compared them anyway,
+    so every object above the multipart threshold was judged different from its own
+    copy and re-copied on every run -- hourly, for ever. The lake's 3.9 GB of
+    Prometheus partitions had become 133 GB of backup, almost all of it versions of
+    objects that had not changed since September, and the boot disk was taking ~3 GB
+    an hour of writes to keep it that way. Nothing reported a fault: the mirror was
+    doing exactly what it was told, and `copied` is not a number anybody watches for
+    being too high.
     """
     if left.size != right.size:
         return False
-    if left.etag is None or right.etag is None:
+    if not _comparable_etag(left.etag) or not _comparable_etag(right.etag):
         return True
     return left.etag == right.etag
 
