@@ -102,6 +102,45 @@ def test_a_replaced_partition_is_copied_again(lake, vault):
     assert backup.inventory(vault, "raw")[key].size == backup.inventory(lake, "raw")[key].size
 
 
+def _obj(key: str, size: int, etag: str | None) -> backup.Object:
+    return backup.Object(key=key, size=size, modified=datetime(2026, 9, 15, tzinfo=UTC), etag=etag)
+
+
+# `_same` is tested here directly rather than through `mirror`, because the local
+# backend reports no ETag at all -- which is why the bug below survived a suite that
+# otherwise covers this module well. These three cases are the S3 branch.
+
+
+def test_a_multipart_object_is_not_copied_again_for_its_etag():
+    """The bug that turned 3.9 GB of lake into 133 GB of backup.
+
+    `_copy` is a server-side copy and MinIO re-chunks what it copies, so a partition
+    uploaded in nine parts reads `<hash>-9` in the lake and a plain MD5 in the backup.
+    Comparing the two returns False every time, so the object was re-copied every run
+    -- hourly, for ever, with versioning keeping each copy.
+    """
+    key = "raw/infrastructure/prometheus/samples/dt=2026-09-15/data.parquet"
+    lake_side = _obj(key, 67_915_373, "fb8ec0bdca8c0e36328ad33a8b1fe4ba-9")
+    backup_side = _obj(key, 67_915_373, "e4c8202469b45c1610537ca4d23b8951")
+    assert backup._same(lake_side, backup_side)
+
+
+def test_a_single_part_object_is_still_compared_on_its_etag():
+    """Where the ETag *is* the MD5, it still has to be able to say "different"."""
+    key = "raw/infrastructure/npm/access/host=fraserv/dt=2026-09-15/data.parquet"
+    assert backup._same(_obj(key, 2048, "a" * 32), _obj(key, 2048, "a" * 32))
+    assert not backup._same(_obj(key, 2048, "a" * 32), _obj(key, 2048, "b" * 32))
+
+
+def test_size_is_the_half_that_always_applies():
+    """Whatever the ETags say, a different length is a different object."""
+    key = "raw/infrastructure/prometheus/samples/dt=2026-09-15/data.parquet"
+    assert not backup._same(
+        _obj(key, 67_915_373, "fb8ec0bdca8c0e36328ad33a8b1fe4ba-9"),
+        _obj(key, 12_345, "e4c8202469b45c1610537ca4d23b8951"),
+    )
+
+
 def test_the_backup_bucket_is_created_if_it_is_not_there(lake, vault):
     _land(lake, "npm_access", "2026-08-01")
     assert backup.inventory(vault, "raw") == {}
