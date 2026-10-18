@@ -1201,9 +1201,15 @@ models:
       - name: rule_id
         description: >
           The rule inside the zone that fired. Joins to dim_camera_zone; it landed in raw from
-          the first partition and was never surfaced until now.
+          the first partition and was never surfaced until now. One exception: the gate
+          movement the local comparator restored by hand on 10 Oct 2026 (state_source
+          `local_comparator_repair`) carries the placeholder `comparator-repair`, which is
+          no rule of any zone. It is kept as the camera wrote it and left out of the join test.
         tests:
-          - relationships: {to: ref('dim_camera_zone'), field: rule_id}
+          - relationships:
+              to: ref('dim_camera_zone')
+              field: rule_id
+              config: {where: "state_source is distinct from 'local_comparator_repair'"}
       - name: is_dismissed
         description: >
           Whether the camera marked the event dismissed outright, rather than it being
