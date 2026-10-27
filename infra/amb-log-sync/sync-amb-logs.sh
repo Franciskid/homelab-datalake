@@ -20,6 +20,8 @@ CREDENTIALS_FILE="${AMB_LOG_SYNC_CREDENTIALS_FILE:-/etc/amb-log-sync/credentials
 ENDPOINT="${AMB_LOG_SYNC_ENDPOINT:-https://s3.homelab.fraserv.fr}"
 BUCKET="${AMB_LOG_SYNC_BUCKET:-datalake}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# What the last successful run uploaded, one `sha256sum` line per file.
+STATE_FILE="${AMB_LOG_SYNC_STATE_FILE:-$SCRIPT_DIR/uploaded.sha256}"
 
 if [[ ! -d "$LOG_DIR" ]]; then
   echo "amb-log-sync: $LOG_DIR not found" >&2
@@ -45,6 +47,30 @@ source "$CREDENTIALS_FILE"   # sets AMB_LOG_SYNC_ACCESS_KEY / AMB_LOG_SYNC_SECRE
 : "${AMB_LOG_SYNC_ACCESS_KEY:?not set in $CREDENTIALS_FILE}"
 : "${AMB_LOG_SYNC_SECRET_KEY:?not set in $CREDENTIALS_FILE}"
 
+# Only the files whose bytes changed since the last successful run. The bucket is
+# versioned, so re-sending an unchanged rotated log every hour kept a copy of it
+# each time -- 45 GB of identical NPM logs by 27 Oct 2026. The key cannot read the
+# bucket to compare against it, so the comparison is against what this host last
+# sent. Losing the state file costs one full upload, nothing more.
+touch "$STATE_FILE"
+current=()
+changed=()
+for f in "$LOG_DIR"/*_access.log "$LOG_DIR"/*_access.log.*; do
+  [[ -e "$f" ]] || continue
+  line=$(sha256sum "$f")
+  current+=("$line")
+  grep -qxF -- "$line" "$STATE_FILE" || changed+=("$(basename "$f")")
+done
+
+if [[ ${#current[@]} -eq 0 ]]; then
+  echo "amb-log-sync: no access logs found under $LOG_DIR -- check AMB_NPM_LOG_DIR" >&2
+  exit 1
+fi
+if [[ ${#changed[@]} -eq 0 ]]; then
+  echo "amb-log-sync: ${#current[@]} file(s), none changed since the last upload"
+  exit 0
+fi
+
 # mc's non-interactive alias form: MC_HOST_<alias>=https://KEY:SECRET@host. Never
 # passed as a CLI argument (so never in `ps`), never echoed, never written to a
 # file inside the container -- it lives only in this one environment variable,
@@ -55,4 +81,8 @@ docker run --rm \
   -e "MC_HOST_lake=https://${AMB_LOG_SYNC_ACCESS_KEY}:${AMB_LOG_SYNC_SECRET_KEY}@${ENDPOINT#https://}" \
   -e "AMB_LOG_SYNC_BUCKET=${BUCKET}" \
   --entrypoint sh \
-  minio/mc:latest /mirror-inner.sh
+  minio/mc:latest /mirror-inner.sh "${changed[@]}"
+
+# Recorded only after every upload succeeded (set -e stops before this otherwise),
+# so a failed run is retried in full next hour.
+printf '%s\n' "${current[@]}" > "$STATE_FILE"

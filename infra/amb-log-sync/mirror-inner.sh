@@ -8,8 +8,8 @@
 # destination, which means listing the destination -- and the key this container
 # authenticates as can only PutObject on inbox/npm/amb/* (see minio-policy.json):
 # no ListBucket, no GetObject, no DeleteObject. A plain `cp` per file needs none of
-# that; the trade is re-uploading everything every run rather than only what
-# changed, which at amb's log volume (tens of MB) costs seconds, not minutes.
+# that. Which files changed is decided outside, by sync-amb-logs.sh, and passed as
+# arguments; with no arguments every log is uploaded.
 #
 # ash/dash-compatible on purpose: this is the shell minio/mc's image actually has.
 set -eu
@@ -22,7 +22,12 @@ count=0
 # datalake side: the live file and every rotated generation, `.gz` included. A
 # glob that matches nothing expands to itself when nullglob is unavailable in this
 # shell, hence the `[ -e "$f" ]` guard rather than trusting the loop to skip it.
-for f in /logs/*_access.log /logs/*_access.log.*; do
+if [ "$#" -eq 0 ]; then
+    set -- /logs/*_access.log /logs/*_access.log.*
+fi
+
+for f in "$@"; do
+    case "$f" in /*) ;; *) f="/logs/$f" ;; esac
     [ -e "$f" ] || continue
     name=$(basename "$f")
     case "$name" in
