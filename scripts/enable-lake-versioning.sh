@@ -15,7 +15,9 @@
 #      others are the nightly mirror (lake_backup) and scripts/restore-lake.sh.
 #   3. Add the lifecycle rules that stop those old versions accumulating for ever: 30
 #      days for everything, 1 day under raw/infrastructure/prometheus/, whose minute
-#      parts are deleted by compaction within a day of being written.
+#      parts are deleted by compaction within a day of being written, and 1 day under
+#      curated/, marts/ and inbox/, which are rewritten every hour. The backup bucket
+#      keeps 7 days: it mirrors raw/, whose history the lake already keeps.
 #
 # NOBODY NEEDS TO KNOW THE ROOT PASSWORD
 #
@@ -139,7 +141,28 @@ STREAM_RULE = {
     "Filter": {"Prefix": "raw/infrastructure/prometheus/"},
     "NoncurrentVersionExpiration": {"NoncurrentDays": 1},
 }
-RULES = [RULE, STREAM_RULE]
+# curated/ and marts/ are rebuilt from raw/ by analytics_hourly, every partition every
+# hour. Under the 30-day rule each rebuild stayed as a non-current copy for a month:
+# 280 GB of a 22 GB lake by 27 Oct 2026, and the host's root disk at 99%. They are
+# derivations -- the recovery for one is re-running the job -- so a day of history is
+# enough to compare against yesterday. inbox/ is a mirror of logs that still exist on
+# the host that sends them, re-uploaded every hour.
+DERIVED_RULES = [
+    {
+        "ID": f"expire-noncurrent-{prefix.rstrip('/')}",
+        "Status": "Enabled",
+        "Filter": {"Prefix": prefix},
+        "NoncurrentVersionExpiration": {"NoncurrentDays": 1},
+    }
+    for prefix in ("curated/", "marts/", "inbox/")
+]
+RULES = [RULE, STREAM_RULE, *DERIVED_RULES]
+# The mirror only ever holds raw/, whose own history the lake already keeps for 30
+# days. A week of the mirror's history covers a bad copy without keeping a second
+# month of every partition that is rewritten during its day (host journals: 49 GB).
+BACKUP_RULE = {**RULE, "NoncurrentVersionExpiration": {"NoncurrentDays": 7}}
+BACKUP_RULES = [BACKUP_RULE, STREAM_RULE]
+RULES_FOR = {lake.bucket: RULES, BUCKETS[1]: BACKUP_RULES}
 
 plans = {}
 for name in BUCKETS:
@@ -150,7 +173,8 @@ for name in BUCKETS:
     # Existing rules are kept. put_bucket_lifecycle_configuration replaces rather
     # than merges, so writing only ours would silently drop one somebody added for
     # another reason.
-    merged = [r for r in existing if r.get("ID") not in {r["ID"] for r in RULES}] + RULES
+    wanted = RULES_FOR[name]
+    merged = [r for r in existing if r.get("ID") not in {r["ID"] for r in wanted}] + wanted
     for rule in merged:
         if "Expiration" in rule:
             raise SystemExit(
@@ -166,7 +190,7 @@ for name in BUCKETS:
     if name in missing:
         print(f"    create bucket   {name}")
     print(f"    versioning      {name}: Enabled")
-    for rule in RULES:
+    for rule in RULES_FOR[name]:
         print(f"    lifecycle       {name}: {json.dumps(rule)}")
 
 if os.environ.get("VERSIONING_MODE") != "apply":
@@ -192,8 +216,10 @@ for name in BUCKETS:
     rules = root.get_bucket_lifecycle_configuration(Bucket=name)["Rules"]
     if status != "Enabled":
         raise SystemExit(f"FAIL versioning on {name} is {status!r} after the change")
-    for wanted in RULES:
-        if not any(r.get("ID") == wanted["ID"] for r in rules):
+    for wanted in RULES_FOR[name]:
+        held = next((r for r in rules if r.get("ID") == wanted["ID"]), None)
+        days = (held or {}).get("NoncurrentVersionExpiration", {}).get("NoncurrentDays")
+        if days != wanted["NoncurrentVersionExpiration"]["NoncurrentDays"]:
             raise SystemExit(f"FAIL lifecycle rule {wanted['ID']} is not on {name} after the change")
     print(f"OK    {name}: versioning Enabled, {len(rules)} lifecycle rule(s)")
 

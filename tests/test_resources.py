@@ -107,3 +107,87 @@ def test_write_bytes_overwrites_an_existing_object(tmp_path):
     lake.write_bytes("k", b"first")
     lake.write_bytes("k", b"second-value")
     assert (tmp_path / "k").read_bytes() == b"second-value"
+
+
+# --------------------------------------------------------------------------------
+# an unchanged object is left alone: the bucket is versioned, so a PUT of the same
+# bytes keeps a needless copy (35 GB a day on fraserv before this existed)
+# --------------------------------------------------------------------------------
+
+
+def test_rewriting_identical_bytes_leaves_the_file_untouched(tmp_path):
+    lake = LakeStorage(local_root=str(tmp_path))
+    lake.write_bytes("k", b"same")
+    before = (tmp_path / "k").stat().st_ino
+    assert lake.write_bytes("k", b"same") == 4
+    assert (tmp_path / "k").stat().st_ino == before
+
+
+class _FakeS3:
+    """head_object and put_object only, with the ETag MinIO gives a single PUT."""
+
+    class exceptions:
+        class ClientError(Exception):
+            pass
+
+    def __init__(self, etag=None, head_fails=False):
+        self.etag = etag
+        self.head_fails = head_fails
+        self.puts: list[str] = []
+
+    def head_object(self, Bucket, Key):
+        if self.head_fails or self.etag is None:
+            raise self.exceptions.ClientError("404")
+        return {"ETag": f'"{self.etag}"'}
+
+    def put_object(self, Bucket, Key, Body, **_):
+        self.puts.append(Key)
+
+
+def _s3_lake(monkeypatch, fake):
+    monkeypatch.setattr(LakeStorage, "_client", lambda self: fake)
+    return LakeStorage(endpoint="http://minio.invalid")
+
+
+def test_s3_skips_the_put_when_the_etag_is_the_payload_md5(monkeypatch):
+    import hashlib
+
+    fake = _FakeS3(etag=hashlib.md5(b"same", usedforsecurity=False).hexdigest())
+    _s3_lake(monkeypatch, fake).write_bytes("marts/x/data.parquet", b"same")
+    assert fake.puts == []
+
+
+def test_s3_puts_when_the_bytes_differ(monkeypatch):
+    import hashlib
+
+    fake = _FakeS3(etag=hashlib.md5(b"old", usedforsecurity=False).hexdigest())
+    _s3_lake(monkeypatch, fake).write_bytes("marts/x/data.parquet", b"new")
+    assert fake.puts == ["marts/x/data.parquet"]
+
+
+def test_s3_puts_when_the_object_is_missing(monkeypatch):
+    fake = _FakeS3(etag=None)
+    _s3_lake(monkeypatch, fake).write_bytes("k", b"x")
+    assert fake.puts == ["k"]
+
+
+def test_s3_puts_when_the_etag_is_multipart(monkeypatch):
+    """A multipart ETag is not an MD5 of the object, so it can never prove a match."""
+    fake = _FakeS3(etag="0123456789abcdef0123456789abcdef-3")
+    _s3_lake(monkeypatch, fake).write_bytes("k", b"x")
+    assert fake.puts == ["k"]
+
+
+def test_s3_skip_applies_to_write_table_too(monkeypatch):
+    import hashlib
+    import io
+
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    table = pa.table({"a": [1, 2, 3]})
+    buffer = io.BytesIO()
+    pq.write_table(table, buffer, compression="zstd", use_dictionary=True)
+    fake = _FakeS3(etag=hashlib.md5(buffer.getvalue(), usedforsecurity=False).hexdigest())
+    _s3_lake(monkeypatch, fake).write_table("marts/x/data.parquet", table)
+    assert fake.puts == []
