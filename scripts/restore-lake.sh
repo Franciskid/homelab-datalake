@@ -16,7 +16,7 @@
 # nothing.
 #
 # Only raw/ is in the mirror. curated/ and marts/ are rebuilt from raw/ by
-# analytics_daily, so the recovery for those is to re-run that job -- which is also
+# analytics_hourly, so the recovery for those is to re-run that job -- which is also
 # what has to happen after any restore, because the warehouse still holds whatever it
 # held before.
 set -euo pipefail
@@ -95,6 +95,6 @@ live = backup._within(backup.inventory(lake, scope), segment)
 held = backup._within(backup.inventory(vault, scope), segment)
 print(f"OK    {len(live)} objects in the lake, {len(held)} in the backup, sizes match")
 print()
-print("The warehouse still holds what it held before this restore. Run analytics_daily")
+print("The warehouse still holds what it held before this restore. Run analytics_hourly")
 print("to rebuild it, or every mart is still derived from the data that was missing.")
 PYEOF

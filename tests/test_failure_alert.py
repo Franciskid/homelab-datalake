@@ -48,8 +48,8 @@ def test_every_label_value_is_a_string():
 
 
 def test_a_failed_publish_outranks_a_failed_source():
-    """analytics_daily failing freezes every reader; one source partition does not."""
-    assert _alert(job_name="analytics_daily")["labels"]["severity"] == "critical"
+    """analytics_hourly failing freezes every reader; one source partition does not."""
+    assert _alert(job_name="analytics_hourly")["labels"]["severity"] == "critical"
     assert _alert(job_name="camera_daily")["labels"]["severity"] == "warning"
 
 
@@ -68,6 +68,6 @@ def test_it_is_firing_and_carries_the_time():
 
 
 def test_an_unpartitioned_job_still_produces_one_alert():
-    alert = _alert(job_name="analytics_daily", partition="-")
+    alert = _alert(job_name="analytics_hourly", partition="-")
     assert alert["labels"]["partition"] == "-"
     assert alert["fingerprint"]

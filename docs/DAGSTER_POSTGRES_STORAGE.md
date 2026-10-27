@@ -74,7 +74,7 @@ it:
 
 ```bash
 for s in npm_daily_schedule litellm_daily_schedule jellyfin_daily_schedule \
-         camera_daily_schedule camera_late_arrival_schedule analytics_daily_schedule; do
+         camera_daily_schedule camera_late_arrival_schedule analytics_hourly_schedule; do
   docker exec datalake-webserver dagster schedule start -m homelab_datalake.definitions "$s"
 done
 ```

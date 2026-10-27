@@ -2,7 +2,7 @@
 #
 # Sends this working copy to fraserv, builds the images, and rebuilds the marts.
 #
-#   bash scripts/deploy.sh            # sync, build, run analytics_daily, test
+#   bash scripts/deploy.sh            # sync, build, run analytics_hourly, test
 #   bash scripts/deploy.sh --no-run   # sync and build only
 #
 # Run it from a clone on your own machine. It is the deploy step this repository has
@@ -86,7 +86,7 @@ fi
 if [[ "$RUN_ANALYTICS" == "1" ]]; then
   say "4/4  Rebuild the marts"
   ssh "$FRA" "docker exec -e DAGSTER_HOME=/dagster_home datalake-daemon \
-    dagster job execute -j analytics_daily -m homelab_datalake.definitions" 2>&1 \
+    dagster job execute -j analytics_hourly -m homelab_datalake.definitions" 2>&1 \
     | grep -E "Done\. PASS|FAIL [0-9]|RUN_SUCCESS|RUN_FAILURE|published" || true
 else
   say "4/4  Skipped (--no-run)"

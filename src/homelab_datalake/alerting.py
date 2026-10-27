@@ -26,7 +26,7 @@ from typing import Any
 # of the lake silently goes stale -- which is exactly the failure that ran for eight
 # days in Sep 2026 without anyone noticing. A source partition failing is a gap in one
 # day of one dataset, which the next run can repair. They are not the same emergency.
-_CRITICAL_JOBS = frozenset({"analytics_daily"})
+_CRITICAL_JOBS = frozenset({"analytics_hourly"})
 
 
 def alert_payload(

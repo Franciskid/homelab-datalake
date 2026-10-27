@@ -3,7 +3,7 @@
 The warehouse is a build artefact: lose it and `warehouse_tables` plus `dbt build`
 reconstructs it from the lake. The *lake* is not, and only part of it is even
 rebuildable from itself. `curated/` and `marts/` come back from `raw/` by re-running
-`analytics_daily`, so copying them would be copying a derivation. `raw/` is the
+`analytics_hourly`, so copying them would be copying a derivation. `raw/` is the
 original, and its sources will not produce it again -- the reverse-proxy logs rotate
 off the disk within days, and the camera serves only a recent window. A raw partition
 that is deleted is gone.
@@ -70,7 +70,7 @@ from homelab_datalake.resources import LakeStorage
 
 logger = logging.getLogger(__name__)
 
-# Only raw/. curated/ and marts/ are rebuilt from it by analytics_daily, so a copy of
+# Only raw/. curated/ and marts/ are rebuilt from it by analytics_hourly, so a copy of
 # them costs storage and buys nothing a re-run would not.
 BACKUP_PREFIX = layout.LAYER_RAW
 
@@ -367,7 +367,7 @@ def restore_scope(dataset: str | None = None) -> str:
     if entry.layer != layout.LAYER_RAW:
         raise ValueError(
             f"{dataset!r} is in the {entry.layer!r} layer, which is not backed up: it "
-            "is rebuilt from raw/ by analytics_daily. Re-run that job instead."
+            "is rebuilt from raw/ by analytics_hourly. Re-run that job instead."
         )
     return entry.prefix
 

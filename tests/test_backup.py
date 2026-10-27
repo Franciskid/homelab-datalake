@@ -63,7 +63,7 @@ def _land(lake: LakeStorage, table: str, day: str, rows: int = 1, host: str = "f
 
 
 def test_only_raw_is_copied(lake, vault):
-    """curated/ and marts/ are rebuilt from raw/ by analytics_daily.
+    """curated/ and marts/ are rebuilt from raw/ by analytics_hourly.
 
     Copying a derivation costs storage and buys nothing a re-run would not.
     """
