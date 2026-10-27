@@ -44,3 +44,6 @@ dbt/.user.yml
 # Generated workbooks. These contain real figures from the warehouse and are
 # deliverables for a person, not source.
 exports/
+
+# amb-log-sync: what this host last uploaded (lives on amblevilleserv)
+infra/amb-log-sync/uploaded.sha256

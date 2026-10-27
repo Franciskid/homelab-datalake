@@ -41,7 +41,7 @@ def test_a_lake_only_dataset_is_never_loaded_into_the_warehouse():
     """The flag is the reason a dataset is absent, so it must actually keep it out.
 
     Prometheus samples are ~60 M rows a day. Loaded by mistake, they would multiply the
-    warehouse file within a week, and analytics_daily rebuilds that file in full nightly.
+    warehouse file within a week, and analytics_hourly rebuilds that file in full every hour.
     """
     lake_only = {d.table for d in layout.RAW_DATASETS if d.lake_only}
     loaded = {name for name, *_ in _SOURCES}

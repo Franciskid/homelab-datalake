@@ -634,7 +634,7 @@ def run(
         if not read_only:
             notes.append(
                 "The switch was off, so this statement could change the lake. The "
-                "warehouse still holds what it held before: run analytics_daily to "
+                "warehouse still holds what it held before: run analytics_hourly to "
                 "rebuild it before trusting anything that reads it."
             )
 

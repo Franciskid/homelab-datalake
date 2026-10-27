@@ -77,7 +77,7 @@ class Dataset:
     legacy_prefix: str | None = None
     # Why this dataset is NOT loaded into the DuckDB warehouse, or empty when it is.
     # A dataset of tens of millions of rows a day (Prometheus samples, the journal)
-    # would grow a file that analytics_daily rebuilds in full every night; it stays
+    # would grow a file that analytics_hourly rebuilds in full every hour; it stays
     # queryable through the SQL API, which reads every lake dataset directly. A
     # non-empty reason, not a bare flag, so the exclusion explains itself.
     # Non-empty names the reason this dataset should not be rebuilt into the nightly
@@ -446,7 +446,7 @@ MART_DATASETS: tuple[Dataset, ...] = (
 # add there merge without touching the same lines. See docs/METRICS_STREAMING_PLAN.md.
 
 _SAMPLES_ARE_TOO_MANY = (
-    "~60 M samples a day; analytics_daily rebuilds the warehouse in full from the lake "
+    "~60 M samples a day; analytics_hourly rebuilds the warehouse in full from the lake "
     "every night. Queried from the lake through the SQL API."
 )
 

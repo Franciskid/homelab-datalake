@@ -11,6 +11,7 @@ no `mode` flag to set wrong.
 
 from __future__ import annotations
 
+import hashlib
 import io
 import logging
 import os
@@ -54,17 +55,47 @@ class LakeStorage(ConfigurableResource):
             region_name=self.region,
         )
 
+    def _holds(self, key: str, payload: bytes) -> bool:
+        """Whether `key` already holds exactly `payload`.
+
+        The bucket is versioned, so a PUT of identical bytes is not free: it keeps the
+        previous copy as a non-current version. analytics_hourly republishes every
+        partition of curated/ and marts/ each hour, almost all of them unchanged, and
+        that alone added ~35 GB a day to the host's root disk until 27 Oct 2026. The
+        rebuilds are byte-identical (same ETag hour after hour), so comparing the
+        MD5 against the ETag is enough to leave an unchanged object alone.
+
+        Any doubt means "write": a missing object, a failed HEAD, or a multipart
+        ETag, which is not an MD5 of the object.
+        """
+        if self.uses_s3:
+            client = self._client()
+            try:
+                head = client.head_object(Bucket=self.bucket, Key=key)
+            except client.exceptions.ClientError:
+                return False
+            etag = head.get("ETag", "").strip('"')
+            return "-" not in etag and etag == hashlib.md5(payload, usedforsecurity=False).hexdigest()
+        path = Path(self.local_root) / key
+        return path.is_file() and path.stat().st_size == len(payload) and path.read_bytes() == payload
+
     def describe(self) -> str:
         return f"s3://{self.bucket}" if self.uses_s3 else f"file://{Path(self.local_root).resolve()}"
 
     def write_table(self, key: str, table: pa.Table) -> int:
-        """Write one Parquet object. Returns bytes written."""
+        """Write one Parquet object. Returns its size in bytes.
+
+        Nothing is written when the object already holds these exact bytes -- see
+        `_holds`.
+        """
         buffer = io.BytesIO()
         # zstd because access logs are dominated by repetitive strings -- host,
         # user-agent, status -- which dictionary-encode first and then compress well.
         pq.write_table(table, buffer, compression="zstd", use_dictionary=True)
         payload = buffer.getvalue()
 
+        if self._holds(key, payload):
+            return len(payload)
         if self.uses_s3:
             self._client().put_object(Bucket=self.bucket, Key=key, Body=payload)
         else:
@@ -87,8 +118,10 @@ class LakeStorage(ConfigurableResource):
         one.
 
         Same atomicity story as `write_table`: one PUT on S3, a write-to-temp-then-
-        rename on disk.
+        rename on disk. And the same skip when the object already holds these bytes.
         """
+        if self._holds(key, data):
+            return len(data)
         if self.uses_s3:
             self._client().put_object(
                 Bucket=self.bucket, Key=key, Body=data, ContentType=content_type

@@ -101,7 +101,7 @@ jobs:
         #
         # dbt's tests are the point of this step: reject rate, partition alignment,
         # and the assertion that no raw address reached the fact table.
-        run: dagster job execute -j analytics_daily -m homelab_datalake.definitions
+        run: dagster job execute -j analytics_hourly -m homelab_datalake.definitions
 
       - name: Assert the serving copy holds only the marts
         # The serving file is what the MCP layer reads. It must contain the marts and

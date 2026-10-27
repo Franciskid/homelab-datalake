@@ -109,6 +109,15 @@ Cron line:
 7 * * * * AMB_LOG_SYNC_CREDENTIALS_FILE=/home/francois/amb-log-sync/credentials.env /home/francois/amb-log-sync/sync-amb-logs.sh >>/home/francois/amb-log-sync/sync.log 2>&1
 ```
 
+## Only changed files are sent
+
+`sync-amb-logs.sh` keeps a `sha256sum` line per log it uploaded in
+`uploaded.sha256` next to itself (override with `AMB_LOG_SYNC_STATE_FILE`) and
+sends only the files whose line is not there. The lake bucket is versioned, so
+re-sending every rotated log every hour kept a copy of each one per hour -- 45 GB
+of identical logs by 27 Oct 2026. Deleting the state file is safe: the next run
+uploads everything once.
+
 ## How it is actually installed (2026-09-15)
 
 Two things about amblevilleserv that the procedure above has to bend around, both

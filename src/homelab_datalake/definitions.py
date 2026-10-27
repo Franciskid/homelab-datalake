@@ -7,7 +7,7 @@ today's partition on a schedule would produce a partial day that a later run wou
 have to correct, which is exactly the ambiguity daily partitions exist to remove.
 
 The nightly sources land between 03:00 and 03:45, the hourly ones through each hour,
-and `analytics_daily` at :55 every hour turns them into marts and publishes the serving
+and `analytics_hourly` at :55 every hour turns them into marts and publishes the serving
 copy. That last job is what makes the numbers
 the MCP layer serves the same age as the data underneath -- before it existed the
 sources refreshed nightly and the marts refreshed whenever somebody remembered to
@@ -479,7 +479,7 @@ def mcp_api_daily_schedule(context: ScheduleEvaluationContext):
 # there is no window in which the marts are newer than the warehouse or the serving
 # copy is newer than the marts.
 analytics_job = define_asset_job(
-    name="analytics_daily",
+    name="analytics_hourly",
     selection=AssetSelection.groups("warehouse") | AssetSelection.assets(dbt_marts.dbt_marts),
     description=(
         "Rebuild the warehouse from the lake, build and test the dbt models, publish "
@@ -497,10 +497,11 @@ analytics_job = define_asset_job(
         "never more than an hour behind what landed. The nightly sources are done by "
         "03:45 and picked up at 03:55. A run takes about eight minutes and the MCP "
         "reads the published serving copy, so an hourly rebuild never blocks a reader. "
-        "The job keeps its old name: renaming it would orphan its run history."
+        "Named analytics_daily until 27 Oct 2026; runs before that are under the old "
+        "name in the run history."
     ),
 )
-def analytics_daily_schedule(context: ScheduleEvaluationContext):
+def analytics_hourly_schedule(context: ScheduleEvaluationContext):
     yield RunRequest(run_key=f"analytics-{context.scheduled_execution_time:%Y-%m-%dT%H}")
 
 
@@ -520,8 +521,8 @@ def analytics_daily_schedule(context: ScheduleEvaluationContext):
     # which is where somebody looking at a red asset already is.
     #
     # It was still not enough. The sensor ran, and it had no webhook to deliver to, so
-    # it logged -- and analytics_daily then failed every night from 4 to 11 Sep 2026
-    # while the serving copy every reader depends on stayed frozen at 2 Sep. Eight
+    # it logged -- and analytics_daily (this job's name then) failed every night from
+    # 4 to 11 Sep 2026 while the serving copy every reader depends on stayed frozen at 2 Sep. Eight
     # days, into a log nobody reads. Failures now go to the AI platform, which is
     # where incidents already live and where something actually looks at them.
     default_status=DefaultSensorStatus.RUNNING,
@@ -599,7 +600,7 @@ defs = Definitions(
                jellyfin_library_items_schedule, jellyfin_playback_hourly_schedule,
                jellyfin_activity_schedule, jellyfin_users_schedule,
                jellyfin_searches_hourly_schedule, camera_daily_schedule,
-               camera_late_arrival_schedule, camera_zones_schedule, analytics_daily_schedule],
+               camera_late_arrival_schedule, camera_zones_schedule, analytics_hourly_schedule],
     sensors=[notify_on_failure],
     resources={
         "lake": LakeStorage.from_env(),

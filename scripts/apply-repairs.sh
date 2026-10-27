@@ -208,4 +208,4 @@ print('   ', len(r.events), 'events,', len(r.clips), 'clips,', len(r.logs), 'log
 \""
 
 say "Done. The four datalake changes are live and the camera export is back."
-echo "Tell Claude, and it will build the two absent LiteLLM partitions and run analytics_daily."
+echo "Tell Claude, and it will build the two absent LiteLLM partitions and run analytics_hourly."
