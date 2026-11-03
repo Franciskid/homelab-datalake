@@ -103,6 +103,8 @@ def _wanted_ids(lake: LakeStorage) -> list[int]:
             """  # noqa: S608 - the pattern is configuration, escaped above
         ).fetchall()
     except duckdb.IOException:
+        if lake.holds_parquet(TITLE_PREFIX):
+            raise
         return []
     finally:
         con.close()
@@ -123,6 +125,8 @@ def _existing(lake: LakeStorage) -> dict[int, dict]:
             for row in result.fetchall()
         }
     except duckdb.IOException:
+        if lake.holds_parquet(TMDB_PREFIX):
+            raise
         return {}  # nothing enriched yet
     finally:
         con.close()

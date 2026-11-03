@@ -155,3 +155,30 @@ def test_a_bucket_that_does_not_answer_the_listing_fails_the_load_too(tmp_path, 
     lake = LakeStorage(local_root=str(tmp_path))
     with pytest.raises(ConnectionError):
         load_table(_UnreachableS3(), lake, "example", "conv", _SCHEMA, _LOG)
+
+
+def test_tmdb_reports_a_read_failure_instead_of_treating_it_as_nothing_enriched(
+    tmp_path, monkeypatch
+):
+    from homelab_datalake.assets import tmdb
+
+    class Unreachable:
+        def configure(self):
+            return None
+
+        def execute(self, _statement):
+            raise duckdb.IOException("Could not establish connection")
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(tmdb.duckdb, "connect", lambda *a, **k: Unreachable())
+    monkeypatch.setattr(LakeStorage, "configure_duckdb", lambda _self, _con: None)
+    lake = LakeStorage(local_root=str(tmp_path))
+    assert tmdb._existing(lake) == {}, "nothing landed is still a normal first run"
+
+    landed = Path(lake.local_root) / tmdb.TMDB_PREFIX / "data.parquet"
+    landed.parent.mkdir(parents=True)
+    landed.write_bytes(b"landed")
+    with pytest.raises(duckdb.IOException):
+        tmdb._existing(lake)
