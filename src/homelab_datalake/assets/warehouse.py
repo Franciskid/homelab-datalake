@@ -94,6 +94,7 @@ from homelab_datalake.assets.tmdb import _SCHEMA as _TMDB_SCHEMA
 from homelab_datalake.assets.tmdb import TMDB_PREFIX, tmdb_titles_raw
 from homelab_datalake.assets.warehouse_added_sources import ADDED_SOURCES
 from homelab_datalake.mcp import semantic
+from homelab_datalake.parsing.ai_platform_registry import MODE_WINDOW as _AI_PLATFORM_WINDOW
 from homelab_datalake.parsing.ai_platform_registry import REGISTRY as _AI_PLATFORM_REGISTRY
 from homelab_datalake.parsing.ai_platform_types import arrow_schema_for as _ai_platform_schema
 from homelab_datalake.resources import LakeStorage
@@ -207,6 +208,61 @@ _DUCKDB_TYPES = {
 _SOURCES = (*_SOURCES, *ADDED_SOURCES)
 
 
+# A window table's row lands under the day of its change column, and only the trailing
+# window is ever re-read. A row touched after that window lands under its new day while
+# the old partition keeps the old copy, so the lake holds it twice. Conversation
+# eca152f9, resumed after 19 days, failed the build every hour from 29 Oct 2026 and froze
+# the serving copy for five days; media_items held 961 such rows. The lake keeps both
+# copies. The warehouse keeps the newest, keyed on what actually makes a row current.
+_LATEST_BY = {
+    spec.table_name: (spec.primary_key, spec.change_column)
+    for spec in _AI_PLATFORM_REGISTRY
+    if spec.mode == _AI_PLATFORM_WINDOW
+}
+
+
+def load_statement(name: str, pattern: str) -> str:
+    """CREATE TABLE for one source, reduced to the newest copy of a window table's rows."""
+    safe_pattern = pattern.replace("'", "''")
+    latest = ""
+    if name in _LATEST_BY:
+        key, change = _LATEST_BY[name]
+        latest = (
+            f' QUALIFY row_number() OVER (PARTITION BY "{key}" '
+            f'ORDER BY "{change}" DESC NULLS LAST, dt DESC) = 1'
+        )
+    # The table names are module constants, never input. The glob is built from
+    # configuration -- bucket name, local root -- so it is escaped rather than trusted:
+    # a stray quote in an env var would otherwise end the string literal and change the
+    # statement. union_by_name tolerates a partition written before a column existed,
+    # which is the schema-evolution path.
+    return (
+        f"CREATE OR REPLACE TABLE raw.{name} AS "  # noqa: S608 - literal identifier
+        f"SELECT * FROM read_parquet('{safe_pattern}', union_by_name=true){latest}"
+    )
+
+
+def load_table(con, lake: LakeStorage, name: str, prefix: str, schema: pa.Schema, log) -> None:
+    """Load one source, or create it empty only when the lake really holds nothing for it.
+
+    DuckDB raises the same IOException for "no files match" and for "S3 did not answer",
+    so the error alone cannot say which it was, and treating both as nothing-landed-yet
+    emptied every raw table in the 25 Oct 2026 outage. dbt then passed on empty tables and
+    an empty serving copy went out twelve times. Asking the bucket separates the two: if
+    it holds this dataset the read failed for real, and if it cannot answer that raises.
+    """
+    pattern = lake.duckdb_scan_target(prefix)
+    try:
+        con.execute(load_statement(name, pattern))
+    except duckdb.IOException:
+        if any(key.endswith(".parquet") for key in lake.list_keys(f"{prefix}/")):
+            raise
+        log.warning(
+            "no objects under %s; creating raw.%s empty with its declared schema", pattern, name,
+        )
+        con.execute(empty_table_ddl(f"raw.{name}", schema))
+
+
 def empty_table_ddl(table: str, schema: pa.Schema) -> str:
     """CREATE TABLE for a source with no landed partitions yet.
 
@@ -271,7 +327,8 @@ def warehouse_tables(context: AssetExecutionContext, lake: LakeStorage):
     """Every landed partition, read from the lake into DuckDB under `raw`.
 
     Rebuilt in full from Parquet on every run, so the warehouse cannot drift from
-    object storage: it holds what the lake holds, or the run fails.
+    object storage: it holds what the lake holds, newest copy of a window table's row
+    only, or the run fails.
     """
     with connect() as con:
         lake.configure_duckdb(con)
@@ -279,28 +336,8 @@ def warehouse_tables(context: AssetExecutionContext, lake: LakeStorage):
 
         counts: dict[str, int] = {}
         for name, prefix, schema, _upstream, _description in _SOURCES:
-            pattern = lake.duckdb_scan_target(prefix)
+            load_table(con, lake, name, prefix, schema, context.log)
             table = f"raw.{name}"
-            # The table names are module constants, never input. The glob is built
-            # from configuration -- bucket name, local root -- so it is escaped
-            # rather than trusted: a stray quote in an env var would otherwise end
-            # the string literal and change the statement.
-            safe_pattern = pattern.replace("'", "''")
-            try:
-                # union_by_name tolerates a partition written before a column
-                # existed, which is the schema-evolution path.
-                con.execute(
-                    f"CREATE OR REPLACE TABLE {table} AS "  # noqa: S608 - literal identifier
-                    f"SELECT * FROM read_parquet('{safe_pattern}', union_by_name=true)"
-                )
-            except duckdb.IOException:
-                # No partitions landed yet. An empty table is the honest state --
-                # better than a missing one, which would fail dbt with a confusing error.
-                context.log.warning(
-                    "no objects under %s; creating %s empty with its declared schema",
-                    pattern, table,
-                )
-                con.execute(empty_table_ddl(table, schema))
             counts[name] = con.execute(f"SELECT count(*) FROM {table}").fetchone()[0]  # noqa: S608
 
         partitions = (
