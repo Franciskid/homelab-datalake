@@ -211,12 +211,18 @@ def _make_table_asset(spec: TableSpec):
                     lake.write_bytes(key, frame.data, content_type=frame.content_type)
                     frame_objects_written += 1
 
+        # Written first, because the weekly sweep overlaps the hourly warehouse load:
+        # deleting first left a moment with no object for that load to read. The PUT is
+        # atomic, and write_table skips it when the bytes have not changed.
         table_prefix = f"{prefix}/dt={day.isoformat()}"
-        lake.delete_prefix(table_prefix)
+        table_key = f"{table_prefix}/data.parquet"
         written_bytes = lake.write_table(
-            f"{table_prefix}/data.parquet", pa.Table.from_pylist(result.rows, schema=schema)
+            table_key, pa.Table.from_pylist(result.rows, schema=schema)
         )
-        landed_rows = lake.count_rows(f"{table_prefix}/data.parquet") or 0
+        for stale in lake.list_keys(f"{table_prefix}/"):
+            if stale != table_key:
+                lake.delete_prefix(stale)
+        landed_rows = lake.count_rows(table_key) or 0
 
         context.log.info(
             "%s dt=%s: %d rows extracted, %d landed, %d frame objects, %d frame "
