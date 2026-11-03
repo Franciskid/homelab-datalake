@@ -63,3 +63,24 @@ def test_window_asks_for_today_and_the_days_before_it():
     expected = [(DAYS[0] - timedelta(days=back)).isoformat() for back in range(WINDOW_DAYS)]
     assert ai_platform.window_partition_keys(when) == expected
     assert expected[0] == "2026-09-16"
+
+
+@pytest.mark.parametrize("day", DAYS, ids=str)
+def test_the_sweep_covers_every_day_the_window_no_longer_reaches(day):
+    when = _at(day, time(5, 30))
+    swept = ai_platform.sweep_partition_keys(when)
+    window = ai_platform.window_partition_keys(when)
+    valid = ai_platform.ai_platform_partitions.get_partition_keys(current_time=when)
+    assert swept[0] == ai_platform.AI_PLATFORM_START
+    assert sorted(set(swept) | set(window)) == sorted(valid)
+    assert not set(swept) & set(window)
+
+
+def test_the_sweep_leaves_tables_with_lake_objects_alone():
+    swept = set(ai_platform.sweep_asset_keys)
+    assert "platform_runs_raw" in swept
+    assert "platform_media_items_raw" in swept
+    assert not swept & {
+        "platform_usage_events_raw", "platform_generated_files_raw",
+        "platform_message_attachments_raw",
+    }

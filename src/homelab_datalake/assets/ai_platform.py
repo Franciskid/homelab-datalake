@@ -57,12 +57,12 @@ from homelab_datalake.parsing.ai_platform_registry import (
 from homelab_datalake.parsing.ai_platform_types import arrow_schema_for
 from homelab_datalake.resources import LakeStorage
 
-# usage_events since 2026-07-02 is the earliest row the owner measured this ledger
-# holding (40,405 calls, 12 GB, as of 2026-09-14); every other table in the registry
-# either started at the same time as the platform or later, so backfilling from here
-# produces empty partitions before a table existed rather than an error -- the same
-# choice litellm_spend.py makes for SPEND_START.
-AI_PLATFORM_START = "2026-07-02"
+# The earliest row in any window table: audit_events on 2026-06-15. This was 2026-07-02
+# until 3 Nov 2026, the first usage_events row, on the assumption that nothing older
+# existed; 826 run steps, 299 messages and 147 runs did. A day before a table existed
+# lands empty rather than raising -- the same choice litellm_spend.py makes for
+# SPEND_START.
+AI_PLATFORM_START = "2026-06-15"
 
 # end_offset=1 makes *today* a valid partition. Both schedules in definitions.py ask for
 # it, and without the offset today is not a partition until midnight: Dagster raises
@@ -99,6 +99,14 @@ def window_partition_keys(scheduled_execution_time: datetime) -> list[str]:
     the `WINDOW_DAYS - 1` days before it, newest first."""
     today = scheduled_execution_time.date()
     return [(today - timedelta(days=back)).isoformat() for back in range(WINDOW_DAYS)]
+
+
+def sweep_partition_keys(scheduled_execution_time: datetime) -> list[str]:
+    """The partitions `ai_platform_sweep_schedule` asks for at one tick: every day the
+    trailing window no longer reaches, oldest first."""
+    last = scheduled_execution_time.date() - timedelta(days=WINDOW_DAYS)
+    first = date.fromisoformat(AI_PLATFORM_START)
+    return [(first + timedelta(days=n)).isoformat() for n in range((last - first).days + 1)]
 
 
 CHECK_ROW_COUNT = "extracted_rows_match_landed_rows"
@@ -266,6 +274,13 @@ snapshot_asset_keys = [
 ]
 window_asset_keys = [
     f"{spec.table_name}_raw" for spec in REGISTRY if spec.mode == MODE_WINDOW
+]
+# Tables with lake objects behind their rows are left out of the weekly sweep: a re-run
+# clears the day's objects and writes them again, which in a versioned bucket keeps a
+# copy of every camera frame each week. Their rows are insert-only in practice.
+sweep_asset_keys = [
+    f"{spec.table_name}_raw" for spec in REGISTRY
+    if spec.mode == MODE_WINDOW and not spec.binary_column and not spec.decode_metadata_images
 ]
 
 

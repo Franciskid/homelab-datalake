@@ -93,6 +93,22 @@ schedule_storage:
 # Postgres. A tick that writes parts and launches no run is recorded as skipped, and its
 # message ("wrote 27,114 samples ... lag 71 s") is only useful while it is recent. Failed
 # ticks are kept a month, because they are what explains a gap.
+# Runs wait here instead of all starting at once. Without it a schedule starts everything it
+# asks for immediately: harmless at seven runs, not at the weekly sweep's hundred and more.
+# Twelve is above any normal hour. The two limits are per-job, set by tags in definitions.py.
+run_coordinator:
+  module: dagster._core.run_coordinator
+  class: QueuedRunCoordinator
+  config:
+    max_concurrent_runs: 12
+    tag_concurrency_limits:
+      - key: datalake/queue
+        value: analytics
+        limit: 1
+      - key: datalake/queue
+        value: ai_platform_sweep
+        limit: 1
+
 retention:
   sensor:
     purge_after_days:

@@ -172,6 +172,39 @@ def ai_platform_window_schedule(context: ScheduleEvaluationContext):
         )
 
 
+# The trailing window only corrects a row for seven days, and that left real errors: runs
+# showing `calling_model` long after Postgres said `failed`, 2,556 media items deleted
+# upstream, and a row that moved to a later day still sitting in its old partition. Each
+# re-read overwrites one day with what that day holds now, so all three clear themselves.
+ai_platform_sweep_job = define_asset_job(
+    name="ai_platform_sweep",
+    selection=AssetSelection.assets(*ai_platform.sweep_asset_keys),
+    partitions_def=ai_platform.ai_platform_partitions,
+    # One at a time: datalake_ro has CONNECTION LIMIT 3. See run_queue in dagster.yaml.
+    tags={"datalake/queue": "ai_platform_sweep"},
+    description="Re-extract one older day of every AI-platform table that can change.",
+)
+
+
+@schedule(
+    job=ai_platform_sweep_job,
+    cron_schedule="30 5 * * 0",
+    # RUNNING, not STOPPED: a new schedule nobody starts is how the failure sensor stayed
+    # dead for months. Same reasoning as notify_on_failure below.
+    default_status=DefaultScheduleStatus.RUNNING,
+    description=(
+        "Sundays at 05:30 UTC, re-reads every day older than the trailing window, one "
+        "run per day. Idempotent: each run overwrites only its own partition."
+    ),
+)
+def ai_platform_sweep_schedule(context: ScheduleEvaluationContext):
+    for key in ai_platform.sweep_partition_keys(context.scheduled_execution_time):
+        yield RunRequest(
+            run_key=f"ai-platform-sweep-{key}-{context.scheduled_execution_time:%Y%m%d}",
+            partition_key=key,
+        )
+
+
 ai_platform_coverage_job = define_asset_job(
     # Named distinctly from the asset it selects: `define_asset_job` derives an op
     # inside the implicit `__ASSET_JOB` with the asset's own name, and giving this
@@ -481,6 +514,9 @@ def mcp_api_daily_schedule(context: ScheduleEvaluationContext):
 analytics_job = define_asset_job(
     name="analytics_hourly",
     selection=AssetSelection.groups("warehouse") | AssetSelection.assets(dbt_marts.dbt_marts),
+    # One at a time: an overrun used to meet the next hour's run on DuckDB's write lock,
+    # and both failed. The next one now waits its turn. See run_queue in dagster.yaml.
+    tags={"datalake/queue": "analytics"},
     description=(
         "Rebuild the warehouse from the lake, build and test the dbt models, publish "
         "the serving copy the MCP layer reads."
@@ -589,13 +625,15 @@ def notify_on_failure(context):
 defs = Definitions(
     assets=all_assets,
     jobs=[npm_daily_job, npm_backfill_job, mcp_api_daily_job, litellm_daily_job,
-          ai_platform_snapshot_job, ai_platform_window_job, ai_platform_coverage_job,
+          ai_platform_snapshot_job, ai_platform_window_job, ai_platform_sweep_job,
+          ai_platform_coverage_job,
           jellyfin_daily_job, jellyfin_library_items_job, jellyfin_playback_job,
           jellyfin_playback_history_job, jellyfin_activity_job,
           jellyfin_activity_history_job, jellyfin_users_job, jellyfin_searches_job,
           camera_daily_job, camera_zones_job, analytics_job],
     schedules=[npm_daily_schedule, mcp_api_daily_schedule, litellm_daily_schedule,
                ai_platform_snapshot_schedule, ai_platform_window_schedule,
+               ai_platform_sweep_schedule,
                ai_platform_coverage_schedule, jellyfin_daily_schedule,
                jellyfin_library_items_schedule, jellyfin_playback_hourly_schedule,
                jellyfin_activity_schedule, jellyfin_users_schedule,
