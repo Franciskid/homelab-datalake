@@ -47,6 +47,14 @@ select
     needs_review = 'True'                as needs_review,
     tags,
     nullif(notes, '')                    as notes,
+    nullif(description, '')              as description,
+    nullif(status, '')                   as transaction_status,
+    try_cast(posted_at as timestamptz)   as posted_at,
+    nullif(source, '')                   as source,
+    nullif(source_transaction_id, '')    as source_transaction_id,
+    nullif(metadata, '')                 as metadata,
+    nullif(tag_slugs, '')                as tag_slugs,
+    nullif(property_links, '')           as property_links,
     _first_seen_at                       as version_first_seen_at
 
 from current_versions

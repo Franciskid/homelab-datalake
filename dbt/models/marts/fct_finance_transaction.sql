@@ -27,6 +27,14 @@ select
     t.needs_review,
     t.tags,
     t.notes,
+    t.description,
+    t.transaction_status,
+    t.posted_at,
+    t.source,
+    t.source_transaction_id,
+    t.metadata,
+    t.tag_slugs,
+    t.property_links,
     (t.transaction_type <> 'transfer' and t.amount_home < 0) as is_spending,
     (t.transaction_type <> 'transfer' and t.amount_home > 0) as is_income
 

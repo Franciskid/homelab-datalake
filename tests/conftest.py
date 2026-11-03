@@ -612,6 +612,14 @@ SELECT
     (i % 11 = 0) AS needs_review,
     '[]' AS tags,
     NULL::VARCHAR AS notes,
+    'CB MERCHANT ' || (i % 7) AS description,
+    'posted' AS transaction_status,
+    NULL::TIMESTAMPTZ AS posted_at,
+    'synced' AS source,
+    'ref-' || i AS source_transaction_id,
+    '{}' AS metadata,
+    '[]' AS tag_slugs,
+    '[]' AS property_links,
     (i % 5 <> 0 AND i % 9 <> 0) AS is_spending,
     (i % 5 = 0 AND i % 9 <> 0) AS is_income
 FROM (SELECT i::INTEGER AS i FROM range(0, 80) t(i));
