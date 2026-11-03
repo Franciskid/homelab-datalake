@@ -1061,7 +1061,9 @@ _USER_CONSUMED = frozenset({"Id", "Name", "Policy", "LastLoginDate", "LastActivi
 # disabled.
 _USER_NOT_STORED = frozenset(
     {"HasPassword", "HasConfiguredPassword", "HasConfiguredEasyPassword",
-     "EnableAutoLogin", "ServerId", "Configuration"}
+     "EnableAutoLogin", "ServerId", "Configuration",
+     # A cache key for the avatar, the same reason the library's image tags are ignored.
+     "PrimaryImageTag"}
 )
 
 
@@ -1076,17 +1078,19 @@ def user_rows(raw_users: list[dict], snapshot_day: date) -> tuple[list[dict], se
         }
         unmapped.update(leftovers)
         policy = user.get("Policy") or {}
-        rows.append(
-            {
-                "dt": snapshot_day,
-                "id": user.get("Id"),
-                "name": user.get("Name"),
-                "is_administrator": policy.get("IsAdministrator"),
-                "is_disabled": policy.get("IsDisabled"),
-                "last_login": _parse_timestamp(user.get("LastLoginDate")),
-                "last_activity": _parse_timestamp(user.get("LastActivityDate")),
-            }
-        )
+        row = {
+            "dt": snapshot_day,
+            "id": user.get("Id"),
+            "name": user.get("Name"),
+            "is_administrator": policy.get("IsAdministrator"),
+            "is_disabled": policy.get("IsDisabled"),
+            "last_login": _parse_timestamp(user.get("LastLoginDate")),
+            "last_activity": _parse_timestamp(user.get("LastActivityDate")),
+        }
+        # The check names these fields, so the value has to survive too. Only the name did.
+        if leftovers:
+            row["_unmapped"] = json.dumps(leftovers, default=str, sort_keys=True)
+        rows.append(row)
     return rows, unmapped
 
 
