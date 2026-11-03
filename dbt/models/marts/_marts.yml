@@ -1487,6 +1487,7 @@ models:
         description: >
           The clip's stable id. What fct_camera_event.clip_id points at; every one of them
           resolves.
+        tests: [not_null, unique]
       - name: clip_kind
         description: >
           What caused the recording -- `attention` for an analysed event, `manual` for one
@@ -1567,7 +1568,8 @@ models:
           Whether anybody left a note on it -- the clips somebody actually looked at.
       - name: event_id
         description: >
-          The attention event that caused the recording, when one did.
+          The attention event that caused the recording, when one did. The earliest, when
+          several events share the clip.
         tests:
           - relationships: {to: ref('fct_camera_event'), field: event_id}
       - name: rule_type

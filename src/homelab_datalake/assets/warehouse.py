@@ -245,17 +245,14 @@ def load_statement(name: str, pattern: str) -> str:
 def load_table(con, lake: LakeStorage, name: str, prefix: str, schema: pa.Schema, log) -> None:
     """Load one source, or create it empty only when the lake really holds nothing for it.
 
-    DuckDB raises the same IOException for "no files match" and for "S3 did not answer",
-    so the error alone cannot say which it was, and treating both as nothing-landed-yet
-    emptied every raw table in the 25 Oct 2026 outage. dbt then passed on empty tables and
-    an empty serving copy went out twelve times. Asking the bucket separates the two: if
-    it holds this dataset the read failed for real, and if it cannot answer that raises.
+    An outage used to read as nothing-landed-yet here: every raw table went empty on 25 Oct
+    2026, dbt passed on them, and an empty serving copy went out twelve times.
     """
     pattern = lake.duckdb_scan_target(prefix)
     try:
         con.execute(load_statement(name, pattern))
     except duckdb.IOException:
-        if any(key.endswith(".parquet") for key in lake.list_keys(f"{prefix}/")):
+        if lake.holds_parquet(prefix):
             raise
         log.warning(
             "no objects under %s; creating raw.%s empty with its declared schema", pattern, name,

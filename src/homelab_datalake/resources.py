@@ -237,6 +237,15 @@ class LakeStorage(ConfigurableResource):
             str((p.relative_to(self.local_root)).as_posix()) for p in root.rglob("*") if p.is_file()
         )
 
+    def holds_parquet(self, prefix: str) -> bool:
+        """Whether Parquet has landed under a prefix. Raises if the bucket cannot answer.
+
+        DuckDB raises the same IOException for "no files match" and for "S3 did not
+        answer", so a reader that wants to treat nothing-landed-yet as normal asks here
+        first. Treating both alike emptied every raw table in the 25 Oct 2026 outage.
+        """
+        return any(key.endswith(".parquet") for key in self.list_keys(f"{prefix}/"))
+
     def read_bytes(self, key: str) -> bytes | None:
         """Raw bytes of one object, or None if it is not there.
 

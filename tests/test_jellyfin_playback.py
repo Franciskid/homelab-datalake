@@ -5,6 +5,7 @@ seconds) were verified against the real server on 2026-09-14, not assumed; see
 for the worked evidence these tests encode as fixtures.
 """
 
+import json
 from datetime import UTC, date, datetime
 
 import pyarrow as pa
@@ -1255,3 +1256,15 @@ def test_the_daily_activity_asset_surfaces_unparseable_dates_and_writes_no_dupli
     assert _meta(output, "duplicate_entries_skipped") == 1
     assert any("1 activity log entries had a Date that did not parse" in m
                for m in dagster_warnings)
+
+
+def test_a_field_the_schema_does_not_name_keeps_its_value_not_only_its_name():
+    rows, unmapped = user_rows([_user(SomethingNew="kept")], date(2026, 9, 14))
+    assert unmapped == {"SomethingNew"}
+    assert json.loads(rows[0]["_unmapped"]) == {"SomethingNew": "kept"}
+
+
+def test_the_avatar_cache_key_is_not_reported_as_unmapped():
+    rows, unmapped = user_rows([_user(PrimaryImageTag="abc")], date(2026, 9, 14))
+    assert unmapped == set()
+    assert "_unmapped" not in rows[0]

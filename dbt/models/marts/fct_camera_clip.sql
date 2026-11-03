@@ -11,7 +11,16 @@
 
 with clips as (select * from {{ ref('stg_camera_clips') }}),
 
-events as (select * from {{ ref('int_camera_events') }})
+-- Several events can share one recording, and joining them all repeated the clip, its bytes
+-- and its duration. The first of them is the one that caused the recording.
+events as (
+
+    select *
+    from {{ ref('int_camera_events') }}
+    where clip_id is not null
+    qualify row_number() over (partition by clip_id order by started_at, event_id) = 1
+
+)
 
 select
     clips.clip_id,
