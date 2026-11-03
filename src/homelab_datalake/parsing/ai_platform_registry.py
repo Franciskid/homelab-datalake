@@ -70,6 +70,11 @@ values it had on day one and never be corrected by this mechanism. That is a rea
 and named limitation rather than a silent one; a backfill re-run is the fix, exactly
 as for the camera late-arrival case this repo already carries.
 
+A table windowed on a column that moves (`updated_at`, `last_seen_at`) has a second
+consequence: a row touched after the window lands under its new day and the old
+partition keeps the old copy, so the lake holds it twice. `warehouse_tables` keeps the
+newest copy per primary key; anything globbing the lake directly still sees both.
+
 ## Never copied
 
 Some columns are excluded outright, never selected and never granted. Two

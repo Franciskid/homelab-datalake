@@ -77,6 +77,42 @@ def test_publishing_nothing_is_an_error(tmp_path):
         serving.publish(empty, str(tmp_path / "serving.duckdb"))
 
 
+def _empty_marts(warehouse_file, *tables):
+    con = duckdb.connect(warehouse_file)
+    names = tables or [
+        t for (t,) in con.execute(
+            "SELECT table_name FROM duckdb_tables() WHERE schema_name = 'marts'"
+        ).fetchall()
+    ]
+    for table in names:
+        con.execute(f"DELETE FROM marts.{table}")  # noqa: S608 - test fixture names
+    con.close()
+
+
+def test_every_mart_empty_is_refused_even_with_nothing_to_replace(warehouse_file, tmp_path):
+    """25 Oct 2026: twenty-eight empty marts published twelve times, zero rows to every reader."""
+    _empty_marts(warehouse_file)
+    target = tmp_path / "serving.duckdb"
+    with pytest.raises(RuntimeError, match="every mart is empty"):
+        serving.publish(warehouse_file, str(target))
+    assert not target.exists()
+
+
+def test_a_mart_that_held_rows_going_empty_keeps_the_previous_copy(warehouse_file, tmp_path):
+    target = tmp_path / "serving.duckdb"
+    published = serving.publish(warehouse_file, str(target))
+
+    _empty_marts(warehouse_file, "fct_llm_call")
+    with pytest.raises(RuntimeError, match="fct_llm_call"):
+        serving.publish(warehouse_file, str(target))
+
+    con = serving.connect(str(target))
+    assert con.execute("SELECT count(*) FROM marts.fct_llm_call").fetchone()[0] > 0
+    con.close()
+    assert published.rows > 0
+    assert not (tmp_path / "serving.duckdb.building").exists()
+
+
 def test_connect_says_what_to_do_when_nothing_is_published(tmp_path):
     with pytest.raises(FileNotFoundError, match="warehouse_serving"):
         serving.connect(str(tmp_path / "absent.duckdb"))

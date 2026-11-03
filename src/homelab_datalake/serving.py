@@ -100,6 +100,7 @@ def publish(source_path: str, serving_path: str = SERVING_PATH) -> Published:
     """
     target = Path(serving_path)
     target.parent.mkdir(parents=True, exist_ok=True)
+    previous = _row_counts(target)
     staged = target.with_suffix(target.suffix + ".building")
     for leftover in (staged, Path(str(staged) + ".wal")):
         leftover.unlink(missing_ok=True)
@@ -134,8 +135,7 @@ def publish(source_path: str, serving_path: str = SERVING_PATH) -> Published:
         con.execute(f"ATTACH '{str(staged).replace(chr(39), chr(39) * 2)}' AS publishing;")
         con.execute(f"CREATE SCHEMA IF NOT EXISTS publishing.{MART_SCHEMA_SUFFIX};")
 
-        rows = 0
-        names = []
+        counts = {}
         for schema, table in tables:
             # Both identifiers come from DuckDB's own catalogue, not from input, and
             # are quoted anyway so an unusual model name cannot change the statement.
@@ -143,13 +143,28 @@ def publish(source_path: str, serving_path: str = SERVING_PATH) -> Published:
                 f'CREATE TABLE publishing."{MART_SCHEMA_SUFFIX}"."{table}" AS '  # noqa: S608
                 f'SELECT * FROM "{alias}"."{schema}"."{table}"'
             )
-            rows += con.execute(
+            counts[table] = con.execute(
                 f'SELECT count(*) FROM publishing."{MART_SCHEMA_SUFFIX}"."{table}"'  # noqa: S608
             ).fetchone()[0]
-            names.append(table)
         con.execute("DETACH publishing;")
     finally:
         con.close()
+
+    # Every mart existing says nothing about whether any of them holds a row: on 25 Oct
+    # 2026 twenty-eight empty marts passed the check above and readers got zero rows for
+    # a day. A mart that held rows does not go empty in a full rebuild of an append-only
+    # lake, so that is a failed load upstream, and the good copy stays in place.
+    rows = sum(counts.values())
+    names = list(counts)
+    emptied = sorted(t for t, n in counts.items() if n == 0 and previous.get(t, 0) > 0)
+    if not rows or emptied:
+        staged.unlink(missing_ok=True)
+        raise RuntimeError(
+            f"refusing to publish {source_path!r}: "
+            + (f"these marts held rows and are now empty: {', '.join(emptied)}. " if emptied
+               else "every mart is empty. ")
+            + "The previous copy is still being served."
+        )
 
     # Bind the semantic layer against the staged copy *before* swapping it in. The
     # tools name columns in marts they do not own, so a rename in dbt would otherwise
@@ -176,6 +191,34 @@ def publish(source_path: str, serving_path: str = SERVING_PATH) -> Published:
     return Published(
         tables=names, rows=rows, bytes_written=target.stat().st_size, path=str(target)
     )
+
+
+def _row_counts(path: Path) -> dict[str, int]:
+    """Rows per mart in the copy being replaced. Empty if there is none, or it is unreadable.
+
+    An unreadable copy is no reason to keep serving it, so it never blocks a publish.
+    """
+    if not path.exists():
+        return {}
+    con = duckdb.connect(":memory:")
+    try:
+        escaped = str(path).replace("'", "''")
+        con.execute(f"ATTACH '{escaped}' AS previous (READ_ONLY);")
+        tables = con.execute(
+            "SELECT table_name FROM duckdb_tables() "
+            "WHERE database_name = 'previous' AND schema_name = ?",
+            [MART_SCHEMA_SUFFIX],
+        ).fetchall()
+        return {
+            table: con.execute(
+                f'SELECT count(*) FROM previous."{MART_SCHEMA_SUFFIX}"."{table}"'  # noqa: S608
+            ).fetchone()[0]
+            for (table,) in tables
+        }
+    except duckdb.Error:
+        return {}
+    finally:
+        con.close()
 
 
 def connect(serving_path: str = SERVING_PATH) -> duckdb.DuckDBPyConnection:
