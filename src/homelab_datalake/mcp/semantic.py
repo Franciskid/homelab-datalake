@@ -1445,6 +1445,17 @@ FINANCE_TRANSACTIONS = Dataset(
                   "The subscription or bill series this charge belongs to, if any."),
         Attribute("tags", "tags", "JSON array of the owner's tags."),
         Attribute("notes", "notes", "The owner's free-text note."),
+        Attribute("description", "description", "The bank's own description line."),
+        Attribute("transaction_status", "transaction_status", "posted or pending."),
+        Attribute("posted_at", "posted_at", "When the bank posted it, if it says."),
+        Attribute("source", "source", "synced, imported, manual or derived."),
+        Attribute("source_transaction_id", "source_transaction_id", "The bank's own reference."),
+        Attribute("metadata", "metadata",
+                  "JSON: what the bank sent (debtor, creditor, references, value date) and what "
+                  "the owner attached (userLocation, userNature, userTransfer)."),
+        Attribute("tag_slugs", "tag_slugs", "JSON array of the tags' slugs."),
+        Attribute("property_links", "property_links",
+                  "JSON array of the properties this transaction is booked against."),
     ),
     default_fields=(
         "booked_on", "merchant", "amount_home", "category_label", "transaction_type", "account_name",

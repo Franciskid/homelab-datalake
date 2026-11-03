@@ -7,10 +7,14 @@ currency are exactly what the owner sees on screen -- recomputing them here from
 be a second implementation that drifts.
 
 Transactions, accounts, recurring series and categories are *state*: the owner recategorises a
-payment, the import folds a duplicate away, a subscription ends. So they are ledgers
-(parsing/ledger.py): every distinct version of every row is kept, a deleted transaction keeps its
-last version, and "what did this look like in July" stays answerable. Balances are the one
-time series, one row per account per day read.
+payment, the import folds a duplicate away, a subscription ends. They are ledgers
+(parsing/ledger.py) reduced to each row's newest version on every run: the owner asked for the
+lake to hold what the tracker holds now, so a row landed before a field was exported is
+replaced by one that carries it, automatically. A deleted transaction keeps its last version.
+Balances are the one time series, one row per account per day read.
+
+The export's `tables` section is every table in the tracker's database, every column, and each
+lands as its own ledger the same way (parsing/finance_tables.py).
 
 Amounts are signed as the tracker signs them: negative is money out.
 """
@@ -37,7 +41,7 @@ from dagster import (
 )
 
 from homelab_datalake import lakeio, layout
-from homelab_datalake.parsing import ledger
+from homelab_datalake.parsing import finance_tables, ledger
 from homelab_datalake.resources import LakeStorage
 
 # The tracker's backend as the other homelab containers reach it (the finance MCP uses the same
@@ -74,6 +78,11 @@ FIELDS: dict[str, dict[str, str]] = {
         "transferCategory": "transfer_category", "type": "type", "typeSource": "type_source",
         "transferKind": "transfer_kind", "recurringSeriesId": "recurring_series_id",
         "needsReview": "needs_review", "tags": "tags", "notes": "notes",
+        # From the tracker's database rather than its screen: what the bank sent, and what the
+        # owner attached beyond category and tags (location, nature, transfer pairing).
+        "description": "description", "rawMerchantName": "raw_merchant_name", "status": "status",
+        "postedAt": "posted_at", "source": "source", "sourceTransactionId": "source_transaction_id",
+        "metadata": "metadata", "tagSlugs": "tag_slugs", "propertyLinks": "property_links",
     },
     "recurringSeries": {
         "id": "series_id", "name": "series_name", "type": "type", "status": "status",
@@ -115,6 +124,7 @@ BALANCE_SCHEMA = pa.schema([
 ])
 
 CHECK_NO_MASS_DISAPPEARANCE = "transactions_did_not_disappear_en_masse"
+CHECK_EVERY_TABLE_LANDED = "every_tracker_table_landed"
 # A handful of transactions legitimately leave the tracker (a duplicate folded away, a pending
 # entry that never booked). Hundreds leaving at once means the export answered for the wrong
 # owner or an empty workspace -- the failure a green run would otherwise hide.
@@ -175,14 +185,35 @@ def disappearance_ok(stats: ledger.MergeStats) -> bool:
     return stats.keys_gone_from_source <= limit
 
 
+def table_rows(records: list[dict]) -> list[dict]:
+    """One database table's rows, every column, under snake_case names."""
+    return [{finance_tables.snake(field): value for field, value in record.items()} for record in records]
+
+
+def unlanded_tables(payload: dict) -> list[str]:
+    return sorted(set(payload.get("tables") or {}) - set(finance_tables.TABLES))
+
+
+def _land_ledger(lake, table, rows, keys, captured_at, volatile=frozenset()) -> ledger.MergeStats:
+    key = f"{layout.prefix(table)}/data.parquet"
+    merged, stats = ledger.merge(lakeio.read_strict(lake, key), rows, keys, captured_at, volatile)
+    lake.write_table(key, ledger.newest_only(merged, keys))
+    return stats
+
+
 def land(lake: LakeStorage, payload: dict, captured_at: datetime) -> dict[str, ledger.MergeStats]:
     """Merge one export into the ledgers and write the day's balances. Returns ledger stats."""
     stats: dict[str, ledger.MergeStats] = {}
     for table, (section, keys, volatile) in LEDGERS.items():
-        key = f"{layout.prefix(table)}/data.parquet"
         rows = [rename(section, record) for record in payload[section]]
-        merged, stats[table] = ledger.merge(lakeio.read_strict(lake, key), rows, keys, captured_at, volatile)
-        lake.write_table(key, merged)
+        stats[table] = _land_ledger(lake, table, rows, keys, captured_at, volatile)
+
+    tables = payload.get("tables") or {}
+    for name, keys in finance_tables.TABLES.items():
+        if name in tables:
+            stats[finance_tables.lake_table(name)] = _land_ledger(
+                lake, finance_tables.lake_table(name), table_rows(tables[name]), keys, captured_at,
+            )
 
     # One file per day, rewritten by every run that day: the day's balance is the last one read.
     day: date = captured_at.date()
@@ -203,6 +234,12 @@ def land(lake: LakeStorage, payload: dict, captured_at: datetime) -> dict[str, l
             "Warns when far more transactions left the tracker than dedup or an unbooked "
             "pending entry explain -- an export for the wrong owner looks green otherwise."
         ),
+    ), AssetCheckSpec(
+        name=CHECK_EVERY_TABLE_LANDED, asset="finance_raw",
+        description=(
+            "Warns when the export sends a table parsing/finance_tables.py does not name, or "
+            "stops sending one it does. Either way part of the tracker is not in the lake."
+        ),
     )],
     description=(
         "The banking tracker's accounts, transactions, recurring charges and categories as "
@@ -216,6 +253,8 @@ def finance_raw(context: AssetExecutionContext, lake: LakeStorage) -> Materializ
     captured_at = datetime.now(UTC)
     stats = land(lake, payload, captured_at)
     transactions = stats["finance_transactions"]
+    unnamed = unlanded_tables(payload)
+    not_sent = sorted(set(finance_tables.TABLES) - set(payload.get("tables") or {}))
 
     context.log.info(
         "finance: %d transactions (%d new versions, %d gone), %d accounts, %d recurring series",
@@ -237,6 +276,14 @@ def finance_raw(context: AssetExecutionContext, lake: LakeStorage) -> Materializ
             metadata={
                 "gone": transactions.keys_gone_from_source,
                 "current": transactions.current_keys,
+            },
+        ), AssetCheckResult(
+            check_name=CHECK_EVERY_TABLE_LANDED,
+            passed=not unnamed and not not_sent,
+            severity=AssetCheckSeverity.WARN,
+            metadata={
+                "not_named_here": ", ".join(unnamed) or "none",
+                "not_sent": ", ".join(not_sent) or "none",
             },
         )],
     )

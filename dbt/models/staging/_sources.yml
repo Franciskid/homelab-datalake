@@ -2125,6 +2125,33 @@ sources:
             description: The owner's tags, as a JSON array of labels.
           - name: notes
             description: The owner's note on the transaction.
+          - name: description
+            description: >
+              The bank's own description line, before the tracker cleaned it into merchant.
+          - name: raw_merchant_name
+            description: >
+              The merchant name as stored, before the tracker's display cleanup.
+          - name: status
+            description: >
+              posted or pending.
+          - name: posted_at
+            description: >
+              When the bank posted it, if it says.
+          - name: source
+            description: >
+              Where the row came from: synced, imported, manual or derived.
+          - name: source_transaction_id
+            description: >
+              The bank's own reference for the transaction.
+          - name: metadata
+            description: >
+              JSON: everything the bank sent (debtor, creditor, references, value date, merchant category code) and everything the owner attached (userLocation, userNature, userTransfer, userMerchantVisual).
+          - name: tag_slugs
+            description: >
+              JSON array of the tags' slugs, the form a tag filter matches.
+          - name: property_links
+            description: >
+              JSON array of {propertyId, kind}: the properties this transaction is booked against.
           - name: _version_hash
             description: Hash of the row's tracked values; a new hash is a new version.
           - name: _first_seen_at

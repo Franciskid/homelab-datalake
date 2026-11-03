@@ -37,6 +37,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from homelab_datalake.parsing import ai_platform_registry as _ai_platform
+from homelab_datalake.parsing import finance_tables as _finance_tables
 from homelab_datalake.parsing import media_pipeline as _media_pipeline
 
 LAYER_RAW = "raw"
@@ -515,6 +516,15 @@ _FINANCE_RAW: tuple[Dataset, ...] = (
          "The category catalogue and the picker group each belongs to.", partition_column=None),
     _raw("finance_account_balances", DOMAIN_FINANCE, "banking_tracker", "account_balances",
          "Each account's balance, in its own and the home currency, per day read."),
+    # Every table the tracker has, every column, straight from its database: properties,
+    # mortgages, holdings, trades, the bank metadata on each transaction, and the rest.
+    *(
+        _raw(_finance_tables.lake_table(name), DOMAIN_FINANCE, "banking_tracker_db",
+             _finance_tables.snake(name),
+             f"The tracker's {name} table, every column, the newest version of each row.",
+             partition_column=None)
+        for name in _finance_tables.TABLES
+    ),
 )
 
 _FINANCE_MARTS: tuple[Dataset, ...] = (

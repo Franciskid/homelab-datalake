@@ -12,7 +12,7 @@ datasets (layout.Dataset.lake_only) are deliberately not here.
 
 from homelab_datalake import layout
 from homelab_datalake.assets import finance, host_logs, keycloak, media_pipeline, status_page
-from homelab_datalake.parsing import ledger
+from homelab_datalake.parsing import finance_tables, ledger
 from homelab_datalake.parsing.media_pipeline import ALL_TABLES as MEDIA_PIPELINE_TABLES
 
 ADDED_SOURCES = (
@@ -48,4 +48,10 @@ ADDED_SOURCES = (
     ),
     ("finance_account_balances", finance.BALANCES_PREFIX, finance.BALANCE_SCHEMA,
      finance.finance_raw, layout.dataset("finance_account_balances").description),
+    *(
+        (finance_tables.lake_table(name), layout.prefix(finance_tables.lake_table(name)),
+         ledger.META_SCHEMA, finance.finance_raw,
+         layout.dataset(finance_tables.lake_table(name)).description)
+        for name in finance_tables.TABLES
+    ),
 )

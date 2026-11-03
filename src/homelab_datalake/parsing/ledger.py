@@ -159,6 +159,23 @@ def merge(
     )
 
 
+def newest_only(table: pa.Table, key_columns: tuple[str, ...]) -> pa.Table:
+    """The ledger reduced to each key's newest version, gone keys included.
+
+    For a source whose owner wants the lake to hold what the source holds now: a version
+    written before a field was exported would otherwise stay in the lake beside the one that
+    carries it.
+    """
+    newest: dict[tuple, dict] = {}
+    for row in table.to_pylist():
+        key = tuple(row.get(column) for column in key_columns)
+        held = newest.get(key)
+        if held is None or (row[LAST_SEEN], row[FIRST_SEEN]) > (held[LAST_SEEN], held[FIRST_SEEN]):
+            newest[key] = row
+    columns = [c for c in table.column_names if c not in META_COLUMNS]
+    return to_table(list(newest.values()), columns)
+
+
 def to_table(rows: list[dict], source_columns: list[str]) -> pa.Table:
     schema = pa.schema([(c, pa.string()) for c in source_columns] + list(META_SCHEMA))
     return pa.Table.from_pylist(

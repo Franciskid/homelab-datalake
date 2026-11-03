@@ -32,7 +32,9 @@ def export(**overrides):
             "direction": "outflow", "category": "technology", "categoryLabel": "Technology",
             "categoryGroup": "tech", "transferCategory": None, "type": "subscription", "typeSource": "derived",
             "transferKind": None, "recurringSeriesId": "series-1", "needsReview": False, "tags": ["ai"],
-            "notes": None,
+            "notes": None, "description": "CB ANTHROPIC", "rawMerchantName": "Anthropic* Claude Sub",
+            "status": "posted", "postedAt": None, "source": "synced", "sourceTransactionId": "ref-1",
+            "metadata": {"userLocation": {"city": "Paris"}}, "tagSlugs": ["ai"], "propertyLinks": [],
         }],
         "recurringSeries": [{
             "id": "series-1", "name": "Claude", "type": "subscription", "status": "active",
@@ -78,7 +80,7 @@ def test_landing_writes_ledgers_and_the_days_balances(lake):
     assert balances[0]["balance_home"] == 1200.5
 
 
-def test_a_recategorised_transaction_keeps_its_old_version(lake):
+def test_a_recategorised_transaction_holds_only_its_new_version(lake):
     first = export()
     finance.land(lake, first, datetime(2026, 9, 28, 6, 0, tzinfo=UTC))
     recategorised = export()
@@ -86,7 +88,7 @@ def test_a_recategorised_transaction_keeps_its_old_version(lake):
     finance.land(lake, recategorised, datetime(2026, 9, 28, 7, 0, tzinfo=UTC))
 
     versions = read(lake, "finance_transactions")
-    assert sorted(version["type"] for version in versions) == ["bill", "subscription"]
+    assert [version["type"] for version in versions] == ["bill"]
 
 
 def test_an_exchange_rate_refresh_does_not_mint_a_version(lake):
@@ -135,3 +137,41 @@ def test_an_answer_that_is_not_the_export_is_refused(monkeypatch):
 def test_only_http_urls_are_fetched():
     with pytest.raises(ValueError, match="http"):
         finance.fetch_export("file:///etc/passwd", "secret-key")
+
+
+def test_a_version_landed_before_a_field_was_exported_is_replaced(lake):
+    """The owner's ask: the lake holds what the tracker holds now, with nothing older beside it."""
+    old = export()
+    del old["transactions"][0]["metadata"]
+    finance.land(lake, old, datetime(2026, 9, 28, tzinfo=UTC))
+    finance.land(lake, export(), datetime(2026, 9, 29, tzinfo=UTC))
+
+    rows = read(lake, "finance_transactions")
+    assert len(rows) == 1
+    assert json.loads(rows[0]["metadata"]) == {"userLocation": {"city": "Paris"}}
+
+
+def test_every_tracker_table_lands_with_every_column(lake):
+    payload = export(tables={
+        "investmentTrade": [{"id": "t1", "ticker": "CW8", "realizedPnl": "12.50", "metadata": {"broker": "x"}}],
+        "transactionTagAssignment": [{"transactionId": "tx-1", "tagId": "tag-1", "userId": "u"}],
+        "somethingNew": [{"id": "n"}],
+    })
+    finance.land(lake, payload, datetime(2026, 9, 28, tzinfo=UTC))
+
+    trade = read(lake, "finance_db_investment_trade")[0]
+    assert trade["ticker"] == "CW8" and trade["realized_pnl"] == "12.50"
+    assert json.loads(trade["metadata"]) == {"broker": "x"}
+    assert read(lake, "finance_db_transaction_tag_assignment")[0]["tag_id"] == "tag-1"
+    assert finance.unlanded_tables(payload) == ["somethingNew"]
+
+
+def test_every_tracker_table_has_a_lake_dataset_and_a_warehouse_table():
+    from homelab_datalake.assets.warehouse import _SOURCES
+    from homelab_datalake.parsing import finance_tables
+
+    loaded = {name for name, *_ in _SOURCES}
+    for name in finance_tables.TABLES:
+        assert layout.dataset(finance_tables.lake_table(name))
+        assert finance_tables.lake_table(name) in loaded
+
