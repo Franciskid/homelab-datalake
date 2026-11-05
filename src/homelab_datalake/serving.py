@@ -23,8 +23,8 @@ choosing a copy over a lock dance:
 * **The copy is a consistent snapshot**, taken through the engine rather than by
   copying bytes underneath a writer.
 
-It costs a file copy of a few tens of megabytes a night, which at this size is not a
-cost worth optimising.
+It costs a full copy each time a mart changes: 2.6 GB as of Nov 2026, most of it
+fct_http_request. See publish_if_changed for the hours when nothing did.
 """
 
 from __future__ import annotations
@@ -36,6 +36,7 @@ from pathlib import Path
 
 import duckdb
 
+from homelab_datalake import rebuild_state
 from homelab_datalake.mcp.semantic import create_dataset_views, validate
 
 logger = logging.getLogger(__name__)
@@ -191,6 +192,42 @@ def publish(source_path: str, serving_path: str = SERVING_PATH) -> Published:
     return Published(
         tables=names, rows=rows, bytes_written=target.stat().st_size, path=str(target)
     )
+
+
+def publish_if_changed(source_path: str, serving_path: str = SERVING_PATH) -> tuple[Published, bool]:
+    """Publish unless the copy being served already holds these marts. Says which it did.
+
+    A publish rewrites the whole file, so it is what is left of the hourly write once
+    rebuild_state has spared the rest. The marker sits beside the copy and is written only
+    after the swap: a crash between the two publishes once more rather than serving a
+    stale copy as current.
+    """
+    target = Path(serving_path)
+    marker = Path(f"{serving_path}.generation")
+    generation = rebuild_state.marts_generation(source_path)
+    if (
+        generation is not None
+        and target.exists()
+        and marker.exists()
+        and marker.read_text() == generation
+    ):
+        counts = _row_counts(target)
+        return (
+            Published(
+                tables=list(counts),
+                rows=sum(counts.values()),
+                bytes_written=target.stat().st_size,
+                path=str(target),
+            ),
+            False,
+        )
+
+    published = publish(source_path, serving_path)
+    if generation is not None:
+        staged = marker.with_suffix(".building")
+        staged.write_text(generation)
+        staged.replace(marker)
+    return published, True
 
 
 def _row_counts(path: Path) -> dict[str, int]:

@@ -518,8 +518,10 @@ analytics_job = define_asset_job(
     # and both failed. The next one now waits its turn. See run_queue in dagster.yaml.
     tags={"datalake/queue": "analytics"},
     description=(
-        "Rebuild the warehouse from the lake, build and test the dbt models, publish "
-        "the serving copy the MCP layer reads."
+        "Reload the raw tables whose objects changed in the lake, build and test the dbt "
+        "models downstream of them, publish the serving copy the MCP layer reads. "
+        "Everything is rebuilt once a day and after any code change; to force it, run "
+        "with the tag datalake/full_rebuild=true. See rebuild_state.py."
     ),
 )
 
@@ -531,7 +533,7 @@ analytics_job = define_asset_job(
     description=(
         "Hourly at :55, after the last hourly source (finance, :50), so the marts are "
         "never more than an hour behind what landed. The nightly sources are done by "
-        "03:45 and picked up at 03:55. A run takes about eight minutes and the MCP "
+        "03:45 and picked up at 03:55, which is also the day's full rebuild. The MCP "
         "reads the published serving copy, so an hourly rebuild never blocks a reader. "
         "Named analytics_daily until 27 Oct 2026; runs before that are under the old "
         "name in the run history."
