@@ -237,6 +237,28 @@ class LakeStorage(ConfigurableResource):
             str((p.relative_to(self.local_root)).as_posix()) for p in root.rglob("*") if p.is_file()
         )
 
+    def parquet_fingerprint(self, prefix: str) -> str:
+        """Changes when a Parquet object under a prefix is added, removed or replaced.
+
+        Raises if the bucket cannot answer, so an outage can never read as "unchanged".
+        The trailing slash keeps `access` from also matching `access_rejects`.
+        """
+        entries: list[str] = []
+        if self.uses_s3:
+            pages = self._client().get_paginator("list_objects_v2")
+            for page in pages.paginate(Bucket=self.bucket, Prefix=f"{prefix}/"):
+                entries += [
+                    f"{obj['Key']} {obj['ETag']} {obj['Size']}"
+                    for obj in page.get("Contents", [])
+                    if obj["Key"].endswith(".parquet")
+                ]
+        else:
+            root = Path(self.local_root) / prefix
+            for path in root.rglob("*.parquet") if root.exists() else ():
+                stat = path.stat()
+                entries.append(f"{path.as_posix()} {stat.st_mtime_ns} {stat.st_size}")
+        return hashlib.sha256("\n".join(sorted(entries)).encode()).hexdigest()
+
     def holds_parquet(self, prefix: str) -> bool:
         """Whether Parquet has landed under a prefix. Raises if the bucket cannot answer.
 

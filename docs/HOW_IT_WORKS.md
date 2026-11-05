@@ -163,6 +163,22 @@ The files are in `src/homelab_datalake/assets/`.
 The job `analytics_hourly` runs steps 2 to 5, every hour at
 :55 UTC, after the last hourly source lands.
 
+### What an hourly run redoes
+
+A raw table is reloaded only if its objects in the lake changed. dbt builds only what
+is downstream of those tables. The serving copy is replaced only if a mart was rebuilt.
+Nearly all of the warehouse lands once a night, so this spares most of the hourly write.
+
+Everything is still rebuilt on the first run from 03:00 UTC each day and after any
+change to the code. To force it:
+
+```bash
+docker exec -e DAGSTER_HOME=/dagster_home datalake-daemon dagster job execute -j analytics_hourly -m homelab_datalake.definitions --tags '{"datalake/full_rebuild": "true"}'
+```
+
+The state lives in the `build_state` schema of the warehouse. See
+`src/homelab_datalake/rebuild_state.py`.
+
 ### How a publish replaces
 
 `lake_curated` and `lake_marts` write all the partitions first. Then they delete the

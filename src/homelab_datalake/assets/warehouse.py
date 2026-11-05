@@ -13,6 +13,7 @@ than one somebody answers by reading two projects side by side.
 """
 
 import os
+from datetime import UTC, datetime
 from pathlib import Path
 
 import duckdb
@@ -31,7 +32,7 @@ from dagster import (
     multi_asset,
 )
 
-from homelab_datalake import layout, serving
+from homelab_datalake import layout, rebuild_state, serving
 from homelab_datalake.assets.ai_platform import ai_platform_asset_by_table
 from homelab_datalake.assets.camera import (
     _ANNOTATION_SCHEMA,
@@ -316,26 +317,52 @@ def connect() -> duckdb.DuckDBPyConnection:
         )
         for name, _prefix, _schema, upstream, description in _SOURCES
     ],
-    # Not subsettable: the whole point is one full rebuild from the lake, so there is
-    # no cheaper path through this that materialising a single table would take.
+    # Not subsettable: which sources are reloaded is decided by what changed in the lake,
+    # not by what was selected.
     can_subset=False,
 )
 def warehouse_tables(context: AssetExecutionContext, lake: LakeStorage):
     """Every landed partition, read from the lake into DuckDB under `raw`.
 
-    Rebuilt in full from Parquet on every run, so the warehouse cannot drift from
-    object storage: it holds what the lake holds, newest copy of a window table's row
+    A table is replaced only when its objects in the lake changed, and all of them are
+    replaced once a day (see rebuild_state), so the warehouse cannot drift from object
+    storage for long: it holds what the lake holds, newest copy of a window table's row
     only, or the run fails.
     """
     with connect() as con:
         lake.configure_duckdb(con)
         con.execute("CREATE SCHEMA IF NOT EXISTS raw;")
+        full = rebuild_state.begin_load(
+            con,
+            code=rebuild_state.code_version(),
+            now=datetime.now(UTC),
+            forced=context.run.tags.get(rebuild_state.FULL_REBUILD_TAG) == "true",
+        )
+        known = rebuild_state.loaded(con)
+        existing = {
+            table for (table,) in con.execute(
+                "SELECT table_name FROM duckdb_tables() WHERE schema_name = 'raw'"
+            ).fetchall()
+        }
 
         counts: dict[str, int] = {}
+        reloaded: set[str] = set()
         for name, prefix, schema, _upstream, _description in _SOURCES:
-            load_table(con, lake, name, prefix, schema, context.log)
+            current = rebuild_state.fingerprint(
+                lake.parquet_fingerprint(prefix),
+                load_statement(name, lake.duckdb_scan_target(prefix)),
+            )
+            if known.get(name) != current or name not in existing:
+                load_table(con, lake, name, prefix, schema, context.log)
+                rebuild_state.record_loaded(con, name, current)
+                reloaded.add(name)
             table = f"raw.{name}"
             counts[name] = con.execute(f"SELECT count(*) FROM {table}").fetchone()[0]  # noqa: S608
+        context.log.info(
+            "%s: reloaded %d of %d raw tables: %s",
+            "full rebuild" if full else "partial rebuild",
+            len(reloaded), len(_SOURCES), sorted(reloaded),
+        )
 
         partitions = (
             con.execute("SELECT count(DISTINCT (dt, host_source)) FROM raw.npm_access").fetchone()[0]
@@ -348,6 +375,7 @@ def warehouse_tables(context: AssetExecutionContext, lake: LakeStorage):
             "rows": counts[name],
             "source": MetadataValue.path(lake.duckdb_scan_target(prefix)),
             "warehouse": MetadataValue.path(DUCKDB_PATH),
+            "reloaded": name in reloaded,
         }
         if name == "npm_access":
             metadata["partitions_loaded"] = partitions
@@ -385,9 +413,10 @@ CHECK_SEMANTIC_COVERAGE = "semantic_layer_covers_the_marts"
     ],
 )
 def warehouse_serving(context: AssetExecutionContext) -> Output[dict]:
-    published = serving.publish(DUCKDB_PATH)
+    published, replaced = serving.publish_if_changed(DUCKDB_PATH)
     context.log.info(
-        "published %d tables, %d rows, %.1f MB to %s",
+        "%s %d tables, %d rows, %.1f MB at %s",
+        "published" if replaced else "no mart changed, kept",
         len(published.tables), published.rows, published.bytes_written / 1e6, published.path,
     )
 
@@ -405,6 +434,7 @@ def warehouse_serving(context: AssetExecutionContext) -> Output[dict]:
             "tables": len(published.tables),
             "rows": published.rows,
             "size_mb": round(published.bytes_written / 1e6, 2),
+            "replaced": replaced,
             "path": MetadataValue.path(published.path),
             "published": MetadataValue.text(", ".join(published.tables)),
         },
