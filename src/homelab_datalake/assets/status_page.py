@@ -1,13 +1,17 @@
 """The status page's own history: Chateau's and Ferme's resources, states and incidents.
 
 Prometheus scrapes the status page since 2026-09-15 (job `status-page`), which covers
-from then on. Everything before is only in the two JSON files on its volume, and the
-application prunes both to 90 days -- `metrics.json` samples began on 2026-08-08, so
-the oldest start disappearing in November. This lands them first and keeps them.
+from then on. Everything before is only in the files on its volume, and the application
+prunes them to 90 days -- `metrics.json` samples began on 2026-08-08, so the oldest
+start disappearing in November. This lands them first and keeps them.
 
-Read from a read-only mount of the `status-page-data` volume. `incidents.json` also
-holds browser push subscriptions, whose endpoints are bearer capabilities; that key is
-never read.
+Read from a read-only mount of the `status-page-data` volume. Samples and observations
+are in `metrics.ndjson` and `observations.ndjson`, one JSON object per line. Before
+November 2026 they were arrays inside `metrics.json` and `incidents.json`, so both
+places are read: a rollback of the status page moves them back. If neither exists the
+capture fails, because an empty list here would look like a quiet day rather than a
+source that has moved. `incidents.json` also holds browser push subscriptions, whose
+endpoints are bearer capabilities; that key is never read.
 
 Samples and observations are merged into daily partitions by their natural key, so a
 day the application has pruned keeps what the lake already holds. Incidents,
@@ -172,15 +176,33 @@ def merge_partitions(lake: LakeStorage, prefix: str, rows: list[dict], schema: p
     return report
 
 
+def _entries(document: dict, key: str, log: Path) -> list[dict]:
+    """A history from its log, plus any still in the document it used to live in."""
+    if key not in document and not log.exists():
+        raise FileNotFoundError(f"Neither {log.name} nor a {key!r} list exists; the status page has moved its data.")
+    entries = list(document.get(key) or [])
+    if log.exists():
+        for line in log.read_text().splitlines():
+            try:
+                entries.append(json.loads(line))
+            except ValueError:
+                # Being appended right now, or torn by a crash. merge_partitions keeps
+                # what is already landed, and a complete line arrives on the next run.
+                continue
+    return entries
+
+
 def capture(lake: LakeStorage, data_dir: str, captured_at: datetime) -> dict:
     directory = Path(data_dir)
     metrics = json.loads((directory / "metrics.json").read_text())
     state = json.loads((directory / "incidents.json").read_text())
+    samples = _entries(metrics, "samples", directory / "metrics.ndjson")
+    observations = _entries(state, "observations", directory / "observations.ndjson")
     report = {
         "metric_samples": merge_partitions(
-            lake, SAMPLES_PREFIX, sample_rows(metrics), SAMPLE_SCHEMA, ("server_id", "recorded_at")),
+            lake, SAMPLES_PREFIX, sample_rows({"samples": samples}), SAMPLE_SCHEMA, ("server_id", "recorded_at")),
         "observations": merge_partitions(
-            lake, OBSERVATIONS_PREFIX, observation_rows(state), OBSERVATION_SCHEMA,
+            lake, OBSERVATIONS_PREFIX, observation_rows({"observations": observations}), OBSERVATION_SCHEMA,
             ("server_id", "observed_at", "source")),
     }
     for table_name, rows in ledger_rows(state).items():

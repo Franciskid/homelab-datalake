@@ -68,6 +68,56 @@ def test_a_day_the_status_page_pruned_keeps_what_the_lake_has(lake, tmp_path):
     assert held.num_rows == 2 and report["metric_samples"]["partitions_written"] == 0
 
 
+def _observation(at, status="UP"):
+    return {"serverId": "srv-1", "observedAt": at, "sentinelStatus": status, "source": "sentinel_poll"}
+
+
+def _append_only_volume(tmp_path, samples, observations):
+    """The layout since November 2026: histories in logs, not in the JSON documents."""
+    directory = Path(_volume(tmp_path, [], []))
+    for name, key in (("metrics.json", "samples"), ("incidents.json", "observations")):
+        document = json.loads((directory / name).read_text())
+        del document[key]
+        (directory / name).write_text(json.dumps(document))
+    (directory / "metrics.ndjson").write_text("".join(json.dumps(s) + "\n" for s in samples))
+    (directory / "observations.ndjson").write_text("".join(json.dumps(o) + "\n" for o in observations))
+    return directory
+
+
+def test_append_only_logs_land_like_the_old_arrays(lake, tmp_path):
+    data = _append_only_volume(
+        tmp_path, [_sample("2026-11-05T07:42:21+00:00")], [_observation("2026-11-05T07:40:00.960Z")])
+    report = status_page.capture(lake, str(data), datetime(2026, 11, 5, tzinfo=UTC))
+    assert report["metric_samples"]["rows_added"] == 1
+    assert report["observations"]["rows_added"] == 1
+    day = lakeio.read_strict(lake, f"{status_page.OBSERVATIONS_PREFIX}/dt=2026-11-05/data.parquet").to_pylist()
+    assert day[0]["server_id"] == "srv-1" and day[0]["sentinel_status"] == "UP"
+
+
+def test_a_line_being_appended_is_left_for_the_next_run(lake, tmp_path):
+    data = _append_only_volume(tmp_path, [_sample("2026-11-05T07:42:21Z")], [_observation("2026-11-05T07:40:00Z")])
+    with (data / "observations.ndjson").open("a") as log:
+        log.write('{"serverId":"srv-1","obser')
+    report = status_page.capture(lake, str(data), datetime(2026, 11, 5, tzinfo=UTC))
+    assert report["observations"]["rows_added"] == 1
+
+
+def test_samples_in_both_places_land_once(lake, tmp_path):
+    data = Path(_volume(tmp_path, [_sample("2026-11-05T07:42:21Z")], [_observation("2026-11-05T07:40:00Z")]))
+    (data / "metrics.ndjson").write_text(json.dumps(_sample("2026-11-05T07:42:21Z")) + "\n")
+    (data / "observations.ndjson").write_text(json.dumps(_observation("2026-11-05T07:40:00Z")) + "\n")
+    report = status_page.capture(lake, str(data), datetime(2026, 11, 5, tzinfo=UTC))
+    assert report["metric_samples"]["rows_added"] == 1 and report["observations"]["rows_added"] == 1
+
+
+@pytest.mark.parametrize("log", ["metrics.ndjson", "observations.ndjson"])
+def test_a_history_that_has_moved_fails_instead_of_looking_quiet(lake, tmp_path, log):
+    data = _append_only_volume(tmp_path, [], [])
+    (data / log).unlink()
+    with pytest.raises(FileNotFoundError, match=log):
+        status_page.capture(lake, str(data), datetime(2026, 11, 5, tzinfo=UTC))
+
+
 def test_push_subscriptions_never_reach_the_lake(lake, tmp_path):
     data = _volume(tmp_path, [_sample("2026-08-08T00:04:23Z")], [])
     status_page.capture(lake, data, datetime(2026, 9, 15, tzinfo=UTC))
