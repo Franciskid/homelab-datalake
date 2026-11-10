@@ -76,7 +76,9 @@ COMPACT_MAX_VALUES = 15
 # test_mcp_server.py that runs this over the real registry, not a fixture.
 LIST_DATASETS_BUDGET = 4_000
 DESCRIBE_DATASET_BUDGET = 4_000
-DESCRIBE_SCHEMA_BUDGET = 6_000
+# 6,500 since 2026-11-10: each mart costs one ~55-character line here, and
+# agg_edge_client_daily took the listing to 6,023 against the old 6,000.
+DESCRIBE_SCHEMA_BUDGET = 6_500
 
 # Auth is decided at construction, from the environment, rather than patched on
 # afterwards: a server that exists for a moment without its verifier is a server that

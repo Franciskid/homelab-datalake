@@ -193,3 +193,16 @@ def test_lines_without_edge_fields_still_parse_with_nulls():
     result = parse_line(PROXY + " [Request-time 2.345] [Upstream-time 2.301]")
     assert isinstance(result, ParsedLine)
     assert result.edge_peer is None and result.edge_route is None
+
+
+def test_today_is_an_npm_partition():
+    """npm_today_hourly_schedule lands today's partition, so it has to exist."""
+    import datetime
+
+    from dagster import MultiPartitionKey
+
+    from homelab_datalake.assets.npm_access import npm_partitions
+
+    today = datetime.datetime.now(datetime.timezone.utc).date().isoformat()
+    keys = npm_partitions.get_partition_keys()
+    assert MultiPartitionKey({"date": today, "host": "fraserv"}) in keys

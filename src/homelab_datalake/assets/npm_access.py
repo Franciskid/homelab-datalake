@@ -70,7 +70,9 @@ HOSTS = [h.strip() for h in os.environ.get("NPM_HOSTS", "fraserv,amb").split(","
 
 npm_partitions = MultiPartitionsDefinition(
     {
-        "date": DailyPartitionsDefinition(start_date=LOG_RETENTION_START),
+        # end_offset=1 makes today a partition too, so npm_today_hourly_schedule can
+        # land the day so far every hour; the 03:00 run still rewrites it complete.
+        "date": DailyPartitionsDefinition(start_date=LOG_RETENTION_START, end_offset=1),
         "host": StaticPartitionsDefinition(HOSTS),
     }
 )
