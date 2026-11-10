@@ -1499,12 +1499,132 @@ FINANCE_BALANCES = Dataset(
 )
 
 
+
+EDGE_CLIENTS = Dataset(
+    name="edge_clients",
+    table="marts.dim_edge_client",
+    kind="event",
+    date_column="last_seen_at",
+    description=(
+        "Every public address seen by NPM in 90 days, its threat score, and whether it "
+        "is blocked. One row per address: how much it probed (scanner-wordlist paths, "
+        "bursts, 4xx, going around Cloudflare), its highest daily threat score (0-100, "
+        "flagged at 40+), and the owner's current decision from the Edge security "
+        "report -- is_blocked says whether NPM rejects it now. The date range filters "
+        "on last_seen_at. Raw "
+        "addresses; per-day detail is marts.agg_edge_client_daily, every decision ever "
+        "taken is edge_decisions, and the requests themselves are web_traffic."
+    ),
+    dimensions=(
+        Dimension("threat_level", "threat_level", "high (70+), medium (40-69), low or none."),
+        Dimension("is_flagged", "is_flagged", "Score 40 or more: listed on the report."),
+        Dimension("is_blocked", "is_blocked", "NPM rejects it now (a block in force)."),
+        Dimension("decision_action", "decision_action", "block or allow, when a decision is in force."),
+        Dimension("decision_rule", "decision_rule", "manual (an admin) or auto (auto-block)."),
+        Dimension("is_datacenter", "is_datacenter", "Comes from a cloud or hosting network."),
+        Dimension("is_verified_crawler", "is_verified_crawler", "Googlebot or Bingbot; never flagged."),
+        Dimension("client_ip_version", "client_ip_version", "4 or 6."),
+        Dimension("geo_country_code", "geo_country_code", "ISO country code, when known."),
+        Dimension("geo_country_name", "geo_country_name", "Country name, when known."),
+        Dimension("geo_city", "geo_city", "City, when known."),
+        Dimension("geo_as_org", "geo_as_org", "The network's owner."),
+    ),
+    measures=(
+        Measure("clients", "count(*)", "Number of addresses.", "addresses"),
+        Measure("flagged_clients", "count(*) FILTER (WHERE is_flagged)", "Addresses scoring 40+.", "addresses"),
+        Measure("blocked_clients", "count(*) FILTER (WHERE is_blocked)", "Addresses NPM rejects now.", "addresses"),
+        Measure("flagged_not_blocked", "count(*) FILTER (WHERE is_flagged AND NOT is_blocked)",
+                "Flagged addresses with no block in force.", "addresses"),
+        Measure("probe_requests", "sum(probe_requests)", "Scanner-wordlist requests.", "requests"),
+        Measure("requests", "sum(requests)", "All their requests.", "requests"),
+        Measure("rejected_requests", "sum(rejected_requests)", "Requests NPM closed with 444.", "requests"),
+        Measure("direct_requests", "sum(direct_requests)",
+                "Requests that went straight to the origin IP (logged since 2026-11-10).", "requests"),
+    ),
+    default_measures=("clients", "flagged_clients", "blocked_clients", "probe_requests"),
+    attributes=(
+        Attribute("client_address", "client_address", "The address."),
+        Attribute("client_network", "client_network", "Its /24 (IPv4) or /48 (IPv6) network."),
+        Attribute("geo_latitude", "geo_latitude", "Latitude of its city, when known."),
+        Attribute("geo_longitude", "geo_longitude", "Longitude of its city, when known."),
+        Attribute("geo_asn", "geo_asn", "Its autonomous system number."),
+        Attribute("first_seen_at", "first_seen_at", "Its first request in the 90 days."),
+        Attribute("last_seen_at", "last_seen_at", "Its last request."),
+        Attribute("active_days", "active_days", "Days with at least one request."),
+        Attribute("requests", "requests", "Its requests over the window."),
+        Attribute("probe_requests", "probe_requests", "Its scanner-wordlist requests."),
+        Attribute("client_errors", "client_errors", "Its requests answered 4xx."),
+        Attribute("direct_requests", "direct_requests", "Its requests straight to the origin IP."),
+        Attribute("rejected_requests", "rejected_requests", "Its requests NPM closed with 444."),
+        Attribute("peak_requests_per_minute", "peak_requests_per_minute", "Its busiest minute."),
+        Attribute("max_threat_score", "max_threat_score", "Its highest daily score, 0-100."),
+        Attribute("reasons", "reasons", "The rules that fired: probe_paths, burst, origin_direct, ..."),
+        Attribute("sample_probe_paths", "sample_probe_paths", "Up to eight probe paths it asked for."),
+        Attribute("sample_hosts", "sample_hosts", "Up to eight hosts it asked for."),
+        Attribute("decision_id", "decision_id", "The decision in force (joins edge_decisions)."),
+        Attribute("decision_cidr", "decision_cidr", "What the decision covers -- may be its network."),
+        Attribute("decision_reason", "decision_reason", "Why it was decided."),
+        Attribute("decided_by", "decided_by", "Who decided."),
+        Attribute("decided_at", "decided_at", "When."),
+        Attribute("decision_expires_at", "decision_expires_at", "When it lapses; null = until lifted."),
+    ),
+    default_fields=(
+        "client_address", "max_threat_score", "threat_level", "is_blocked", "geo_country_code",
+        "geo_as_org", "probe_requests", "last_seen_at",
+    ),
+    record_order="last_seen_at",
+)
+
+
+EDGE_DECISIONS = Dataset(
+    name="edge_decisions",
+    table="marts.fct_edge_decision",
+    kind="event",
+    date_column="partition_date",
+    description=(
+        "Every block and never-block decision from the Edge security report. Taken by an "
+        "admin or by the auto-block rule they agreed to, lifted ones included. status is "
+        "active, expired or revoked. The date range filters on the day it was decided."
+    ),
+    dimensions=(
+        Dimension("action", "action", "block, or allow (never auto-block)."),
+        Dimension("decided_by_rule", "decided_by_rule", "manual or auto."),
+        Dimension("status", "status", "active, expired or revoked."),
+        Dimension("is_active", "is_active", "In force now."),
+        Dimension("decided_by", "decided_by", "Who decided."),
+        Dimension("ip_version", "ip_version", "4 or 6."),
+    ),
+    measures=(
+        Measure("decisions", "count(*)", "Number of decisions.", "decisions"),
+        Measure("active_blocks", "count(*) FILTER (WHERE is_active AND action = 'block')",
+                "Blocks in force.", "decisions"),
+        Measure("auto_blocks", "count(*) FILTER (WHERE action = 'block' AND decided_by_rule = 'auto')",
+                "Blocks taken by the auto-block rule.", "decisions"),
+    ),
+    default_measures=("decisions", "active_blocks"),
+    attributes=(
+        Attribute("decision_id", "decision_id", "The decision's id."),
+        Attribute("partition_date", "partition_date", "The UTC day it was decided."),
+        Attribute("cidr", "cidr", "The address or range."),
+        Attribute("network_address", "network_address", "The address part of cidr."),
+        Attribute("prefix_length", "prefix_length", "The prefix: 32 or 128 for one address."),
+        Attribute("reason", "reason", "Why."),
+        Attribute("score", "score", "The score behind an auto-block."),
+        Attribute("decided_at", "decided_at", "When it was decided."),
+        Attribute("expires_at", "expires_at", "When it lapses; null = until lifted."),
+        Attribute("revoked_at", "revoked_at", "When it was lifted."),
+        Attribute("revoked_by", "revoked_by", "Who lifted it."),
+    ),
+    default_fields=("decided_at", "cidr", "action", "decided_by_rule", "status", "reason"),
+    record_order="decided_at",
+)
+
 DATASETS: dict[str, Dataset] = {
     d.name: d for d in (
         LLM_SPEND, WEB_TRAFFIC, CAMERA_ACTIVITY, MEDIA_LIBRARY, MEDIA_PLAYBACK,
         MEDIA_SERVER_ACTIVITY, MEDIA_SEARCHES, MEDIA_SEARCH_RESULTS,
         AI_GATEWAY_CALLS, AGENT_RUNS, AGENT_TOOL_CALLS, CONVERSATIONS, EMAIL_SENDS,
-        AUTOMATION_RUNS, FINANCE_TRANSACTIONS, FINANCE_BALANCES,
+        AUTOMATION_RUNS, FINANCE_TRANSACTIONS, FINANCE_BALANCES, EDGE_CLIENTS, EDGE_DECISIONS,
     )
 }
 

@@ -642,6 +642,72 @@ FROM (SELECT i::INTEGER AS i FROM range(0, 42) t(i));
 """
 
 
+# Documentation-range addresses only (tests/test_no_real_addresses_in_fixtures.py).
+_EDGE_CLIENTS = """
+CREATE OR REPLACE TABLE marts.dim_edge_client AS
+SELECT
+    '203.0.113.' || i AS client_address,
+    '203.0.113.0/24' AS client_network,
+    4 AS client_ip_version,
+    CASE WHEN i % 3 = 0 THEN 'NL' ELSE 'US' END AS geo_country_code,
+    CASE WHEN i % 3 = 0 THEN 'Netherlands' ELSE 'United States' END AS geo_country_name,
+    'City ' || (i % 4) AS geo_city,
+    52.0 AS geo_latitude,
+    4.9 AS geo_longitude,
+    64500 + (i % 3) AS geo_asn,
+    'Example Cloud' AS geo_as_org,
+    (i % 2 = 0) AS is_datacenter,
+    false AS is_verified_crawler,
+    (TIMESTAMPTZ '2026-09-01 00:00:00Z' + INTERVAL (i) HOUR) AS first_seen_at,
+    (TIMESTAMPTZ '2026-09-02 00:00:00Z' + INTERVAL (i) HOUR) AS last_seen_at,
+    1 + (i % 5) AS active_days,
+    100 + i AS requests,
+    i AS probe_requests,
+    i AS client_errors,
+    0 AS direct_requests,
+    CASE WHEN i % 4 = 0 THEN 3 ELSE 0 END AS rejected_requests,
+    10 + i AS peak_requests_per_minute,
+    least(100, i * 3) AS max_threat_score,
+    ['probe_paths', 'burst'] AS reasons,
+    ['/.env'] AS sample_probe_paths,
+    ['example.test'] AS sample_hosts,
+    CASE WHEN i * 3 >= 70 THEN 'high' WHEN i * 3 >= 40 THEN 'medium' WHEN i > 0 THEN 'low' ELSE 'none' END AS threat_level,
+    (i * 3 >= 40) AS is_flagged,
+    CASE WHEN i % 4 = 0 THEN 'decision-' || i END AS decision_id,
+    CASE WHEN i % 4 = 0 THEN 'block' END AS decision_action,
+    CASE WHEN i % 4 = 0 THEN 'manual' END AS decision_rule,
+    CASE WHEN i % 4 = 0 THEN '203.0.113.' || i || '/32' END AS decision_cidr,
+    CASE WHEN i % 4 = 0 THEN 'scanner' END AS decision_reason,
+    CASE WHEN i % 4 = 0 THEN 'admin' END AS decided_by,
+    CASE WHEN i % 4 = 0 THEN TIMESTAMPTZ '2026-09-03 00:00:00Z' END AS decided_at,
+    CAST(NULL AS TIMESTAMPTZ) AS decision_expires_at,
+    (i % 4 = 0) AS is_blocked
+FROM (SELECT i::INTEGER AS i FROM range(0, 40) t(i));
+"""
+
+_EDGE_DECISIONS = """
+CREATE OR REPLACE TABLE marts.fct_edge_decision AS
+SELECT
+    'decision-' || i AS decision_id,
+    (DATE '2026-09-01' + (i % 10)) AS partition_date,
+    '203.0.113.' || i || '/32' AS cidr,
+    '203.0.113.' || i AS network_address,
+    32 AS prefix_length,
+    4 AS ip_version,
+    CASE WHEN i % 5 = 0 THEN 'allow' ELSE 'block' END AS action,
+    CASE WHEN i % 2 = 0 THEN 'auto' ELSE 'manual' END AS decided_by_rule,
+    'scanner' AS reason,
+    CASE WHEN i % 2 = 0 THEN 90 END AS score,
+    'admin' AS decided_by,
+    (TIMESTAMPTZ '2026-09-01 00:00:00Z' + INTERVAL (i) HOUR) AS decided_at,
+    CAST(NULL AS TIMESTAMPTZ) AS expires_at,
+    CASE WHEN i % 3 = 0 THEN TIMESTAMPTZ '2026-09-12 00:00:00Z' END AS revoked_at,
+    CASE WHEN i % 3 = 0 THEN 'admin' END AS revoked_by,
+    CASE WHEN i % 3 = 0 THEN 'revoked' ELSE 'active' END AS status,
+    (i % 3 <> 0) AS is_active
+FROM (SELECT i::INTEGER AS i FROM range(0, 20) t(i));
+"""
+
 def build_marts(path: str) -> None:
     con = duckdb.connect(path)
     con.execute("SET TimeZone='UTC';")
@@ -651,6 +717,7 @@ def build_marts(path: str) -> None:
         _JELLYFIN_SEARCHES, _JELLYFIN_SEARCH_RESULTS,
         _AI_GATEWAY_CALLS, _AGENT_RUNS, _AGENT_TOOL_CALLS, _CONVERSATION_MESSAGES,
         _EMAIL_SENDS, _AUTOMATION_RUNS, _FINANCE_TRANSACTIONS, _FINANCE_BALANCES,
+        _EDGE_CLIENTS, _EDGE_DECISIONS,
     ):
         con.execute(statement)
     con.close()

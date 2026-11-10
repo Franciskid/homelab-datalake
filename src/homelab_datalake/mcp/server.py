@@ -74,7 +74,9 @@ COMPACT_MAX_VALUES = 15
 # produce, so passing this is a real guarantee and not one that depends on how much
 # whitespace happens to be lying around. See the module-level test in
 # test_mcp_server.py that runs this over the real registry, not a fixture.
-LIST_DATASETS_BUDGET = 4_000
+# 4,500 since 2026-11-11: each dataset costs ~230 characters (name, kind, coverage,
+# first sentence); edge_clients and edge_decisions took 18 datasets to 4,308.
+LIST_DATASETS_BUDGET = 4_500
 DESCRIBE_DATASET_BUDGET = 4_000
 # 6,500 since 2026-11-10: each mart costs one ~55-character line here, and
 # agg_edge_client_daily took the listing to 6,023 against the old 6,000.

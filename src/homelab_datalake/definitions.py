@@ -137,6 +137,30 @@ def ai_platform_snapshot_schedule(context: ScheduleEvaluationContext):
         yield RunRequest(run_key=f"ai-platform-snapshot-{key}", partition_key=key)
 
 
+# The edge security tables, hourly. Both are snapshot tables and are already in the
+# 05:00 job above, but a block decided on the report should be queryable in the lake
+# the same hour, next to the traffic it was decided on -- not tomorrow morning.
+EDGE_PLATFORM_TABLES = ("edge_blocks", "edge_guard_state")
+ai_platform_edge_job = define_asset_job(
+    name="ai_platform_edge_hourly",
+    selection=AssetSelection.assets(*[f"platform_{t}_raw" for t in EDGE_PLATFORM_TABLES]),
+    partitions_def=ai_platform.ai_platform_partitions,
+    description="Today's snapshot of the edge security tables (blocks and guard state).",
+)
+
+
+@schedule(
+    job=ai_platform_edge_job,
+    cron_schedule="35 * * * *",
+    default_status=DefaultScheduleStatus.RUNNING,
+    description="Edge decisions into the lake hourly at :35, ahead of analytics at :55.",
+)
+def ai_platform_edge_hourly_schedule(context: ScheduleEvaluationContext):
+    now = context.scheduled_execution_time
+    for key in ai_platform.snapshot_partition_keys(now):
+        yield RunRequest(run_key=f"ai-platform-edge-{key}-{now:%H}", partition_key=key)
+
+
 # Event-shaped tables (usage_events, runs, run_steps, messages, and so on) get a
 # trailing re-extraction window: every tick re-fires the last WINDOW_DAYS partitions,
 # each overwriting its own day idempotently, so a row that changed after it first
@@ -647,13 +671,13 @@ def notify_on_failure(context):
 defs = Definitions(
     assets=all_assets,
     jobs=[npm_daily_job, npm_backfill_job, mcp_api_daily_job, litellm_daily_job,
-          ai_platform_snapshot_job, ai_platform_window_job, ai_platform_sweep_job,
+          ai_platform_snapshot_job, ai_platform_edge_job, ai_platform_window_job, ai_platform_sweep_job,
           ai_platform_coverage_job,
           jellyfin_daily_job, jellyfin_library_items_job, jellyfin_playback_job,
           jellyfin_playback_history_job, jellyfin_activity_job,
           jellyfin_activity_history_job, jellyfin_users_job, jellyfin_searches_job,
           camera_daily_job, camera_zones_job, analytics_job],
-    schedules=[npm_today_hourly_schedule, npm_daily_schedule, mcp_api_daily_schedule, litellm_daily_schedule,
+    schedules=[npm_today_hourly_schedule, ai_platform_edge_hourly_schedule, npm_daily_schedule, mcp_api_daily_schedule, litellm_daily_schedule,
                ai_platform_snapshot_schedule, ai_platform_window_schedule,
                ai_platform_sweep_schedule,
                ai_platform_coverage_schedule, jellyfin_daily_schedule,

@@ -1933,6 +1933,37 @@ sources:
           - name: created_at
             description: When the message was written.
 
+      - name: platform_edge_blocks
+        description: >
+          Owner decisions about addresses at the NPM edge, from the Edge security
+          report on ai.fraserv.fr. Snapshotted hourly; never deleted upstream (lifting
+          a decision sets revoked_at), so the latest copy of a row is its state.
+        columns:
+          - name: dt
+            description: Partition date -- the UTC day the snapshot was taken.
+          - name: id
+            description: The decision's id.
+          - name: cidr
+            description: The address or range decided on, normalised (203.0.113.7/32).
+          - name: action
+            description: block, or allow (never auto-block).
+          - name: source
+            description: manual (an admin on the report) or auto (the auto-block rule).
+          - name: reason
+            description: Why, as written by the admin or the auto-block rule.
+          - name: score
+            description: The threat score that triggered an auto-block.
+          - name: created_by_subject
+            description: Who decided -- the admin, or for auto the admin who consented to auto-block.
+          - name: created_at
+            description: When the decision was taken.
+          - name: expires_at
+            description: When it lapses by itself; null means until lifted.
+          - name: revoked_at
+            description: When it was lifted; null while in force.
+          - name: revoked_by_subject
+            description: Who lifted it.
+
       - name: platform_email_sends
         description: >
           Every email the platform has sent or attempted to send. `dt` is the UTC

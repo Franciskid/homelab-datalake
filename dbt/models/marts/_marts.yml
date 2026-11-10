@@ -221,6 +221,132 @@ models:
       - name: reasons
         description: The rules behind threat_score, by name.
 
+  - name: fct_edge_decision
+    description: >
+      Every block and "never block" decision taken on the Edge security report
+      (ai.fraserv.fr), by an admin or by the auto-block rule they agreed to, lifted
+      ones included. One row per decision; status says whether it is in force.
+    columns:
+      - name: decision_id
+        description: The decision's id.
+        tests: [not_null, unique]
+      - name: partition_date
+        description: The UTC day the decision was taken.
+      - name: cidr
+        description: The address or range decided on (203.0.113.7/32, 198.51.100.0/24).
+      - name: network_address
+        description: The address part of cidr.
+      - name: prefix_length
+        description: The prefix part of cidr (32 or 128 for a single address).
+      - name: ip_version
+        description: 4 or 6.
+      - name: action
+        description: block, or allow (never auto-block).
+      - name: decided_by_rule
+        description: manual (an admin) or auto (the auto-block rule).
+      - name: reason
+        description: Why.
+      - name: score
+        description: The threat score behind an auto-block.
+      - name: decided_by
+        description: Who decided (for auto, the admin who consented to auto-block).
+      - name: decided_at
+        description: When the decision was taken.
+      - name: expires_at
+        description: When it lapses by itself; null means until lifted.
+      - name: revoked_at
+        description: When it was lifted; null while in force.
+      - name: revoked_by
+        description: Who lifted it.
+      - name: status
+        description: active, expired or revoked, as of the last build.
+        tests:
+          - accepted_values: {values: ['active', 'expired', 'revoked']}
+      - name: is_active
+        description: True while the decision is in force (status = active).
+
+  - name: dim_edge_client
+    description: >
+      One row per public client address seen by NPM in the last 90 days: the
+      evidence against it over the window (from agg_edge_client_daily) and the
+      owner's current decision about it (from fct_edge_decision). The one place to
+      ask which flagged addresses are blocked and which are not. Raw addresses,
+      private-warehouse-only.
+    columns:
+      - name: client_address
+        description: The client, as NPM restored it.
+        tests: [not_null, unique]
+      - name: client_network
+        description: '{{ doc("client_network") }}'
+      - name: client_ip_version
+        description: 4 or 6.
+      - name: geo_country_code
+        description: '{{ doc("geo_country_code") }}'
+      - name: geo_country_name
+        description: '{{ doc("geo_country_name") }}'
+      - name: geo_city
+        description: '{{ doc("geo_city") }}'
+      - name: geo_latitude
+        description: '{{ doc("geo_latitude") }}'
+      - name: geo_longitude
+        description: '{{ doc("geo_longitude") }}'
+      - name: geo_asn
+        description: '{{ doc("geo_asn") }}'
+      - name: geo_as_org
+        description: '{{ doc("geo_as_org") }}'
+      - name: is_datacenter
+        description: Its network's operator is a cloud or hosting provider.
+      - name: is_verified_crawler
+        description: Googlebot or Bingbot from its own network; never flagged.
+      - name: first_seen_at
+        description: Its first request in the window.
+      - name: last_seen_at
+        description: Its last request in the window.
+      - name: active_days
+        description: Days in the window with at least one request.
+      - name: requests
+        description: Requests over the window.
+      - name: probe_requests
+        description: Requests for a scanner-wordlist path over the window.
+      - name: client_errors
+        description: Requests answered 400-499.
+      - name: direct_requests
+        description: Requests that reached the origin IP without Cloudflare (logged since 2026-11-10).
+      - name: rejected_requests
+        description: Requests NPM closed with 444 -- blocked, or bypassing Cloudflare.
+      - name: peak_requests_per_minute
+        description: The most requests it sent in one clock minute.
+      - name: max_threat_score
+        description: Its highest daily threat score in the window (0-100).
+      - name: reasons
+        description: Every rule that fired on any day in the window.
+      - name: sample_probe_paths
+        description: Up to eight probe paths it asked for.
+      - name: sample_hosts
+        description: Up to eight hosts it asked for.
+      - name: threat_level
+        description: high (70+), medium (40-69), low (1-39) or none.
+      - name: is_flagged
+        description: max_threat_score is 40 or more -- listed on the report.
+      - name: decision_id
+        description: The decision in force for it, if any (joins fct_edge_decision).
+      - name: decision_action
+        description: block or allow, when a decision is in force.
+      - name: decision_rule
+        description: manual or auto.
+      - name: decision_cidr
+        description: The address or range the decision covers (may be its whole network).
+      - name: decision_reason
+        description: Why it was decided.
+      - name: decided_by
+        description: Who decided.
+      - name: decided_at
+        description: When.
+      - name: decision_expires_at
+        description: When the decision lapses; null means until lifted.
+      - name: is_blocked
+        description: True when NPM is told to reject it (a block in force, not overridden by an allow).
+
   - name: agg_traffic_daily
     description: >
       Daily traffic per instance, virtual host and audience type. `visitors` counts

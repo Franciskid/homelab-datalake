@@ -30,6 +30,8 @@ GRANT SELECT (id, created_by_user_id, name, scope_type, scope_id, period, amount
 GRANT SELECT (id, owner_user_id, team_id, title, agent_id, created_at, updated_at, deleted_at, reasoning_level, origin) ON "conversations" TO datalake_ro;
 GRANT SELECT (id, source, chunk_key, section, content, content_hash, indexed_at) ON "document_chunks" TO datalake_ro;
 GRANT SELECT (id, owner_user_id, name, slug, curated, created_by_run_id, created_at, updated_at) ON "document_tags" TO datalake_ro;
+GRANT SELECT (id, cidr, action, source, reason, score, created_by_subject, created_at, expires_at, revoked_at, revoked_by_subject) ON "edge_blocks" TO datalake_ro;
+GRANT SELECT (id, auto_block_enabled, auto_block_min_score, auto_block_days, auto_block_consent_by, auto_block_consent_at, last_auto_run_at, last_auto_run_added, last_auto_run_error, last_sync_at, applied_version, applied_count, self_ip, sync_error, rejected, updated_at) ON "edge_guard_state" TO datalake_ro;
 GRANT SELECT (id, owner_user_id, label, address, notes, archived_at, created_at, updated_at) ON "email_recipients" TO datalake_ro;
 GRANT SELECT (id, owner_user_id, run_id, approval_id, template_script_id, template_version, subject, recipients, attachments, status, failure_reason, created_at) ON "email_sends" TO datalake_ro;
 GRANT SELECT (id, generated_file_id, document_tag_id, assigned_by, run_id, created_at) ON "generated_file_tags" TO datalake_ro;

@@ -420,6 +420,22 @@ _SNAPSHOT_TABLES: tuple[TableSpec, ...] = (
                         "secret, so the column is treated as one.", secret=True),
     )),
 
+    _s("edge_blocks", "id", (
+        "id", "cidr", "action", "source", "reason", "score", "created_by_subject",
+        "created_at", "expires_at", "revoked_at", "revoked_by_subject",
+    ), "Every owner decision about an address at the NPM edge -- block it, or never "
+       "auto-block it -- from the Edge security report. Lifting one revokes the row "
+       "rather than deleting it, so a snapshot carries the whole history and the "
+       "latest copy of a row is its current state."),
+
+    _s("edge_guard_state", "id", (
+        "id", "auto_block_enabled", "auto_block_min_score", "auto_block_days",
+        "auto_block_consent_by", "auto_block_consent_at", "last_auto_run_at",
+        "last_auto_run_added", "last_auto_run_error", "last_sync_at", "applied_version",
+        "applied_count", "self_ip", "sync_error", "rejected", "updated_at",
+    ), "One row: the owner's auto-block consent and settings, and what the NPM "
+       "edge-guard sidecar last reported having applied."),
+
     _s("users", "id", (
         "id", "keycloak_subject", "username", "display_name", "email", "status",
         "litellm_end_user_id", "first_seen_at", "last_seen_at", "last_login_at",
