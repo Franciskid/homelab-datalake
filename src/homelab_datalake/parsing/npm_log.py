@@ -7,8 +7,13 @@ its own, declared in /etc/nginx/conf.d/include/log.conf:
               $request_method $scheme $host "$request_uri" [Client $remote_addr]
               [Length $body_bytes_sent] [Gzip $gzip_ratio] [Sent-to $server]
               "$http_user_agent" "$http_referer"
+              [Request-time ..] [Upstream-time ..] [Peer ..] [Edge ..]
 
     standard  the same without the two upstream fields and without Sent-to
+
+The trailing timing fields, and after them Peer/Edge (the TCP peer and how nginx
+classified it: cf, lan or direct), are optional: they were added to the format
+later, and old lines must keep parsing.
 
 The third is stock nginx `combined`, which is what default-host_access.log gets.
 
@@ -49,7 +54,8 @@ _PROXY = re.compile(
     r"\[Gzip (?P<gzip>[^\]]*)\]\s+\[Sent-to (?P<sent_to>[^\]]*)\]\s+"
     r'"(?P<user_agent>.*?)"\s+"(?P<referer>.*?)"'
     r'(?:\s+\[Request-time (?P<request_time>[^\]]*)\]'
-    r'\s+\[Upstream-time (?P<upstream_time>[^\]]*)\])?\s*$'
+    r'\s+\[Upstream-time (?P<upstream_time>[^\]]*)\])?'
+    r'(?:\s+\[Peer (?P<peer>[^\]]*)\]\s+\[Edge (?P<edge>[^\]]*)\])?\s*$'
 )
 
 _STANDARD = re.compile(
@@ -60,7 +66,8 @@ _STANDARD = re.compile(
     r"\[Gzip (?P<gzip>[^\]]*)\]\s+"
     r'"(?P<user_agent>.*?)"\s+"(?P<referer>.*?)"'
     r'(?:\s+\[Request-time (?P<request_time>[^\]]*)\]'
-    r'\s+\[Upstream-time (?P<upstream_time>[^\]]*)\])?\s*$'
+    r'\s+\[Upstream-time (?P<upstream_time>[^\]]*)\])?'
+    r'(?:\s+\[Peer (?P<peer>[^\]]*)\]\s+\[Edge (?P<edge>[^\]]*)\])?\s*$'
 )
 
 _COMBINED = re.compile(
@@ -104,6 +111,12 @@ class ParsedLine:
     request_time_seconds: float | None = None
     # Raw because retries may produce multiple upstream durations.
     upstream_response_time: str | None = None
+    #: `$realip_remote_addr`: the TCP peer, before CF-Connecting-IP restored the
+    #: client. A Cloudflare edge, a LAN machine, or the client itself when it came
+    #: straight to the origin. Logged on fraserv since 2026-11-10; None before.
+    edge_peer: str | None = None
+    #: How the request arrived, as nginx classified that peer: cf, lan or direct.
+    edge_route: str | None = None
 
 
 @dataclass
@@ -213,6 +226,8 @@ def parse_line(line: str) -> ParsedLine | Rejected:
             gzip_ratio=_dash_to_none(groups.get("gzip")),
             request_time_seconds=_duration_or_none(groups.get("request_time")),
             upstream_response_time=_dash_to_none(groups.get("upstream_time")),
+            edge_peer=_dash_to_none(groups.get("peer")),
+            edge_route=_dash_to_none(groups.get("edge")),
         )
 
     m = _COMBINED.match(raw)

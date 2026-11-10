@@ -55,6 +55,12 @@ renamed as (
         geo_city,
         geo_asn,
         geo_as_org,
+        geo_latitude,
+        geo_longitude,
+        -- The TCP peer and nginx's label for it (cf, lan, direct). Raw like
+        -- client_address; null before 2026-11-10 and on amb. See agg_edge_client_daily.
+        edge_peer,
+        nullif(edge_route, '')                      as edge_route,
         source_file,
         referer,
         gzip_ratio,

@@ -126,6 +126,49 @@ models:
           - not_null
           - accepted_values: {values: ['proxy', 'standard', 'combined', 'mcp_api_json']}
 
+  - name: agg_edge_client_daily
+    description: >
+      One row per public client address per day over the last 90 days, with the
+      evidence that it is probing the edge (probe paths, bursts, error ratio,
+      datacenter origin, reaching the origin without Cloudflare, user-agent rotation)
+      and a 0-100 threat_score built from it. `reasons` names the rules that fired.
+      Read by the edge-threat report on ai.fraserv.fr and its optional auto-block.
+      Raw client addresses, private-warehouse-only, like fct_http_request.
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns: [activity_date, client_address]
+    columns:
+      - name: activity_date
+        tests: [not_null]
+      - name: client_address
+        description: The client, as NPM restored it. Never private, never this house.
+        tests: [not_null]
+      - name: requests
+        tests:
+          - not_null
+          - dbt_utils.accepted_range: {min_value: 1, inclusive: true}
+      - name: probe_requests
+        description: Requests for a path from the scanner wordlist (see the model).
+        tests:
+          - not_null
+          - dbt_utils.accepted_range: {min_value: 0, inclusive: true}
+      - name: direct_requests
+        description: >
+          Requests whose TCP peer nginx labelled `direct`: the client reached the
+          origin IP without Cloudflare. Zero before 2026-11-10, when the peer started
+          being logged.
+      - name: rejected_requests
+        description: Requests NPM closed with 444 (blocklisted, or bypassing Cloudflare).
+      - name: threat_score
+        description: >
+          0-100, the sum of the points of every rule that fired, capped at 100.
+          Verified Googlebot and Bingbot are always 0.
+        tests:
+          - not_null
+          - dbt_utils.accepted_range: {min_value: 0, max_value: 100}
+      - name: reasons
+        description: The rules behind threat_score, by name.
+
   - name: agg_traffic_daily
     description: >
       Daily traffic per instance, virtual host and audience type. `visitors` counts

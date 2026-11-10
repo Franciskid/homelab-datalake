@@ -46,6 +46,10 @@ class GeoInfo:
     city: str | None = None
     asn: int | None = None
     as_org: str | None = None
+    # City-level coordinates, for maps. MaxMind's own accuracy radius is often tens
+    # of kilometres, so these place a city, never a house.
+    latitude: float | None = None
+    longitude: float | None = None
 
 
 EMPTY = GeoInfo()
@@ -92,6 +96,7 @@ class GeoEnricher:
             return EMPTY
         country_code = country_name = city = as_org = None
         asn = None
+        latitude = longitude = None
         # A miss is the normal case, not an error: private ranges, reserved blocks and
         # addresses MaxMind has no record of all land here. Debug-level, because at
         # 34 MB of logs a day a warning per miss would drown the run log.
@@ -101,6 +106,8 @@ class GeoEnricher:
                 country_code = r.country.iso_code
                 country_name = r.country.name
                 city = r.city.name
+                latitude = r.location.latitude
+                longitude = r.location.longitude
             except _LOOKUP_MISS:
                 logger.debug("no city record for a client address")
         if self._asn_reader is not None:
@@ -110,7 +117,7 @@ class GeoEnricher:
                 as_org = r.autonomous_system_organization
             except _LOOKUP_MISS:
                 logger.debug("no ASN record for a client address")
-        return GeoInfo(country_code, country_name, city, asn, as_org)
+        return GeoInfo(country_code, country_name, city, asn, as_org, latitude, longitude)
 
     def close(self) -> None:
         for reader in (self._city_reader, self._asn_reader):

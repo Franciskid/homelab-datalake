@@ -227,6 +227,12 @@ def _build_row(parsed: ParsedLine, day: date, host: str, salt: str, geo: GeoEnri
         "geo_city": info.city,
         "geo_asn": info.asn,
         "geo_as_org": info.as_org,
+        "geo_latitude": info.latitude,
+        "geo_longitude": info.longitude,
+        # Raw, private-warehouse-only like client_address: for a request that came
+        # straight to the origin this *is* the client. See npm_log.ParsedLine.
+        "edge_peer": getattr(parsed, "edge_peer", None),
+        "edge_route": getattr(parsed, "edge_route", None),
         "source_file": source_file,
     }
 

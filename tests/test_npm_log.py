@@ -169,3 +169,27 @@ def test_an_uncompressed_response_reports_no_ratio_rather_than_a_dash():
     parsed = parse_line(line)
     assert parsed.gzip_ratio is None
     assert parsed.referer is None
+
+
+def test_proxy_format_with_edge_peer():
+    """fraserv logs the TCP peer and nginx's cf/lan/direct label after the timings."""
+    line = PROXY + " [Request-time 0.004] [Upstream-time 0.004] [Peer 198.51.100.20] [Edge cf]"
+    result = parse_line(line)
+    assert isinstance(result, ParsedLine)
+    assert result.edge_peer == "198.51.100.20"
+    assert result.edge_route == "cf"
+    assert result.request_time_seconds == 0.004
+
+
+def test_standard_format_with_direct_edge_peer():
+    line = STANDARD + " [Request-time 0.000] [Upstream-time -] [Peer 203.0.113.50] [Edge direct]"
+    result = parse_line(line)
+    assert isinstance(result, ParsedLine)
+    assert result.edge_peer == "203.0.113.50"
+    assert result.edge_route == "direct"
+
+
+def test_lines_without_edge_fields_still_parse_with_nulls():
+    result = parse_line(PROXY + " [Request-time 2.345] [Upstream-time 2.301]")
+    assert isinstance(result, ParsedLine)
+    assert result.edge_peer is None and result.edge_route is None

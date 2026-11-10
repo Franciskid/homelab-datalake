@@ -144,6 +144,12 @@ _SCHEMA = pa.schema(
         ("geo_city", pa.string()),
         ("geo_asn", pa.int64()),
         ("geo_as_org", pa.string()),
+        ("geo_latitude", pa.float64()),
+        ("geo_longitude", pa.float64()),
+        # The TCP peer and nginx's cf/lan/direct label for it -- see
+        # parsing.npm_log.ParsedLine. Null before 2026-11-10 and on amb.
+        ("edge_peer", pa.string()),
+        ("edge_route", pa.string()),
         ("source_file", pa.string()),
     ]
 )

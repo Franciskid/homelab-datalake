@@ -497,6 +497,26 @@ def npm_daily_schedule(context: ScheduleEvaluationContext):
 
 
 @schedule(
+    job=npm_backfill_job,
+    cron_schedule="40 * * * *",
+    default_status=DefaultScheduleStatus.RUNNING,
+    description=(
+        "Today's partition for every host, hourly at :40, so the edge-threat report "
+        "and its auto-block run at most an hour behind the proxy instead of a day."
+    ),
+)
+def npm_today_hourly_schedule(context: ScheduleEvaluationContext):
+    """Re-land today's partition. Landing is a full rewrite of the day's object, so
+    running it every hour converges on the same rows the 03:00 run writes tomorrow.
+    The run key carries the hour, or Dagster would skip every run after the first."""
+    now = context.scheduled_execution_time
+    day = now.date()
+    for host in HOSTS:
+        key = MultiPartitionKey({"date": day.isoformat(), "host": host})
+        yield RunRequest(run_key=f"npm-today-{host}-{now:%Y-%m-%dT%H}", partition_key=key)
+
+
+@schedule(
     job=mcp_api_daily_job,
     cron_schedule="10 3 * * *",
     default_status=DefaultScheduleStatus.STOPPED,
@@ -633,7 +653,7 @@ defs = Definitions(
           jellyfin_playback_history_job, jellyfin_activity_job,
           jellyfin_activity_history_job, jellyfin_users_job, jellyfin_searches_job,
           camera_daily_job, camera_zones_job, analytics_job],
-    schedules=[npm_daily_schedule, mcp_api_daily_schedule, litellm_daily_schedule,
+    schedules=[npm_today_hourly_schedule, npm_daily_schedule, mcp_api_daily_schedule, litellm_daily_schedule,
                ai_platform_snapshot_schedule, ai_platform_window_schedule,
                ai_platform_sweep_schedule,
                ai_platform_coverage_schedule, jellyfin_daily_schedule,
