@@ -1097,3 +1097,26 @@ movie library's genres are. See fct_library_item.sql for why.
 JSON, or null. Any field Jellyfin returned that nothing here reads, kept rather than
 dropped -- the same convention as the movie library's _unmapped.
 {% enddocs %}
+
+{% docs geo_latitude %}
+Latitude of the client's city from the MaxMind lookup, for maps. Accurate to the city
+at best (MaxMind's own radius is often tens of kilometres). Null before 2026-11-10 and
+wherever the lookup had no city.
+{% enddocs %}
+
+{% docs geo_longitude %}
+Longitude of the client's city from the MaxMind lookup. See geo_latitude.
+{% enddocs %}
+
+{% docs edge_peer %}
+The TCP peer NPM saw (`$realip_remote_addr`), before CF-Connecting-IP restored the
+client: a Cloudflare edge, a LAN machine, or the client itself when it came straight
+to the origin IP. Raw and private-warehouse-only, like client_address. Logged on
+fraserv since 2026-11-10; null before and on amb.
+{% enddocs %}
+
+{% docs edge_route %}
+How the request reached NPM, as nginx classified edge_peer: `cf` (a Cloudflare edge),
+`lan` (private range or the house's own public address) or `direct` (anything else,
+i.e. someone who found the origin IP). Null before 2026-11-10 and on amb.
+{% enddocs %}

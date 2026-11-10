@@ -64,6 +64,14 @@ models:
         description: '{{ doc("geo_asn") }}'
       - name: geo_as_org
         description: '{{ doc("geo_as_org") }}'
+      - name: geo_latitude
+        description: '{{ doc("geo_latitude") }}'
+      - name: geo_longitude
+        description: '{{ doc("geo_longitude") }}'
+      - name: edge_peer
+        description: '{{ doc("edge_peer") }}'
+      - name: edge_route
+        description: '{{ doc("edge_route") }}'
       - name: source_file
         description: '{{ doc("req_source_file") }}'
 

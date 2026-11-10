@@ -133,6 +133,14 @@ sources:
             description: >
               The organisation that owns that autonomous system -- the operator name a
               person recognises, such as an ISP or a cloud provider.
+          - name: geo_latitude
+            description: '{{ doc("geo_latitude") }}'
+          - name: geo_longitude
+            description: '{{ doc("geo_longitude") }}'
+          - name: edge_peer
+            description: '{{ doc("edge_peer") }}'
+          - name: edge_route
+            description: '{{ doc("edge_route") }}'
           - name: source_file
             description: >
               Basename of the log file the line was read from. Diagnostic only: it says

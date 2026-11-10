@@ -139,11 +139,35 @@ models:
           combination_of_columns: [activity_date, client_address]
     columns:
       - name: activity_date
+        description: The UTC day the requests were made.
         tests: [not_null]
       - name: client_address
         description: The client, as NPM restored it. Never private, never this house.
         tests: [not_null]
+      - name: client_network
+        description: '{{ doc("client_network") }}'
+      - name: client_ip_version
+        description: 4 or 6.
+      - name: geo_country_code
+        description: '{{ doc("geo_country_code") }}'
+      - name: geo_country_name
+        description: '{{ doc("geo_country_name") }}'
+      - name: geo_city
+        description: '{{ doc("geo_city") }}'
+      - name: geo_latitude
+        description: '{{ doc("geo_latitude") }}'
+      - name: geo_longitude
+        description: '{{ doc("geo_longitude") }}'
+      - name: geo_asn
+        description: '{{ doc("geo_asn") }}'
+      - name: geo_as_org
+        description: '{{ doc("geo_as_org") }}'
+      - name: is_datacenter
+        description: The network's operator name matches a cloud or hosting provider (see the model).
+      - name: is_verified_crawler
+        description: Googlebot from Google's ASN or Bingbot from Microsoft's. Always scored 0.
       - name: requests
+        description: Requests from this address that day, every host and status.
         tests:
           - not_null
           - dbt_utils.accepted_range: {min_value: 1, inclusive: true}
@@ -152,13 +176,41 @@ models:
         tests:
           - not_null
           - dbt_utils.accepted_range: {min_value: 0, inclusive: true}
+      - name: client_errors
+        description: Requests answered 400-499.
+      - name: server_errors
+        description: Requests answered 500 or above.
+      - name: rejected_requests
+        description: Requests NPM closed with 444 (blocklisted, or bypassing Cloudflare).
       - name: direct_requests
         description: >
           Requests whose TCP peer nginx labelled `direct`: the client reached the
           origin IP without Cloudflare. Zero before 2026-11-10, when the peer started
           being logged.
-      - name: rejected_requests
-        description: Requests NPM closed with 444 (blocklisted, or bypassing Cloudflare).
+      - name: cloudflare_requests
+        description: Requests that came through a Cloudflare edge. Zero before 2026-11-10.
+      - name: address_host_requests
+        description: Requests with no Host header or an IP as the Host, which only a client aiming at the origin IP sends.
+      - name: distinct_paths
+        description: Distinct paths requested that day.
+      - name: distinct_hosts
+        description: Distinct Host headers sent that day.
+      - name: distinct_user_agents
+        description: Distinct user agents sent that day.
+      - name: peak_requests_per_minute
+        description: The most requests this address sent within one clock minute that day.
+      - name: client_error_ratio
+        description: client_errors / requests.
+      - name: first_seen_at
+        description: The address's first request that day.
+      - name: last_seen_at
+        description: The address's last request that day.
+      - name: sample_probe_paths
+        description: Up to eight distinct probe paths it asked for.
+      - name: sample_hosts
+        description: Up to eight distinct hosts it asked for, "(no host)" when none was sent.
+      - name: sample_user_agents
+        description: Up to four distinct user agents it sent.
       - name: threat_score
         description: >
           0-100, the sum of the points of every rule that fired, capped at 100.
