@@ -137,15 +137,15 @@ def ai_platform_snapshot_schedule(context: ScheduleEvaluationContext):
         yield RunRequest(run_key=f"ai-platform-snapshot-{key}", partition_key=key)
 
 
-# The edge security tables, hourly. Both are snapshot tables and are already in the
+# The edge security tables, hourly. All three are snapshot tables and are already in the
 # 05:00 job above, but a block decided on the report should be queryable in the lake
 # the same hour, next to the traffic it was decided on -- not tomorrow morning.
-EDGE_PLATFORM_TABLES = ("edge_blocks", "edge_guard_state")
+EDGE_PLATFORM_TABLES = ("edge_blocks", "edge_guard_state", "edge_digest_seen")
 ai_platform_edge_job = define_asset_job(
     name="ai_platform_edge_hourly",
     selection=AssetSelection.assets(*[f"platform_{t}_raw" for t in EDGE_PLATFORM_TABLES]),
     partitions_def=ai_platform.ai_platform_partitions,
-    description="Today's snapshot of the edge security tables (blocks and guard state).",
+    description="Today's snapshot of the edge security tables (blocks, guard state, digest).",
 )
 
 

@@ -432,9 +432,17 @@ _SNAPSHOT_TABLES: tuple[TableSpec, ...] = (
         "id", "auto_block_enabled", "auto_block_min_score", "auto_block_days",
         "auto_block_consent_by", "auto_block_consent_at", "last_auto_run_at",
         "last_auto_run_added", "last_auto_run_error", "last_sync_at", "applied_version",
-        "applied_count", "self_ip", "sync_error", "rejected", "updated_at",
-    ), "One row: the owner's auto-block consent and settings, and what the NPM "
-       "edge-guard sidecar last reported having applied."),
+        "applied_count", "self_ip", "sync_error", "rejected", "digest_enabled",
+        "digest_hour", "digest_email", "digest_last_run_on", "digest_last_sent_at",
+        "digest_last_count", "digest_last_error", "updated_at",
+    ), "One row: the owner's auto-block consent and settings, the morning digest's "
+       "settings and last outcome, and what the NPM edge-guard sidecar last reported "
+       "having applied."),
+
+    _s("edge_digest_seen", "address", (
+        "address", "first_reported_at", "last_reported_at",
+    ), "Every address the Edge security morning digest has announced, and when it "
+       "last did: an address is announced at most once a month."),
 
     _s("users", "id", (
         "id", "keycloak_subject", "username", "display_name", "email", "status",
