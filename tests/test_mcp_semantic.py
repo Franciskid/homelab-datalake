@@ -387,3 +387,15 @@ def test_dataset_view_create_statement_needs_a_source_catalog_when_the_mart_is_e
     qualified = dataset_view_create_statement(dataset, source_catalog="serving")
     assert "FROM marts.fct_llm_call" in bare
     assert "FROM serving.marts.fct_llm_call" in qualified
+
+
+@pytest.mark.parametrize("dataset", DATASETS.values(), ids=lambda d: d.name)
+def test_the_date_column_is_a_date_not_a_timestamp(dataset, con):
+    """A range is applied as `date_column BETWEEN start AND end` with whole days.
+
+    On a timestamp the end day is read as its midnight, so everything during the last
+    day is silently dropped -- edge_clients first shipped filtering on last_seen_at
+    and undercounted by every address seen that day (1,965 instead of 2,004).
+    """
+    kind = con.execute(f"SELECT typeof({dataset.date_column}) FROM {dataset.table} LIMIT 1").fetchone()
+    assert kind and kind[0] == "DATE", f"{dataset.name}.date_column is {kind}"

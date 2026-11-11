@@ -26,6 +26,10 @@ with clients as (
         bool_or(is_verified_crawler)                            as is_verified_crawler,
         min(first_seen_at)                                      as first_seen_at,
         max(last_seen_at)                                       as last_seen_at,
+        -- A date, not the timestamp, is what the semantic layer filters a range on:
+        -- `last_seen_at BETWEEN start AND end` would read the end day as its midnight
+        -- and drop everything seen during it.
+        cast(max(last_seen_at) as date)                         as last_seen_date,
         count(*)                                                as active_days,
         sum(requests)                                           as requests,
         sum(probe_requests)                                     as probe_requests,

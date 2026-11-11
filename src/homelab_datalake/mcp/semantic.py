@@ -1504,14 +1504,14 @@ EDGE_CLIENTS = Dataset(
     name="edge_clients",
     table="marts.dim_edge_client",
     kind="event",
-    date_column="last_seen_at",
+    date_column="last_seen_date",
     description=(
         "Every public address seen by NPM in 90 days, its threat score, and whether it "
         "is blocked. One row per address: how much it probed (scanner-wordlist paths, "
         "bursts, 4xx, going around Cloudflare), its highest daily threat score (0-100, "
         "flagged at 40+), and the owner's current decision from the Edge security "
         "report -- is_blocked says whether NPM rejects it now. The date range filters "
-        "on last_seen_at. Raw "
+        "on last_seen_date, the day of its last request. Raw "
         "addresses; per-day detail is marts.agg_edge_client_daily, every decision ever "
         "taken is edge_decisions, and the requests themselves are web_traffic."
     ),
@@ -1550,6 +1550,7 @@ EDGE_CLIENTS = Dataset(
         Attribute("geo_asn", "geo_asn", "Its autonomous system number."),
         Attribute("first_seen_at", "first_seen_at", "Its first request in the 90 days."),
         Attribute("last_seen_at", "last_seen_at", "Its last request."),
+        Attribute("last_seen_date", "last_seen_date", "The UTC day of its last request."),
         Attribute("active_days", "active_days", "Days with at least one request."),
         Attribute("requests", "requests", "Its requests over the window."),
         Attribute("probe_requests", "probe_requests", "Its scanner-wordlist requests."),

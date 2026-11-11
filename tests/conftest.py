@@ -660,6 +660,7 @@ SELECT
     false AS is_verified_crawler,
     (TIMESTAMPTZ '2026-09-01 00:00:00Z' + INTERVAL (i) HOUR) AS first_seen_at,
     (TIMESTAMPTZ '2026-09-02 00:00:00Z' + INTERVAL (i) HOUR) AS last_seen_at,
+    CAST(TIMESTAMPTZ '2026-09-02 00:00:00Z' + INTERVAL (i) HOUR AS DATE) AS last_seen_date,
     1 + (i % 5) AS active_days,
     100 + i AS requests,
     i AS probe_requests,

@@ -302,6 +302,8 @@ models:
         description: Its first request in the window.
       - name: last_seen_at
         description: Its last request in the window.
+      - name: last_seen_date
+        description: The UTC day of last_seen_at; what a date range filters on.
       - name: active_days
         description: Days in the window with at least one request.
       - name: requests
