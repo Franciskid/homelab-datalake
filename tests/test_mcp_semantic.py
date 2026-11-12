@@ -397,5 +397,5 @@ def test_the_date_column_is_a_date_not_a_timestamp(dataset, con):
     day is silently dropped -- edge_clients first shipped filtering on last_seen_at
     and undercounted by every address seen that day (1,965 instead of 2,004).
     """
-    kind = con.execute(f"SELECT typeof({dataset.date_column}) FROM {dataset.table} LIMIT 1").fetchone()
+    kind = con.execute(f"SELECT typeof({dataset.date_column}) FROM {dataset.table} LIMIT 1").fetchone()  # noqa: S608 - trusted semantic registry identifiers
     assert kind and kind[0] == "DATE", f"{dataset.name}.date_column is {kind}"

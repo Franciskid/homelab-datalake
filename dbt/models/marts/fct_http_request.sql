@@ -60,6 +60,12 @@ select
     client_trust,
     client_ip_version,
     is_internal,
+    is_internal_service,
+    traffic_origin,
+    origin_edge,
+    origin_service,
+    origin_confidence,
+    origin_evidence,
     client_kind,
     is_automated,
 

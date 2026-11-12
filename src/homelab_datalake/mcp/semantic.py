@@ -305,7 +305,12 @@ WEB_TRAFFIC = Dataset(
                   "resolved when the real client address was known; cdn_edge when only "
                   "Cloudflare's edge was logged. See the note on `visitors`."),
         Dimension("client_ip_version", "client_ip_version", "4 or 6."),
-        Dimension("is_internal", "is_internal", "True for requests from the LAN."),
+        Dimension("is_internal", "is_internal", "Legacy private-address flag only; use is_internal_service and traffic_origin for service-origin analysis."),
+        Dimension("is_internal_service", "is_internal_service", "True for inferred managed/private service traffic, including calls over public endpoints. False for unmatched public clients; null when attribution is unresolved. Inspect origin_evidence and origin_confidence."),
+        Dimension("traffic_origin", "traffic_origin", "internal_service, managed_network (service unknown), private_network (service unknown), unmanaged_network, or unresolved. An own-network browser is not automatically an internal service."),
+        Dimension("origin_edge", "origin_edge", "Managed SOURCE edge from the time-bounded egress inventory; independent of the destination npm_instance. Null when not identified."),
+        Dimension("origin_service", "origin_service", "Identified service signature: monitoring, datalake_query, datalake_storage or edge_log_mirror. Null when no service can be attributed."),
+        Dimension("origin_confidence", "origin_confidence", "inferred for an internal-service classification; network_only or unknown otherwise. User-agent signatures are not authenticated identity and must not authorize access."),
         Dimension("is_automated", "is_automated", "True for bots and scanners."),
         Dimension("geo_country_code", "geo_country_code", "ISO country code, when known."),
         Dimension("geo_country_name", "geo_country_name", "Country name, when known."),
@@ -317,6 +322,8 @@ WEB_TRAFFIC = Dataset(
     ),
     measures=(
         Measure("requests", "count(*)", "Number of requests.", "requests"),
+        Measure("internal_service_requests", "count(*) FILTER (WHERE is_internal_service)", "Requests attributed to a managed/private service, including cross-edge public calls. This is inference; see origin_evidence.", "requests"),
+        Measure("unattributed_service_requests", "count(*) FILTER (WHERE is_internal_service IS NULL)", "Requests whose service origin remains unknown, including browsers on managed egress and unresolved CDN clients.", "requests"),
         # The filter is load-bearing, not defensive. Before the 27 Aug 2026 real-IP
         # cutover every Cloudflare-proxied request logged the edge, so counting
         # distinct hashes across the whole history would average real people with a
@@ -346,6 +353,7 @@ WEB_TRAFFIC = Dataset(
     default_measures=("requests", "visitors", "server_error_pct"),
     attributes=(
         Attribute("request_key", "request_key", "The request's stable id."),
+        Attribute("origin_evidence", "origin_evidence", "Why the service/network classification was assigned: dated managed-address inventory or private address, plus the matching user-agent/path signature or the reason it remains unknown."),
         Attribute("partition_date", "partition_date", "The UTC day the request belongs to."),
         Attribute("requested_at", "requested_at", "When it arrived, to the second, in UTC."),
         Attribute("requested_hour", "requested_hour", "requested_at truncated to the hour."),
@@ -374,7 +382,8 @@ WEB_TRAFFIC = Dataset(
     ),
     default_fields=(
         "requested_at", "request_host", "method", "path", "status", "bytes_sent",
-        "client_kind", "geo_country_code", "request_key",
+        "client_kind", "geo_country_code", "is_internal_service", "traffic_origin",
+        "origin_edge", "origin_service", "origin_confidence", "origin_evidence", "request_key",
     ),
     record_order="requested_at",
 )

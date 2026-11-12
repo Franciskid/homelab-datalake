@@ -65,6 +65,12 @@ SELECT
     CASE WHEN i % 6 = 0 THEN 'bot' ELSE 'browser' END AS client_kind,
     CASE WHEN i % 5 = 0 THEN 'cdn_edge' ELSE 'resolved' END AS client_trust,
     4 AS client_ip_version, false AS is_internal, (i % 6 = 0) AS is_automated,
+    CASE WHEN i % 7 = 0 THEN NULL ELSE i % 3 = 0 END AS is_internal_service,
+    CASE WHEN i % 7 = 0 THEN 'unresolved' WHEN i % 3 = 0 THEN 'internal_service' ELSE 'unmanaged_network' END AS traffic_origin,
+    CASE WHEN i % 3 = 0 THEN 'primary' END AS origin_edge,
+    CASE WHEN i % 3 = 0 AND i % 7 <> 0 THEN 'monitoring' END AS origin_service,
+    CASE WHEN i % 7 = 0 THEN 'unknown' WHEN i % 3 = 0 THEN 'inferred' ELSE 'network_only' END AS origin_confidence,
+    'Synthetic classification evidence' AS origin_evidence,
     'Mozilla/5.0 (test ' || (i % 3) || ')' AS user_agent,
     -- RFC 5737 documentation range -- see tests/test_no_real_addresses_in_fixtures.py.
     '203.0.113.' || (i % 40) AS client_address,

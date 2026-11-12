@@ -203,6 +203,6 @@ def test_today_is_an_npm_partition():
 
     from homelab_datalake.assets.npm_access import npm_partitions
 
-    today = datetime.datetime.now(datetime.timezone.utc).date().isoformat()
+    today = datetime.datetime.now(datetime.UTC).date().isoformat()
     keys = npm_partitions.get_partition_keys()
     assert MultiPartitionKey({"date": today, "host": "fraserv"}) in keys

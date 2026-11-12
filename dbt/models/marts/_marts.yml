@@ -103,6 +103,24 @@ models:
           - accepted_values: {values: [4, 6], quote: false}
       - name: is_internal
         description: '{{ doc("client_is_internal") }}'
+      - name: is_internal_service
+        description: >
+          Nullable service-origin flag. True for a known managed/private network plus a bounded service signature, false for unmatched public clients, null when the service cannot be attributed. Public endpoints and another destination edge do not prevent a true value. This is inference, never authentication.
+      - name: traffic_origin
+        description: >
+          internal_service, managed_network, private_network, unmanaged_network or unresolved. Managed/private network rows without a service signature remain distinct from identified services.
+      - name: origin_edge
+        description: >
+          Source edge from the dated managed-egress inventory; independent of the destination npm_instance. Null for private or unresolved clients without a matching binding.
+      - name: origin_service
+        description: >
+          monitoring, datalake_query, datalake_storage or edge_log_mirror when the known source network and user-agent/path signature match; null otherwise.
+      - name: origin_confidence
+        description: >
+          inferred for identified service traffic, network_only when only the source-network scope is known, unknown when the logged client cannot be resolved. Not suitable for access control.
+      - name: origin_evidence
+        description: >
+          Human-readable network inventory evidence and the matching service signature, or the reason attribution remains unknown. Actual client addresses remain in client_address, not repeated here.
       - name: client_kind
         description: '{{ doc("req_client_kind") }}'
         tests:

@@ -59,6 +59,24 @@ models:
         description: '{{ doc("client_ip_version") }}'
       - name: is_internal
         description: '{{ doc("client_is_internal") }}'
+      - name: is_internal_service
+        description: >
+          Nullable service-origin flag. True for a known managed/private network plus a bounded service signature, false for unmatched public clients, null when the service cannot be attributed. Public endpoints and another destination edge do not prevent a true value. This is inference, never authentication.
+      - name: traffic_origin
+        description: >
+          internal_service, managed_network, private_network, unmanaged_network or unresolved. Managed/private network rows without a service signature remain distinct from identified services.
+      - name: origin_edge
+        description: >
+          Source edge from the dated managed-egress inventory; independent of the destination npm_instance. Null for private or unresolved clients without a matching binding.
+      - name: origin_service
+        description: >
+          monitoring, datalake_query, datalake_storage or edge_log_mirror when the known source network and user-agent/path signature match; null otherwise.
+      - name: origin_confidence
+        description: >
+          inferred for identified service traffic, network_only when only the source-network scope is known, unknown when the logged client cannot be resolved. Not suitable for access control.
+      - name: origin_evidence
+        description: >
+          Human-readable network inventory evidence and the matching service signature, or the reason attribution remains unknown. Actual client addresses remain in client_address, not repeated here.
       - name: geo_country_code
         description: '{{ doc("geo_country_code") }}'
       - name: geo_country_name
@@ -329,3 +347,21 @@ models:
         description: '{{ doc("pb_play_duration_seconds") }}'
       - name: is_episode
         description: '{{ doc("pb_is_episode") }}'
+
+  - name: int_managed_origin_addresses
+    description: Private runtime inventory of source egress addresses and time windows. It is never committed with real addresses and is not published as a mart.
+    columns:
+      - name: address
+        description: Canonical managed source IPv4 or IPv6 address, from deployment configuration.
+        tests: [not_null]
+      - name: origin_edge
+        description: Managed source-edge identifier, independent of the destination proxy.
+        tests: [not_null]
+      - name: valid_from
+        description: Inclusive beginning of the binding in UTC.
+        tests: [not_null]
+      - name: valid_until
+        description: Exclusive end of the binding in UTC; null while the binding is current.
+      - name: evidence
+        description: Operator evidence for the dated address binding; no credentials or address literals belong in this text.
+        tests: [not_null]
