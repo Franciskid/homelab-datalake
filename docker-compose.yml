@@ -215,6 +215,8 @@ services:
     command: ["python", "-m", "homelab_datalake.api.app"]
     environment:
       DATALAKE_API_PORT: "3444"
+      # Footer summaries survive reader replacement; object ETags invalidate them.
+      DATALAKE_CATALOGUE_CACHE_PATH: /audit/catalogue-metadata.json
     # No published port, like everything else here. Being on this network is not
     # authorisation: every route but /health verifies a Keycloak-signed bearer token.
     expose:

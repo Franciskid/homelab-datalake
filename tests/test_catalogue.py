@@ -390,3 +390,146 @@ def test_the_gateway_names_the_person_behind_the_request(lake, tmp_path):
 
 def _entry(built: cat.Catalogue, table: str) -> cat.Table:
     return next(t for t in built.tables if t.table == table)
+
+
+def test_refresh_reuses_unchanged_footers_but_reads_current_documentation(lake, tmp_path, monkeypatch):
+    _land(lake, "npm_access", "2026-08-01", status=pa.array([200]))
+    cache = str(tmp_path / "metadata.json")
+    calls = []
+    original = cat._footer_schema
+
+    def read(con, paths):
+        calls.append(paths)
+        return original(con, paths)
+
+    monkeypatch.setattr(cat, "_footer_schema", read)
+    path = _manifest(tmp_path, {"sources": {"s": {
+        "resource_type": "source", "name": "npm_access",
+        "columns": {"status": {"description": "Before."}},
+    }}})
+    first = cat.build(lake, path, cache)
+    assert _entry(first, "npm_access").rows == 1
+    _manifest(tmp_path, {"sources": {"s": {
+        "resource_type": "source", "name": "npm_access",
+        "columns": {"status": {"description": "After."}},
+    }}})
+    second = cat.build(lake, path, cache)
+    assert len(calls) == 1
+    assert _entry(second, "npm_access").columns[1].description == "After."
+
+
+def test_cached_metadata_tracks_overwrites_additions_and_removals(lake, tmp_path):
+    cache = str(tmp_path / "metadata.json")
+    manifest = str(tmp_path / "absent")
+    _land(lake, "npm_access", "2026-08-01", status=pa.array([200]))
+    assert _entry(cat.build(lake, manifest, cache), "npm_access").rows == 1
+    # A changed existing object and a new, differently shaped partition.
+    _land(lake, "npm_access", "2026-08-01", status=pa.array([200, 404]))
+    _land(lake, "npm_access", "2026-08-02", status=pa.array([500]),
+          origin_service=pa.array(["monitoring"]))
+    entry = _entry(cat.build(lake, manifest, cache), "npm_access")
+    assert entry.rows == 3
+    assert entry.objects == 2
+    assert "origin_service" in {column.name for column in entry.columns}
+    (tmp_path / layout.prefix("npm_access") / "dt=2026-08-02/data.parquet").unlink()
+    entry = _entry(cat.build(lake, manifest, cache), "npm_access")
+    assert entry.rows == 2
+    assert entry.objects == 1
+    assert "origin_service" not in {column.name for column in entry.columns}
+
+
+def test_non_parquet_payloads_are_not_catalogue_objects(lake, tmp_path):
+    _land(lake, "npm_access", "2026-08-01", status=pa.array([200]))
+    lake.write_bytes(layout.prefix("npm_access") + "/frame.jpg", b"image payload")
+    entry = _entry(cat.build(lake, str(tmp_path / "absent")), "npm_access")
+    assert entry.objects == 1
+    assert entry.rows == 1
+    assert entry.unavailable is None
+
+
+def test_corrupt_persistent_cache_falls_back_to_real_footers(lake, tmp_path):
+    _land(lake, "npm_access", "2026-08-01", status=pa.array([200]))
+    path = tmp_path / "cache.json"
+    path.write_text('{"version":2,"schemas":{"s":[]},"entries":{"bad":{"rows":"wrong","schema":"s"}}}')
+    assert _entry(cat.build(lake, str(tmp_path / "absent"), str(path)), "npm_access").rows == 1
+    assert json.loads(path.read_text())["entries"]
+
+
+def test_s3_catalogue_listing_is_scoped_to_registered_datasets(monkeypatch):
+    requests = []
+    prefix = layout.prefix("npm_access")
+
+    class Paginator:
+        def paginate(self, **kwargs):
+            requests.append(kwargs)
+            if kwargs["Prefix"] == prefix + "/":
+                return [{"Contents": [
+                    {"Key": prefix + "/data.parquet", "Size": 12, "ETag": '"v1"'},
+                    {"Key": prefix + "/frame.jpg", "Size": 999},
+                ]}]
+            return [{}]
+
+    class Client:
+        def get_paginator(self, name):
+            return Paginator()
+
+    monkeypatch.setattr(LakeStorage, "_client", lambda self: Client())
+    lake = LakeStorage(endpoint="https://storage.example.org")
+    listed = cat._objects_by_prefix(lake)
+    assert len(listed[prefix]) == 1
+    assert {r["Prefix"] for r in requests} == {d.prefix + "/" for d in layout.ALL_DATASETS}
+    assert all(r["Bucket"] == lake.bucket for r in requests)
+
+
+def test_publish_during_build_invalidates_the_result_on_next_request():
+    stamp = [(1, 100)]
+    builds = []
+
+    def builder():
+        builds.append(1)
+        stamp[0] = (2, 200)
+        return cat.Catalogue(tables=(), built_at=0, build_ms=0, lake="test", documented=True)
+
+    cache = cat.CatalogueCache(builder=builder, stamp=lambda: stamp[0])
+    cache.get()
+    cache.get()
+    assert len(builds) == 2
+
+
+def test_incremental_refresh_reads_only_changed_object_footers(lake, tmp_path, monkeypatch):
+    _land(lake, "npm_access", "2026-08-01", status=pa.array([200]))
+    _land(lake, "npm_access", "2026-08-02", status=pa.array([404]))
+    calls = []
+    original = cat._footer_schema
+
+    def read(con, paths):
+        calls.extend(paths)
+        return original(con, paths)
+
+    monkeypatch.setattr(cat, "_footer_schema", read)
+    cache = str(tmp_path / "metadata.json")
+    manifest = str(tmp_path / "absent")
+    cat.build(lake, manifest, cache)
+    assert len(calls) == 2
+    _land(lake, "npm_access", "2026-08-02", status=pa.array([404, 500]))
+    entry = _entry(cat.build(lake, manifest, cache), "npm_access")
+    assert entry.rows == 3
+    assert len(calls) == 3
+    assert "dt=2026-08-02" in calls[-1]
+
+
+def test_cached_schema_union_matches_real_parquet_type_promotion(lake, tmp_path):
+    _land(lake, "camera_events", "2026-08-01", event_id=pa.array([1], pa.int32()),
+          detail=pa.array([{"before": 2}]))
+    _land(lake, "camera_events", "2026-08-02", event_id=pa.array(["second"]),
+          detail=pa.array([{"after": "new"}]), **{'a"quoted': pa.array([True])})
+    import duckdb
+    con = duckdb.connect(":memory:")
+    try:
+        expected = con.execute("DESCRIBE SELECT * FROM read_parquet(?, union_by_name=true)",
+                               [lake.duckdb_scan_target(layout.prefix("camera_events"))]).fetchall()
+    finally:
+        con.close()
+    entry = _entry(cat.build(lake, str(tmp_path / "absent"), str(tmp_path / "cache.json")),
+                   "camera_events")
+    assert [(c.name, c.type) for c in entry.columns] == [(r[0], r[1]) for r in expected]
