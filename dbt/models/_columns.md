@@ -176,9 +176,10 @@ something the data does not contain.
 {% enddocs %}
 
 {% docs client_is_internal %}
-Whether the address was in a private range, which means the request came from inside the
-LAN. Read from the flag the privacy boundary set rather than re-derived, because the
-address is gone by this point -- which is the boundary working.
+Legacy flag: whether the logged client address was private. It does not identify services
+calling over public endpoints, including another edge. Use `is_internal_service`,
+`traffic_origin`, `origin_edge`, `origin_service` and `origin_evidence` for service origin.
+Those fields distinguish a managed network from an identified service and expose uncertainty.
 {% enddocs %}
 
 {% docs geo_country_code %}

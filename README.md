@@ -29,6 +29,13 @@ which runs the data pipelines, also hosts the AI platform's automation jobs.
 The datalake works with records and metadata. Camera recordings stay with the
 camera application, and media files stay with Jellyfin.
 
+## Request origin
+
+Web-traffic rows identify inferred internal-service calls separately from private IPs,
+including public calls across edges. Source edge, service, confidence and evidence
+are queryable columns; shared-egress browsers remain unattributed. See
+[request service origin](docs/REQUEST_SERVICE_ORIGIN.md).
+
 ## How the data moves
 
 ```mermaid

@@ -38,6 +38,8 @@ from pathlib import Path
 
 import duckdb
 
+from homelab_datalake.service_origins import inventory_fingerprint_input
+
 SCHEMA = "build_state"
 FULL_REBUILD_TAG = "datalake/full_rebuild"
 
@@ -79,6 +81,7 @@ def warehouse_path() -> str:
 def code_version() -> str:
     """A hash of everything that decides what the warehouse should hold."""
     digest = hashlib.sha256()
+    digest.update(inventory_fingerprint_input().encode())
     files = list(_PACKAGE_ROOT.rglob("*.py"))
     for name in _DBT_INPUTS:
         path = _DBT_ROOT / name

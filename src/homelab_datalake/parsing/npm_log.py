@@ -25,8 +25,8 @@ how a pipeline lies about its own completeness.
 
 from __future__ import annotations
 
-import re
 import math
+import re
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 

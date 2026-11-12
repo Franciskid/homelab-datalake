@@ -994,3 +994,11 @@ The same correction applies to the raw side one step earlier in the pipeline.
 `platform_usage_events` is loaded into the nightly DuckDB warehouse rebuild in full, like every
 other table in the registry — no `Dataset.lake_only`. The field stays in `layout.py` for the
 next table that genuinely earns it; this one, measured, did not.
+
+## Request service origin (November 2026)
+
+Implemented dated managed-egress attribution in curated HTTP requests and the
+request fact table, with a nullable internal-service flag, source edge, service,
+confidence and inspectable evidence. Existing private-IP semantics are preserved.
+The semantic catalogue exposes the fields and identified/unattributed measures.
+See [the runbook](docs/REQUEST_SERVICE_ORIGIN.md).
