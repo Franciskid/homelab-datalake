@@ -13,9 +13,11 @@ Two sources of truth are joined here, and neither is sufficient alone:
 The join key is the table name, which is already the name the lake, DuckDB and dbt
 all use for the same thing -- see `homelab_datalake.layout`.
 
-**Why this is cached.** Building it reads a footer per object and lists the bucket.
-That is a second or two against MinIO, which is nothing once a day and unacceptable
-per keystroke of an autocomplete.
+**Why this is cached.** Only registered dataset prefixes are listed; the rest of
+this bucket contains hundreds of thousands of inbox and attachment objects. Footer
+results are cached by the exact object inventory (including ETags), so a publish
+rereads only objects whose fingerprints changed. Bounded workers inspect those objects
+in parallel, and an optional persistent cache survives API/container restarts.
 
 **How it knows to rebuild.** The lake changes exactly once a night, when the publish
 assets rewrite it -- and the last thing that job does is swap in a new serving copy.
@@ -33,18 +35,20 @@ that is perfectly healthy.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
+import tempfile
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 
 import duckdb
 
 from homelab_datalake import layout, serving
-from homelab_datalake.migrate_layout import inventory
 from homelab_datalake.resources import LakeStorage
 
 logger = logging.getLogger(__name__)
@@ -263,7 +267,7 @@ def _clean(text: str | None) -> str:
 # --------------------------------------------------------------------------------
 
 
-def _footer_schema(con: duckdb.DuckDBPyConnection, pattern: str) -> list[tuple[str, str]]:
+def _footer_schema(con: duckdb.DuckDBPyConnection, paths: list[str]) -> list[tuple[str, str]]:
     """(name, type) for every column across a dataset's objects.
 
     `union_by_name` because a partition written before a column existed is a
@@ -271,40 +275,117 @@ def _footer_schema(con: duckdb.DuckDBPyConnection, pattern: str) -> list[tuple[s
     describe the union rather than whichever object DuckDB happened to open first.
     """
     rows = con.execute(
-        f"DESCRIBE SELECT * FROM read_parquet('{pattern}', union_by_name=true)"  # noqa: S608
+        "DESCRIBE SELECT * FROM read_parquet(?, union_by_name=true)", [paths]
     ).fetchall()
     return [(row[0], row[1]) for row in rows]
 
 
-def _footer_rows(con: duckdb.DuckDBPyConnection, pattern: str) -> int:
+def _footer_rows(con: duckdb.DuckDBPyConnection, paths: list[str]) -> int:
     """Rows across the dataset, from the footers alone.
 
-    `parquet_file_metadata` reads the footer and stops. Counting with `SELECT
-    count(*)` would be correct and would also stream every column of every object
-    across the network to arrive at a number Parquet already stores.
+    Explicit object paths avoid repeating S3 glob listings and exclude attachments.
+    No data pages are read to obtain the count.
     """
     row = con.execute(
-        f"SELECT coalesce(sum(num_rows), 0) FROM parquet_file_metadata('{pattern}')"  # noqa: S608
+        "SELECT coalesce(sum(num_rows), 0) FROM parquet_file_metadata(?)", [paths]
     ).fetchone()
     return int(row[0]) if row else 0
 
 
-def _objects_by_prefix(lake: LakeStorage) -> dict[str, tuple[int, int]]:
-    """prefix -> (object count, bytes), from one listing of the whole bucket.
+# Eight concurrent footer readers, with one DuckDB execution thread each. This bounds
+# memory/CPU and S3 concurrency independently of the number of registered datasets.
+_WORKERS = 8
 
-    One listing rather than 25, because a listing is a round trip per thousand keys
-    and the datasets are disjoint by construction -- `test_no_prefix_is_a_parent_of_
-    another` is what makes assigning each key to exactly one prefix safe.
-    """
-    prefixes = sorted((d.prefix for d in layout.ALL_DATASETS), key=len, reverse=True)
-    totals = {prefix: [0, 0] for prefix in prefixes}
-    for key, size in inventory(lake).items():
-        for prefix in prefixes:
-            if key.startswith(prefix + "/"):
-                totals[prefix][0] += 1
-                totals[prefix][1] += size
-                break
-    return {prefix: (count, size) for prefix, (count, size) in totals.items()}
+
+@dataclass(frozen=True)
+class Object:
+    key: str
+    size: int
+    identity: str
+
+
+def _objects_by_prefix(lake: LakeStorage) -> dict[str, tuple[Object, ...]]:
+    """List registered prefixes, never inboxes, image payloads or other datasets."""
+    client = lake._client() if lake.uses_s3 else None
+
+    def listed(dataset):
+        objects = []
+        if client is not None:
+            pages = client.get_paginator("list_objects_v2")
+            for page in pages.paginate(Bucket=lake.bucket, Prefix=dataset.prefix + "/"):
+                for obj in page.get("Contents", []):
+                    if obj["Key"].endswith(".parquet"):
+                        identity = str((obj.get("ETag"), obj.get("LastModified")))
+                        objects.append(Object(obj["Key"], obj["Size"], identity))
+        else:
+            root = Path(lake.local_root)
+            for path in (root / dataset.prefix).rglob("*.parquet"):
+                if path.is_file():
+                    stat = path.stat()
+                    identity = str((stat.st_ino, stat.st_mtime_ns, stat.st_ctime_ns))
+                    objects.append(Object(str(path.relative_to(root)), stat.st_size, identity))
+        return dataset.prefix, tuple(sorted(objects, key=lambda obj: obj.key))
+
+    with ThreadPoolExecutor(max_workers=_WORKERS) as pool:
+        return dict(pool.map(listed, layout.ALL_DATASETS))
+
+
+def _fingerprint(lake: LakeStorage, objects: tuple[Object, ...]) -> str:
+    # The endpoint is part of the namespace: two S3 servers may use the same bucket.
+    values = [lake.endpoint, lake.describe(), [(o.key, o.size, o.identity) for o in objects]]
+    return hashlib.sha256(json.dumps(values).encode()).hexdigest()
+
+
+def _load_metadata(path: str | None) -> dict:
+    if not path:
+        return {}
+    try:
+        value = json.loads(Path(path).read_text())
+        entries = value["entries"]
+        if value["version"] != 2 or not isinstance(entries, dict):
+            return {}
+        schemas = value["schemas"]
+        for entry in entries.values():
+            entry["schema"] = schemas[entry["schema"]]
+        for entry in entries.values():
+            if (not isinstance(entry["rows"], int) or entry["rows"] < 0
+                    or not isinstance(entry["schema"], list)
+                    or any(not isinstance(c, list) or len(c) != 2
+                           or any(not isinstance(v, str) for v in c) for c in entry["schema"])):
+                return {}
+        return entries
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        logger.warning("catalogue metadata cache missing or invalid; reading real footers")
+        return {}
+
+
+def _save_metadata(path: str | None, entries: dict) -> None:
+    if not path:
+        return
+    temporary = None
+    try:
+        target = Path(path)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        fd, temporary = tempfile.mkstemp(prefix=target.name + ".", dir=target.parent)
+        # Thousands of daily objects usually share a handful of schemas. Store
+        # each schema once, rather than multiplying a wide column list per object.
+        schemas = {}
+        compact = {}
+        for key, entry in entries.items():
+            schema = entry["schema"]
+            schema_key = hashlib.sha256(json.dumps(schema).encode()).hexdigest()
+            schemas[schema_key] = schema
+            compact[key] = {"schema": schema_key, "rows": entry["rows"]}
+        with os.fdopen(fd, "w") as handle:
+            json.dump({"version": 2, "schemas": schemas, "entries": compact}, handle)
+        os.replace(temporary, target)
+    except OSError:
+        # The cache is an optimization. A read-only/unavailable cache must not
+        # hide truthful results obtained from the lake.
+        logger.warning("could not persist catalogue metadata cache", exc_info=True)
+    finally:
+        if temporary:
+            Path(temporary).unlink(missing_ok=True)
 
 
 # --------------------------------------------------------------------------------
@@ -312,23 +393,68 @@ def _objects_by_prefix(lake: LakeStorage) -> dict[str, tuple[int, int]]:
 # --------------------------------------------------------------------------------
 
 
-def build(lake: LakeStorage | None = None, manifest_path: str = DEFAULT_MANIFEST_PATH) -> Catalogue:
-    """Read the footers, read the manifest, and join them."""
+def build(lake: LakeStorage | None = None, manifest_path: str = DEFAULT_MANIFEST_PATH,
+          metadata_cache_path: str | None = None) -> Catalogue:
+    """Join real Parquet metadata to current documentation, reusing unchanged results."""
     started = time.monotonic()
     lake = lake or LakeStorage.from_env()
     docs = read_manifest(manifest_path)
-    counts = _objects_by_prefix(lake)
+    objects = _objects_by_prefix(lake)
+    cache_path = metadata_cache_path or os.environ.get("DATALAKE_CATALOGUE_CACHE_PATH")
+    previous = _load_metadata(cache_path)
+    local = threading.local()
+    connections = []
+    lock = threading.Lock()
 
-    con = duckdb.connect(":memory:")
+    def connection():
+        if not hasattr(local, "con"):
+            local.con = duckdb.connect(":memory:", config={"threads": 1, "TimeZone": "UTC"})
+            with lock:
+                connections.append(local.con)
+            lake.configure_duckdb(local.con)
+        return local.con
+
+    def inspect(obj):
+        fingerprint = _fingerprint(lake, (obj,))
+        cached = previous.get(fingerprint)
+        if cached is None:
+            path = (f"s3://{lake.bucket}/{obj.key}" if lake.uses_s3
+                    else str(Path(lake.local_root).resolve() / obj.key))
+            try:
+                con = connection()
+                cached = {"schema": _footer_schema(con, [path]), "rows": _footer_rows(con, [path])}
+            except duckdb.Error as error:
+                logger.warning("cannot read footer for %s: %s", obj.key, error)
+                return obj.key, fingerprint, None, str(error)
+        return obj.key, fingerprint, cached, None
+
     try:
-        con.execute("SET TimeZone='UTC';")
-        lake.configure_duckdb(con)
-        tables = tuple(_describe(con, lake, dataset, docs, counts) for dataset in layout.ALL_DATASETS)
+        with ThreadPoolExecutor(max_workers=_WORKERS) as pool:
+            results = list(pool.map(inspect, (obj for group in objects.values() for obj in group)))
+        metadata = {key: (entry, error) for key, _, entry, error in results}
+        # Schema union is a local type-binding operation over distinct observed
+        # schemas. DuckDB applies the same name/type promotion rules as the lake's
+        # read_parquet(..., union_by_name=true), without rereading old S3 footers.
+        union = duckdb.connect(":memory:", config={"threads": 1})
+        try:
+            tables = []
+            for dataset in layout.ALL_DATASETS:
+                landed = objects[dataset.prefix]
+                entries = [metadata[obj.key] for obj in landed]
+                error = next((error for _, error in entries if error is not None), None)
+                summary = None
+                if landed and error is None:
+                    summary = {"schema": _union_schema(union, [m["schema"] for m, _ in entries]),
+                               "rows": sum(m["rows"] for m, _ in entries)}
+                tables.append(_describe(dataset, docs, landed, summary, error))
+        finally:
+            union.close()
     finally:
-        con.close()
-
+        for con in connections:
+            con.close()
+    _save_metadata(cache_path, {key: entry for _, key, entry, _ in results if entry is not None})
     return Catalogue(
-        tables=tables,
+        tables=tuple(tables),
         built_at=time.time(),
         build_ms=(time.monotonic() - started) * 1000,
         lake=lake.describe(),
@@ -336,8 +462,23 @@ def build(lake: LakeStorage | None = None, manifest_path: str = DEFAULT_MANIFEST
     )
 
 
-def _describe(con, lake, dataset, docs, counts) -> Table:
-    objects, size = counts.get(dataset.prefix, (0, 0))
+def _union_schema(con, schemas) -> list[tuple[str, str]]:
+    distinct = list(dict.fromkeys(tuple(tuple(c) for c in schema) for schema in schemas))
+    if len(distinct) == 1:
+        return list(distinct[0])
+    selects = []
+    for schema in distinct:
+        # Names and type spellings were obtained from DuckDB's DESCRIBE, never
+        # from documentation or request input. Quote names just as DuckDB does.
+        columns = [f'CAST(NULL AS {kind}) AS "{name.replace(chr(34), chr(34) * 2)}"'
+                   for name, kind in schema]
+        selects.append("SELECT " + ", ".join(columns) + " WHERE false")
+    rows = con.execute("DESCRIBE " + " UNION ALL BY NAME ".join(selects)).fetchall()
+    return [(row[0], row[1]) for row in rows]
+
+
+def _describe(dataset, docs, objects, metadata, error: str | None = None) -> Table:
+    size = sum(o.size for o in objects)
     documentation = docs.get(dataset.table, Documentation("", {}))
     # The dataset's own description beats the manifest's. It is the one a reader
     # sees in the Dagster graph and in the lake layout, and having the tree and the
@@ -353,7 +494,7 @@ def _describe(con, lake, dataset, docs, counts) -> Table:
         "prefix": dataset.prefix,
         "description": description,
         "partition_column": dataset.partition_column,
-        "objects": objects,
+        "objects": len(objects),
         "bytes": size,
         "asset_path": asset_path(dataset),
     }
@@ -364,13 +505,10 @@ def _describe(con, lake, dataset, docs, counts) -> Table:
         return Table(**common, columns=(), rows=0,
                      unavailable="no objects have landed under this prefix yet")
 
-    pattern = lake.duckdb_scan_target(dataset.prefix).replace("'", "''")
-    try:
-        schema = _footer_schema(con, pattern)
-        rows = _footer_rows(con, pattern)
-    except duckdb.Error as error:
-        logger.warning("cannot read footers for %s: %s", dataset.prefix, error)
-        return Table(**common, columns=(), rows=0, unavailable=str(error))
+    if error is not None:
+        return Table(**common, columns=(), rows=0, unavailable=error)
+    schema = metadata["schema"]
+    rows = metadata["rows"]
 
     described = documentation.columns
     for name in described:
@@ -435,9 +573,10 @@ class CatalogueCache:
             return self._value
 
     def _rebuild(self) -> None:
+        stamped = self._stamp()
         self._value = self._builder()
         self._built_at = time.monotonic()
-        self._stamped = self._stamp()
+        self._stamped = stamped
         logger.info(
             "catalogue built: %d datasets, %d columns, %.0f ms",
             len(self._value.tables),
