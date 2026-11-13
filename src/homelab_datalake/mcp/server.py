@@ -80,7 +80,9 @@ LIST_DATASETS_BUDGET = 4_500
 DESCRIBE_DATASET_BUDGET = 4_000
 # 6,500 since 2026-11-10: each mart costs one ~55-character line here, and
 # agg_edge_client_daily took the listing to 6,023 against the old 6,000.
-DESCRIBE_SCHEMA_BUDGET = 6_500
+# 7,000 since 2026-11-13: the infra_config_changes dataset adds its datasets.* line,
+# 6,544 in all.
+DESCRIBE_SCHEMA_BUDGET = 7_000
 
 # Auth is decided at construction, from the environment, rather than patched on
 # afterwards: a server that exists for a moment without its verifier is a server that

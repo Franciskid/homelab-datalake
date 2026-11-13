@@ -1592,9 +1592,9 @@ EDGE_DECISIONS = Dataset(
     kind="event",
     date_column="partition_date",
     description=(
-        "Every block and never-block decision from the Edge security report. Taken by an "
-        "admin or by the auto-block rule they agreed to, lifted ones included. status is "
-        "active, expired or revoked. The date range filters on the day it was decided."
+        "Every block and never-block decision at the NPM edge. Held by infra-control: by the "
+        "owner, an approved agent or the auto-block rule, lifted ones included. status is "
+        "active, expired or revoked. Dated by the day it was decided."
     ),
     dimensions=(
         Dimension("action", "action", "block, or allow (never auto-block)."),
@@ -1629,12 +1629,51 @@ EDGE_DECISIONS = Dataset(
     record_order="decided_at",
 )
 
+INFRA_CONFIG_CHANGES = Dataset(
+    name="infra_config_changes",
+    table="marts.fct_infra_config_change",
+    kind="event",
+    date_column="partition_date",
+    description=(
+        "Who changed which infra-control setting, when and why. The auto-block threshold "
+        "is edge.autoblock.min_score. Dated by the day of the change."
+    ),
+    dimensions=(
+        Dimension("setting_key", "setting_key", "The setting."),
+        Dimension("actor", "actor", "Who changed it."),
+        Dimension("actor_kind", "actor_kind", "owner, agent (owner-approved), service, import."),
+        Dimension("agent", "agent", "The agent, for agent changes."),
+        Dimension("via", "via", "status-page, ai-platform or shadow."),
+    ),
+    measures=(
+        Measure("changes", "count(*)", "Number of changes.", "changes"),
+    ),
+    default_measures=("changes",),
+    attributes=(
+        Attribute("change_id", "change_id", "The change's id."),
+        Attribute("partition_date", "partition_date", "The UTC day."),
+        Attribute("changed_at", "changed_at", "When."),
+        Attribute("from_json", "from_json", "Value before (JSON)."),
+        Attribute("to_json", "to_json", "Value after (JSON)."),
+        Attribute("reason", "reason", "Why."),
+        Attribute("run_id", "run_id", "The agent run."),
+    ),
+    default_fields=("changed_at", "setting_key", "from_json", "to_json", "actor", "actor_kind", "agent", "via", "reason"),
+    not_exposed=(
+        ("setting_namespace", "the setting key's prefix"),
+        ("reverts_change_id", "rare; reason says so"),
+        ("is_revert", "same"),
+    ),
+    record_order="changed_at",
+)
+
 DATASETS: dict[str, Dataset] = {
     d.name: d for d in (
         LLM_SPEND, WEB_TRAFFIC, CAMERA_ACTIVITY, MEDIA_LIBRARY, MEDIA_PLAYBACK,
         MEDIA_SERVER_ACTIVITY, MEDIA_SEARCHES, MEDIA_SEARCH_RESULTS,
         AI_GATEWAY_CALLS, AGENT_RUNS, AGENT_TOOL_CALLS, CONVERSATIONS, EMAIL_SENDS,
         AUTOMATION_RUNS, FINANCE_TRANSACTIONS, FINANCE_BALANCES, EDGE_CLIENTS, EDGE_DECISIONS,
+        INFRA_CONFIG_CHANGES,
     )
 }
 
