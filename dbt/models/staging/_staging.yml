@@ -2102,6 +2102,76 @@ models:
       - name: step_config
         description: JSON. The step's own configuration, as run.
 
+  - name: stg_infra_control_edge_decisions
+    description: >
+      Edge decisions from fraserv-infra's infra-control, current state of each (latest
+      snapshot). Includes the AI platform's decisions from before the cutover, same ids.
+    columns:
+      - name: decision_id
+        description: The decision's id.
+        tests: [not_null, unique]
+      - name: cidr
+        description: The address or range decided on, normalised and lower-cased.
+      - name: network_address
+        description: The address part of cidr.
+      - name: prefix_length
+        description: The prefix part of cidr (32 or 128 for a single address).
+      - name: ip_version
+        description: 4 or 6.
+      - name: action
+        description: block, or allow (never block).
+        tests:
+          - accepted_values: {values: ['block', 'allow']}
+      - name: decided_by_rule
+        description: manual (a person or an approved agent) or auto (the auto-block rule).
+      - name: reason
+        description: Why.
+      - name: score
+        description: The threat score behind an auto-block.
+      - name: decided_by
+        description: Who decided (for auto, the admin who switched auto-block on).
+      - name: decided_at
+        description: When the decision was taken.
+      - name: expires_at
+        description: When it lapses by itself; null means until lifted.
+      - name: revoked_at
+        description: When it was lifted; null while in force.
+      - name: revoked_by
+        description: Who lifted it.
+      - name: decided_via
+        description: The client that carried the decision (status-page, ai-platform, infra-control).
+  - name: stg_infra_control_config_changes
+    description: infra-control's settings change log, one row per change (latest snapshot).
+    columns:
+      - name: change_id
+        description: The change's sequence number.
+        tests: [not_null, unique]
+      - name: setting_key
+        description: The setting changed (edge.autoblock.min_score).
+      - name: setting_namespace
+        description: Its namespace (edge, server, apps).
+      - name: from_json
+        description: The value before, JSON-encoded.
+      - name: to_json
+        description: The value after, JSON-encoded.
+      - name: actor
+        description: The admin who changed it, or approved an agent's change.
+      - name: actor_kind
+        description: owner, agent, import (the shadow mirror) or system.
+        tests:
+          - accepted_values: {values: ['owner', 'agent', 'import', 'system', 'service']}
+      - name: via
+        description: The client that carried it.
+      - name: reason
+        description: Why, as given with the change.
+      - name: agent
+        description: For an agent's change, the agent's name.
+      - name: run_id
+        description: For an agent's change, the AI platform run.
+      - name: changed_at
+        description: When it changed.
+      - name: reverts_change_id
+        description: The change this one reverted, if any.
   - name: stg_ai_platform_edge_blocks
     description: Edge decisions from the AI platform, current state of each (latest snapshot).
     columns:

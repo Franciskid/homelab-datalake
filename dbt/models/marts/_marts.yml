@@ -239,11 +239,51 @@ models:
       - name: reasons
         description: The rules behind threat_score, by name.
 
+  - name: fct_infra_config_change
+    description: >
+      One row per change to a global setting held by fraserv-infra's infra-control:
+      who changed it (the owner from the status page's Infra tab, or an AI agent the
+      owner approved), through which client, from what to what, and why. Answers
+      "who changed the auto-block threshold, and when".
+    columns:
+      - name: change_id
+        description: The change's sequence number.
+        tests: [not_null, unique]
+      - name: partition_date
+        description: The UTC day of the change.
+      - name: setting_key
+        description: The setting changed.
+      - name: setting_namespace
+        description: Its namespace (edge, server, apps).
+      - name: from_json
+        description: The value before, JSON-encoded.
+      - name: to_json
+        description: The value after, JSON-encoded.
+      - name: actor
+        description: The admin who changed it, or approved an agent's change.
+      - name: actor_kind
+        description: owner, agent, import (the shadow mirror before the cutover) or system.
+      - name: agent
+        description: For an agent's change, the agent's name.
+      - name: run_id
+        description: For an agent's change, the AI platform run.
+      - name: via
+        description: The client that carried it (status-page, ai-platform, shadow).
+      - name: reason
+        description: Why, as given with the change.
+      - name: changed_at
+        description: When it changed.
+      - name: reverts_change_id
+        description: The change this one reverted, if any.
+      - name: is_revert
+        description: True for a revert of an earlier change.
+
   - name: fct_edge_decision
     description: >
-      Every block and "never block" decision taken on the Edge security report
-      (ai.fraserv.fr), by an admin or by the auto-block rule they agreed to, lifted
-      ones included. One row per decision; status says whether it is in force.
+      Every block and "never block" decision at the NPM edge, lifted ones included: from
+      fraserv-infra's infra-control (the status page's Infra tab, an approved agent, or
+      auto-block) and, before its cutover, from the AI platform's Edge security report.
+      One row per decision; status says whether it is in force.
     columns:
       - name: decision_id
         description: The decision's id.

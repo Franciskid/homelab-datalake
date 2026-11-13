@@ -190,6 +190,7 @@ _RAW_INGEST_ASSET = {
     "jellyseerr": "jellyseerr_raw",
     "banking_tracker": "finance_raw",
     "banking_tracker_db": "finance_raw",
+    "infra_control": "infra_control_raw",
 }
 
 

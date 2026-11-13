@@ -548,6 +548,32 @@ _FINANCE_MARTS: tuple[Dataset, ...] = (
 RAW_DATASETS = RAW_DATASETS + _FINANCE_RAW
 MART_DATASETS = MART_DATASETS + _FINANCE_MARTS
 
+# --------------------------------------------------------------------------------
+# infra-control, added 2026-11-13: fraserv-infra's owner of the edge blocklist and the
+# global settings (assets/infra_control.py). Each day is a full snapshot.
+# --------------------------------------------------------------------------------
+
+_INFRA_CONTROL_RAW: tuple[Dataset, ...] = (
+    _raw("infra_control_edge_decisions", DOMAIN_INFRASTRUCTURE, "infra_control", "edge_decisions",
+         ("Every block and never-block decision at the NPM edge, lifted and expired ones "
+          "included: from the Infra tab, an approved agent, or auto-block. Includes the AI "
+          "platform's decisions from before the cutover, with their ids.")),
+    _raw("infra_control_settings", DOMAIN_INFRASTRUCTURE, "infra_control", "settings",
+         "Every global setting with its value, default, tier and where the value comes from."),
+    _raw("infra_control_config_changes", DOMAIN_INFRASTRUCTURE, "infra_control", "config_changes",
+         ("Every change to a global setting: from what to what, who (and through which "
+          "agent and run, for an approved agent change), through what, and why.")),
+)
+
+_INFRA_CONTROL_MARTS: tuple[Dataset, ...] = (
+    _mart("fct_infra_config_change", DOMAIN_INFRASTRUCTURE, "fct_infra_config_change",
+          "One row per change to a global setting: who changed it, through what, and why.",
+          "partition_date"),
+)
+
+RAW_DATASETS = RAW_DATASETS + _INFRA_CONTROL_RAW
+MART_DATASETS = MART_DATASETS + _INFRA_CONTROL_MARTS
+
 ALL_DATASETS: tuple[Dataset, ...] = RAW_DATASETS + CURATED_DATASETS + MART_DATASETS
 
 _BY_TABLE = {d.table: d for d in ALL_DATASETS}

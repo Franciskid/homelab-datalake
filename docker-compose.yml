@@ -221,7 +221,8 @@ services:
     # authorisation: every route but /health verifies a Keycloak-signed bearer token.
     expose:
       - "3444"
-    networks: [default, fraserv_reseau]
+    # infra-control (fraserv-infra): it reads the lake through this API for auto-block and the recap.
+    networks: [default, fraserv_reseau, infra-control]
     volumes:
       # Read-only, and read for one reason: the catalogue cache watches this file's
       # identity to know when the nightly publish has replaced the lake underneath
@@ -246,7 +247,8 @@ services:
     # `docker network connect`, which is how it was done before: a hand-made
     # attachment does not survive `compose up`, and the one that vanished took the
     # LiteLLM source down for two days without a sound. See IMPLEMENTATION_PLAN §8a.
-    networks: [default, fraserv_reseau]
+    # infra-control (fraserv-infra): the hourly edge job reads its export.
+    networks: [default, fraserv_reseau, infra-control]
     volumes:
       - dagster_home:/dagster_home
       - warehouse:/warehouse
@@ -335,3 +337,9 @@ networks:
   npm:
     external: true
     name: npm_default
+
+  # fraserv-infra's infra-control, created by its control stack. It reads the lake
+  # through datalake-api (auto-block, the recap), and the hourly edge job reads its
+  # export. Nothing else of this project is on it.
+  infra-control:
+    external: true

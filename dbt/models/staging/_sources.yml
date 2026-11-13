@@ -1964,6 +1964,98 @@ sources:
           - name: revoked_by_subject
             description: Who lifted it.
 
+      - name: infra_control_edge_decisions
+        description: >
+          Every block and never-block decision at the NPM edge, from fraserv-infra's
+          infra-control, which owns them since the cutover (the AI platform's decisions
+          before it are included, with their ids). A full snapshot per day.
+        columns:
+          - name: dt
+            description: Partition date -- the UTC day the snapshot was taken.
+          - name: id
+            description: The decision's id.
+          - name: cidr
+            description: The address or range decided on, normalised (203.0.113.7/32).
+          - name: action
+            description: block, or allow (never block).
+          - name: source
+            description: manual (a person or an approved agent) or auto (the auto-block rule).
+          - name: reason
+            description: Why, as written when it was decided.
+          - name: score
+            description: The threat score that triggered an auto-block.
+          - name: created_by
+            description: Who decided -- the admin; for auto, the admin who switched auto-block on.
+          - name: created_at
+            description: When the decision was taken.
+          - name: expires_at
+            description: When it lapses by itself; null means until lifted.
+          - name: revoked_at
+            description: When it was lifted; null while in force.
+          - name: revoked_by
+            description: Who lifted it.
+          - name: via
+            description: The client that carried it (status-page, ai-platform, infra-control, or ai-platform for mirrored rows).
+
+      - name: infra_control_settings
+        description: >
+          Every global setting defined in fraserv-infra's registry, with its value that
+          day. A full snapshot per day.
+        columns:
+          - name: dt
+            description: Partition date -- the UTC day the snapshot was taken.
+          - name: key
+            description: The setting's dotted key (edge.autoblock.min_score).
+          - name: type
+            description: boolean, integer, string or list.
+          - name: value_json
+            description: The value, JSON-encoded.
+          - name: default_json
+            description: The registry default, JSON-encoded.
+          - name: tier
+            description: normal, or critical (changes what the public proxy answers).
+          - name: managed_by
+            description: control (changed live) or ansible (applied by a deploy).
+          - name: origin
+            description: default, override, deploy, or unknown.
+          - name: ai_writable
+            description: Whether an approved agent may change it.
+          - name: updated_by
+            description: Who last changed it, for an override.
+          - name: updated_at
+            description: When it was last changed, for an override.
+
+      - name: infra_control_config_changes
+        description: >
+          infra-control's settings change log, whole, in every daily snapshot.
+        columns:
+          - name: dt
+            description: Partition date -- the UTC day the snapshot was taken.
+          - name: change_id
+            description: The change's sequence number.
+          - name: key
+            description: The setting changed.
+          - name: from_json
+            description: The value before, JSON-encoded.
+          - name: to_json
+            description: The value after, JSON-encoded.
+          - name: actor
+            description: The person -- the admin who changed it, or approved an agent's change.
+          - name: actor_kind
+            description: owner, agent (approved by `actor`), import (the shadow mirror) or system.
+          - name: via
+            description: The client that carried it (status-page, ai-platform, shadow).
+          - name: reason
+            description: Why, as given with the change.
+          - name: agent
+            description: For an agent's change, the agent's name.
+          - name: run_id
+            description: For an agent's change, the AI platform run.
+          - name: changed_at
+            description: When it changed.
+          - name: reverts
+            description: The change this one reverted, if it is a revert.
+
       - name: platform_email_sends
         description: >
           Every email the platform has sent or attempted to send. `dt` is the UTC

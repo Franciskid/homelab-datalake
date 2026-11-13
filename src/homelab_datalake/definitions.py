@@ -42,6 +42,7 @@ from homelab_datalake.assets import (
     backup,
     camera,
     dbt_marts,
+    infra_control,
     jellyfin,
     litellm_spend,
     npm_access,
@@ -137,28 +138,29 @@ def ai_platform_snapshot_schedule(context: ScheduleEvaluationContext):
         yield RunRequest(run_key=f"ai-platform-snapshot-{key}", partition_key=key)
 
 
-# The edge security tables, hourly. All three are snapshot tables and are already in the
-# 05:00 job above, but a block decided on the report should be queryable in the lake
-# the same hour, next to the traffic it was decided on -- not tomorrow morning.
-EDGE_PLATFORM_TABLES = ("edge_blocks", "edge_guard_state", "edge_digest_seen")
-ai_platform_edge_job = define_asset_job(
-    name="ai_platform_edge_hourly",
-    selection=AssetSelection.assets(*[f"platform_{t}_raw" for t in EDGE_PLATFORM_TABLES]),
-    partitions_def=ai_platform.ai_platform_partitions,
-    description="Today's snapshot of the edge security tables (blocks, guard state, digest).",
+# The edge decisions and the global settings, hourly, from fraserv-infra's infra-control,
+# which owns them since the cutover (docs/control/transfer.md there, step 4). Until then
+# this job snapshotted the AI platform's edge_blocks / edge_guard_state / edge_digest_seen
+# hourly; those tables are frozen now and still land in the 05:00 snapshot above, as
+# history. A decision made in the Infra tab is queryable here within the hour.
+infra_control_edge_job = define_asset_job(
+    name="infra_control_hourly",
+    selection=AssetSelection.assets("infra_control_raw"),
+    partitions_def=infra_control.infra_control_partitions,
+    description="Today's snapshot of infra-control: edge decisions, settings, change log.",
 )
 
 
 @schedule(
-    job=ai_platform_edge_job,
+    job=infra_control_edge_job,
     cron_schedule="35 * * * *",
     default_status=DefaultScheduleStatus.RUNNING,
-    description="Edge decisions into the lake hourly at :35, ahead of analytics at :55.",
+    description="infra-control into the lake hourly at :35, ahead of analytics at :55.",
 )
-def ai_platform_edge_hourly_schedule(context: ScheduleEvaluationContext):
+def infra_control_hourly_schedule(context: ScheduleEvaluationContext):
     now = context.scheduled_execution_time
-    for key in ai_platform.snapshot_partition_keys(now):
-        yield RunRequest(run_key=f"ai-platform-edge-{key}-{now:%H}", partition_key=key)
+    key = now.astimezone(datetime.UTC).date().isoformat()
+    yield RunRequest(run_key=f"infra-control-{key}-{now:%H}", partition_key=key)
 
 
 # Event-shaped tables (usage_events, runs, run_steps, messages, and so on) get a
@@ -671,13 +673,13 @@ def notify_on_failure(context):
 defs = Definitions(
     assets=all_assets,
     jobs=[npm_daily_job, npm_backfill_job, mcp_api_daily_job, litellm_daily_job,
-          ai_platform_snapshot_job, ai_platform_edge_job, ai_platform_window_job, ai_platform_sweep_job,
+          ai_platform_snapshot_job, infra_control_edge_job, ai_platform_window_job, ai_platform_sweep_job,
           ai_platform_coverage_job,
           jellyfin_daily_job, jellyfin_library_items_job, jellyfin_playback_job,
           jellyfin_playback_history_job, jellyfin_activity_job,
           jellyfin_activity_history_job, jellyfin_users_job, jellyfin_searches_job,
           camera_daily_job, camera_zones_job, analytics_job],
-    schedules=[npm_today_hourly_schedule, ai_platform_edge_hourly_schedule, npm_daily_schedule, mcp_api_daily_schedule, litellm_daily_schedule,
+    schedules=[npm_today_hourly_schedule, infra_control_hourly_schedule, npm_daily_schedule, mcp_api_daily_schedule, litellm_daily_schedule,
                ai_platform_snapshot_schedule, ai_platform_window_schedule,
                ai_platform_sweep_schedule,
                ai_platform_coverage_schedule, jellyfin_daily_schedule,
@@ -710,7 +712,7 @@ from homelab_datalake.assets import (  # noqa: E402
     status_page,
 )
 
-_added_sources = (prometheus, status_page, media_pipeline, host_logs, keycloak)
+_added_sources = (prometheus, status_page, media_pipeline, host_logs, keycloak, infra_control)
 
 defs = Definitions.merge(
     defs,

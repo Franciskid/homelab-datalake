@@ -95,9 +95,18 @@ in any other file. If you move a dataset, change `layout.py` and run
 | `raw/media/jellyfin/titles` | One film, each day | `dt` |
 | `raw/media/jellyfin/title_genres` | One film and one genre | `dt` |
 | `raw/media/tmdb/titles` | One TMDB record | none |
+| `raw/infrastructure/infra_control/edge_decisions` | One edge block or never-block (a full snapshot each day) | `dt` |
+| `raw/infrastructure/infra_control/settings` | One global setting and its value | `dt` |
+| `raw/infrastructure/infra_control/config_changes` | One change to a global setting | `dt` |
 | `raw/monitoring/camera/events` | One camera event | `dt` |
 | `raw/monitoring/camera/clips` | One video clip record | `dt` |
 | `raw/monitoring/camera/logs` | One activity log entry | `dt` |
+
+The three `infra_control` tables come from fraserv-infra's infra-control (its export
+routes, the lake's own client token), which owns the NPM blocklist and the installation's
+global settings since its cutover; see its `docs/control/`. `fct_edge_decision` reads them
+first and the AI platform's frozen `edge_blocks` only for decisions infra-control never saw;
+`fct_infra_config_change` answers who changed which setting, through what, and why.
 
 ### curated
 
