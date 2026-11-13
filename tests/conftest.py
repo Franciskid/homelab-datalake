@@ -715,6 +715,27 @@ SELECT
 FROM (SELECT i::INTEGER AS i FROM range(0, 20) t(i));
 """
 
+_INFRA_CONFIG_CHANGES = """
+CREATE OR REPLACE TABLE marts.fct_infra_config_change AS
+SELECT
+    i AS change_id,
+    (DATE '2026-09-01' + (i % 10)) AS partition_date,
+    CASE WHEN i % 2 = 0 THEN 'edge.autoblock.min_score' ELSE 'edge.autoblock.enabled' END AS setting_key,
+    'edge' AS setting_namespace,
+    CAST(40 + i AS VARCHAR) AS from_json,
+    CAST(60 + i AS VARCHAR) AS to_json,
+    'admin' AS actor,
+    CASE WHEN i % 3 = 0 THEN 'agent' ELSE 'owner' END AS actor_kind,
+    CASE WHEN i % 3 = 0 THEN 'Infra Steward' END AS agent,
+    CASE WHEN i % 3 = 0 THEN 'run-' || i END AS run_id,
+    CASE WHEN i % 3 = 0 THEN 'ai-platform' ELSE 'status-page' END AS via,
+    'test' AS reason,
+    (TIMESTAMPTZ '2026-09-01 00:00:00Z' + INTERVAL (i) HOUR) AS changed_at,
+    CAST(NULL AS INTEGER) AS reverts_change_id,
+    false AS is_revert
+FROM (SELECT i::INTEGER AS i FROM range(1, 13) t(i));
+"""
+
 def build_marts(path: str) -> None:
     con = duckdb.connect(path)
     con.execute("SET TimeZone='UTC';")
@@ -724,7 +745,7 @@ def build_marts(path: str) -> None:
         _JELLYFIN_SEARCHES, _JELLYFIN_SEARCH_RESULTS,
         _AI_GATEWAY_CALLS, _AGENT_RUNS, _AGENT_TOOL_CALLS, _CONVERSATION_MESSAGES,
         _EMAIL_SENDS, _AUTOMATION_RUNS, _FINANCE_TRANSACTIONS, _FINANCE_BALANCES,
-        _EDGE_CLIENTS, _EDGE_DECISIONS,
+        _EDGE_CLIENTS, _EDGE_DECISIONS, _INFRA_CONFIG_CHANGES,
     ):
         con.execute(statement)
     con.close()
