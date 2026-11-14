@@ -95,6 +95,9 @@ services:
       # MCP_API_LOG_DIR_HOST if that path ever moves. MCP_API_LOG_DIR in .env is
       # the matching in-container path this mounts to; see resources.NpmLogSources.
       - ${MCP_API_LOG_DIR_HOST:-/home/francois/dev/ai-platform/deployment/logs/mcp-api}:/logs/mcp-api:ro
+      # politico.fraserv.fr's export (assets/official_statistics.py): the only directory this
+      # stack writes outside its own volumes. The politico renderer mounts it read-only.
+      - ${OFFICIAL_STATS_EXPORT_HOST_DIR:-/home/francois/dev/politico-data}:/exports/politico
     environment:
       # Prometheus's published port, reached from this container over the LAN address.
       PROMETHEUS_URL: ${PROMETHEUS_URL:-http://192.168.1.26:9090}
@@ -287,6 +290,9 @@ services:
       # too: the daemon is what actually runs npm_daily/mcp_api_daily on their
       # schedules, not just the webserver's manual materialize button.
       - ${MCP_API_LOG_DIR_HOST:-/home/francois/dev/ai-platform/deployment/logs/mcp-api}:/logs/mcp-api:ro
+      # politico.fraserv.fr's export (assets/official_statistics.py): the only directory this
+      # stack writes outside its own volumes. The politico renderer mounts it read-only.
+      - ${OFFICIAL_STATS_EXPORT_HOST_DIR:-/home/francois/dev/politico-data}:/exports/politico
     environment:
       # Prometheus's published port, reached from this container over the LAN address.
       PROMETHEUS_URL: ${PROMETHEUS_URL:-http://192.168.1.26:9090}

@@ -191,6 +191,7 @@ _RAW_INGEST_ASSET = {
     "banking_tracker": "finance_raw",
     "banking_tracker_db": "finance_raw",
     "infra_control": "infra_control_raw",
+    "publishers": "official_statistics_raw",
 }
 
 

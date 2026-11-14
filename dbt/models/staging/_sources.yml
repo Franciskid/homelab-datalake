@@ -2405,3 +2405,34 @@ sources:
             description: The owner's home currency, e.g. EUR.
           - name: balance_home
             description: The balance converted to the home currency by the tracker.
+
+      - name: official_stat_observations
+        description: >
+          Every figure read from Eurostat and the SSMSI for politico.fraserv.fr, as a ledger:
+          one row per version of a (source, dataset, series_key, geo, period). A revision by
+          the publisher is a new version; the previous one keeps its _last_seen_at.
+        columns:
+          - name: source
+            description: The publisher -- eurostat or ssmsi.
+          - name: dataset
+            description: The publisher's dataset code (migr_eiord, delinquance_departementale...).
+          - name: series_key
+            description: The value's other coordinates, as dim=code;dim=code (unit=PER;citizen=TOTAL).
+          - name: geo
+            description: Eurostat country or aggregate code, FR for France, FR-Dnn for a département.
+          - name: period
+            description: The period as the publisher writes it (2025, 2025-Q2, 2026-10).
+          - name: value
+            description: The figure, as text; the staging model casts it.
+          - name: status
+            description: The publisher's flag on the value (p provisional, e estimated, b break), if any.
+          - name: unit
+            description: The unit code, when the dataset has one.
+          - name: dims_json
+            description: series_key as a JSON object.
+          - name: dataset_label
+            description: The dataset's title, in French.
+          - name: source_updated
+            description: When the publisher last updated the dataset, as it says.
+          - name: source_url
+            description: The publisher's page for the dataset.

@@ -101,12 +101,22 @@ in any other file. If you move a dataset, change `layout.py` and run
 | `raw/monitoring/camera/events` | One camera event | `dt` |
 | `raw/monitoring/camera/clips` | One video clip record | `dt` |
 | `raw/monitoring/camera/logs` | One activity log entry | `dt` |
+| `raw/official_statistics/publishers/observations` | One version of one official figure (Eurostat, SSMSI) | none |
 
 The three `infra_control` tables come from fraserv-infra's infra-control (its export
 routes, the lake's own client token), which owns the NPM blocklist and the installation's
 global settings since its cutover; see its `docs/control/`. `fct_edge_decision` reads them
 first and the AI platform's frozen `edge_blocks` only for decisions infra-control never saw;
 `fct_infra_config_change` answers who changed which setting, through what, and why.
+
+`official_stat_observations` holds the Eurostat series and the SSMSI's recorded crime that
+politico.fraserv.fr charts. It is a ledger keyed by publisher, dataset, series, place and
+period, so a publisher's revision is a new version and the earlier figure stays. The same run
+writes `official-statistics.json` into the directory shared with the politico stack
+(`OFFICIAL_STATS_EXPORT_HOST_DIR`, default `/home/francois/dev/politico-data`), daily at
+05:40 UTC. A source that fails that morning keeps its previous block in the file, marked
+`stale`. `fct_official_stat_observation` is the current value of each figure with its
+revision count.
 
 ### curated
 
@@ -133,6 +143,7 @@ first and the AI platform's frozen `edge_blocks` only for decisions infra-contro
 | `marts/media/dim_title_scd2` | `dim_title_scd2` | One version of one film |
 | `marts/media/dim_genre` | `dim_genre` | One genre |
 | `marts/media/bridge_title_genre` | `bridge_title_genre` | One film and one genre |
+| `marts/official_statistics/fct_official_stat_observation` | `fct_official_stat_observation` | One official figure, at its current value |
 
 ---
 
@@ -164,6 +175,7 @@ The files are in `src/homelab_datalake/assets/`.
 | `jellyfin.py` | `jellyfin_library_raw` | `raw/media/jellyfin/*` |
 | `tmdb.py` | `tmdb_titles_raw` | `raw/media/tmdb/titles` |
 | `camera.py` | `camera_events_raw` | `raw/monitoring/camera/*` |
+| `official_statistics.py` | `official_statistics_raw` | `raw/official_statistics/publishers/observations`, and the politico export |
 | `warehouse.py` | `warehouse_tables` | The DuckDB tables `raw.*` |
 | `dbt_marts.py` | `dbt_marts` | The DuckDB staging, intermediate and mart models |
 | `publish.py` | `lake_curated`, `lake_marts` | `curated/*` and `marts/*` in the lake |

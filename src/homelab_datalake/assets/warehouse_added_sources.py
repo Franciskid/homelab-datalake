@@ -17,6 +17,7 @@ from homelab_datalake.assets import (
     infra_control,
     keycloak,
     media_pipeline,
+    official_statistics,
     status_page,
 )
 from homelab_datalake.parsing import finance_tables, ledger
@@ -61,6 +62,9 @@ ADDED_SOURCES = (
      infra_control.infra_control_raw, layout.dataset("infra_control_settings").description),
     ("infra_control_config_changes", infra_control.CHANGES_PREFIX, infra_control.CHANGE_SCHEMA,
      infra_control.infra_control_raw, layout.dataset("infra_control_config_changes").description),
+    ("official_stat_observations", layout.prefix("official_stat_observations"),
+     official_statistics.LEDGER_SCHEMA, official_statistics.official_statistics_raw,
+     layout.dataset("official_stat_observations").description),
     *(
         (finance_tables.lake_table(name), layout.prefix(finance_tables.lake_table(name)),
          ledger.META_SCHEMA, finance.finance_raw,

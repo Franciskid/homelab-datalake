@@ -25,6 +25,7 @@ which runs the data pipelines, also hosts the AI platform's automation jobs.
 | Radarr, Sonarr, Jellyseerr | Requests, grabs, imports and the files they produced, with every version of each row. | How long a request takes to become watchable, and what was downloaded for it. |
 | Host logs and Keycloak | The server's journal and auth.log, and every sign-in across the single sign-on apps. | Who signed in where and when, and what the host was doing. |
 | Banking tracker | Accounts, every transaction with its category and type, recurring subscriptions and bills, and each account's daily balance, from the tracker's own export, every hour. Every version of a transaction is kept. | Where the money goes by category, type or merchant, what the subscriptions cost, and how balances move. |
+| Eurostat and the SSMSI | Official series on immigration, crime, prisons, public finances, the economy, demography and schooling, every morning, with every revision kept. | The figures politico.fraserv.fr charts, and how a publisher revised them. |
 
 The datalake works with records and metadata. Camera recordings stay with the
 camera application, and media files stay with Jellyfin.
