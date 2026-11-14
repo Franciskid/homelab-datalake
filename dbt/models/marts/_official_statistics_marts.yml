@@ -10,7 +10,7 @@ models:
         description: source, dataset, series_key, geo and period joined with |.
         tests: [not_null, unique]
       - name: source
-        description: The publisher -- eurostat or ssmsi.
+        description: The publisher -- eurostat, ssmsi, budget (data.economie.gouv.fr) or drees.
       - name: dataset
         description: The publisher's dataset code.
       - name: series_key

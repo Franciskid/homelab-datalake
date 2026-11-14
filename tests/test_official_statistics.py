@@ -57,7 +57,7 @@ def test_eurostat_rows_key_the_series_without_geo_and_time():
 def test_every_query_asks_for_the_eu_countries():
     url = stats.EUROSTAT_QUERIES[0].url()
     assert "geo=FR" in url and "geo=EU27_2020" in url and "sinceTimePeriod=" in url
-    assert len({q.code for q in stats.EUROSTAT_QUERIES}) == len(stats.EUROSTAT_QUERIES)
+    assert len({q.key for q in stats.EUROSTAT_QUERIES}) == len(stats.EUROSTAT_QUERIES)
 
 
 def test_ssmsi_adds_the_national_total_and_skips_suppressed_counts():
@@ -103,6 +103,7 @@ def test_a_failed_source_keeps_yesterdays_block_marked_stale():
 def test_the_asset_lands_the_ledger_and_writes_the_export(tmp_path, monkeypatch):
     monkeypatch.setattr(stats, "EUROSTAT_QUERIES", (QUERY,))
     monkeypatch.setattr(asset, "fetch_eurostat", lambda q: PAYLOAD)
+    monkeypatch.setattr(asset, "collect_spending", lambda fetched_at, log: ([], {}, []))
     monkeypatch.setattr(asset, "fetch_ssmsi", lambda: (stats.ssmsi_rows(SSMSI_CSV),
                                                        {"title": "DEP - Base", "last_modified": "2026-07-09", "url": "u"}))
     export_dir = tmp_path / "export"

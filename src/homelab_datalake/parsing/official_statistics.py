@@ -6,7 +6,7 @@ everything else -- one place, with history. Eurostat and the SSMSI revise their 
 a ledger (parsing/ledger.py) keeps every version a row has had, so a revision is a new
 version rather than a silent overwrite.
 
-Two publishers today:
+Two publishers originally (the public-spending inputs of parsing/public_spending.py came later):
 
 * **Eurostat**, through its dissemination API (JSON-stat 2.0, no key). Each query names a
   dataset and narrows its dimensions to the codes a chart needs. Unknown codes are ignored by
@@ -54,6 +54,13 @@ class EurostatQuery:
     since: str
     why: str
     geos: tuple[str, ...] = field(default=GEOS)
+    # Two queries on the same dataset (different filters) need distinct keys in the ledger
+    # and the export; the alias is that key. The publisher's code is still what is requested.
+    alias: str = ""
+
+    @property
+    def key(self) -> str:
+        return self.alias or self.code
 
     def url(self) -> str:
         params: list[tuple[str, str]] = [("format", "JSON"), ("lang", "fr"),
@@ -64,9 +71,9 @@ class EurostatQuery:
         return f"{EUROSTAT_API}{self.code}?{urlencode(params)}"
 
 
-def _q(code, since, why, **filters):
+def _q(code, since, why, *, alias="", geos=GEOS, **filters):
     return EurostatQuery(code, {k: tuple(v) if isinstance(v, (list, tuple)) else (v,) for k, v in filters.items()},
-                         since, why)
+                         since, why, geos=geos, alias=alias)
 
 
 EUROSTAT_QUERIES: tuple[EurostatQuery, ...] = (
@@ -128,6 +135,19 @@ EUROSTAT_QUERIES: tuple[EurostatQuery, ...] = (
     # school
     _q("sdg_04_40", "2000", "Low-achieving 15-year-olds in PISA",
        levels="LOW", field=["READ", "EF461", "SCI"], sex="T", unit="PC"),
+    # public spending (Données > Dépenses publiques): France only, every function and sub-function
+    _q("gov_10a_exp", "1995", "French general government expenditure by function (COFOG, all 80 codes), "
+       "total / compensation of employees / social benefits, by sub-sector",
+       alias="gov_10a_exp_fr", geos=("FR",), sector=["S13", "S1311", "S1313", "S1314"],
+       na_item=["TE", "D1", "D62"], unit=["MIO_EUR", "PC_GDP"]),
+    _q("gov_10a_taxag", "1995", "Social contributions received by sub-sector, actual and imputed employers' ones",
+       alias="gov_10a_taxag_fr", geos=("FR",), sector=["S13", "S1311", "S1313", "S1314"],
+       na_item=["D61", "D611", "D612", "D613"], unit="MIO_EUR"),
+    _q("nasa_10_nf_tr", "1995", "Compensation of employees, employers' social contributions and benefits paid by the "
+       "government as a whole (the dataset has no sub-sectors)", alias="nasa_10_nf_tr_fr", geos=("FR",), sector="S13",
+       direct="PAID", na_item=["D1", "D12", "D62"], unit="CP_MEUR"),
+    _q("nama_10_gdp", "1995", "GDP in chain-linked volumes (2020 prices), to deflate current-price figures",
+       alias="nama_10_gdp_vol", geos=("FR",), na_item="B1GQ", unit="CLV20_MEUR"),
 )
 
 
@@ -180,7 +200,7 @@ def eurostat_ledger_rows(query: EurostatQuery, payload: dict) -> list[dict]:
     for row in rows:
         dims = {k: v for k, v in row.items() if k not in ("geo", "time", "value", "status", "freq")}
         out.append({
-            "source": "eurostat", "dataset": query.code, "series_key": series_key(dims),
+            "source": "eurostat", "dataset": query.key, "series_key": series_key(dims),
             "geo": row.get("geo"), "period": row.get("time"), "value": row["value"],
             "status": row.get("status"), "unit": dims.get("unit"),
             "dims_json": json.dumps(dims, sort_keys=True), "dataset_label": label,
@@ -195,7 +215,7 @@ def eurostat_block(query: EurostatQuery, payload: dict, fetched_at: str) -> dict
     dims = [d for d in payload["id"] if d not in ("freq",)]
     order = [d for d in dims if d not in ("geo", "time")] + ["geo", "time"]
     return {
-        "source": "eurostat", "code": query.code, "label": payload.get("label"),
+        "source": "eurostat", "code": query.key, "label": payload.get("label"),
         "updated": payload.get("updated"), "url": eurostat_view_url(query.code),
         "fetched_at": fetched_at, "status": "ok", "dims": order,
         "labels": {d: labels.get(d, {}) for d in order if d != "time"},
