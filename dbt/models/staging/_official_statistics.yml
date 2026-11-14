@@ -1,0 +1,43 @@
+version: 2
+
+models:
+  - name: stg_official_stat_observations
+    description: >
+      The current version of every official figure the lake holds: for each source, dataset,
+      series, place and period, the version seen most recently.
+    columns:
+      - name: observation_key
+        description: source, dataset, series_key, geo and period joined with |.
+        tests: [not_null, unique]
+      - name: source
+        description: The publisher -- eurostat or ssmsi.
+        tests:
+          - accepted_values: {values: ['eurostat', 'ssmsi']}
+      - name: dataset
+        description: The publisher's dataset code.
+      - name: series_key
+        description: The value's other coordinates, as dim=code;dim=code.
+      - name: geo
+        description: Country or aggregate code; FR-Dnn for a French département.
+      - name: period
+        description: The period as the publisher writes it.
+      - name: value
+        description: The figure.
+      - name: status
+        description: The publisher's flag on the value, if any.
+      - name: unit
+        description: The unit code, when the dataset has one.
+      - name: dims_json
+        description: series_key as a JSON object.
+      - name: dataset_label
+        description: The dataset's title, in French.
+      - name: source_updated
+        description: When the publisher last updated the dataset.
+      - name: source_url
+        description: The publisher's page for the dataset.
+      - name: first_seen_at
+        description: When the lake first read this value.
+      - name: last_seen_at
+        description: When the lake last read this value.
+      - name: versions
+        description: How many distinct values this figure has had in the lake (revisions + 1).

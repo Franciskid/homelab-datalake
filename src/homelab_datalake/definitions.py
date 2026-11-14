@@ -736,3 +736,17 @@ defs = Definitions.merge(
     defs,
     Definitions(assets=finance.ASSETS, jobs=finance.JOBS, schedules=finance.SCHEDULES),
 )
+
+
+# --------------------------------------------------------------------------------
+# Official statistics, added 2026-11-14: Eurostat and the SSMSI for politico.fraserv.fr.
+# Merged separately for the same reason as the blocks above.
+# --------------------------------------------------------------------------------
+
+from homelab_datalake.assets import official_statistics  # noqa: E402
+
+defs = Definitions.merge(
+    defs,
+    Definitions(assets=official_statistics.ASSETS, jobs=official_statistics.JOBS,
+                schedules=official_statistics.SCHEDULES),
+)

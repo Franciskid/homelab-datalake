@@ -574,6 +574,29 @@ _INFRA_CONTROL_MARTS: tuple[Dataset, ...] = (
 RAW_DATASETS = RAW_DATASETS + _INFRA_CONTROL_RAW
 MART_DATASETS = MART_DATASETS + _INFRA_CONTROL_MARTS
 
+# --------------------------------------------------------------------------------
+# official statistics, added 2026-11-14: Eurostat and the SSMSI for politico.fraserv.fr
+# (assets/official_statistics.py). One ledger: every version of every published figure.
+# --------------------------------------------------------------------------------
+
+DOMAIN_OFFICIAL_STATISTICS = "official_statistics"
+
+_OFFICIAL_STATISTICS_RAW: tuple[Dataset, ...] = (
+    _raw("official_stat_observations", DOMAIN_OFFICIAL_STATISTICS, "publishers", "observations",
+         ("Every figure read from Eurostat and the SSMSI for politico.fraserv.fr, keyed by "
+          "publisher, dataset, series, place and period, with every version a revision made."),
+         partition_column=None),
+)
+
+_OFFICIAL_STATISTICS_MARTS: tuple[Dataset, ...] = (
+    _mart("fct_official_stat_observation", DOMAIN_OFFICIAL_STATISTICS, "fct_official_stat_observation",
+          "The current value of every official statistic the lake holds, one row per series, place and period.",
+          None),
+)
+
+RAW_DATASETS = RAW_DATASETS + _OFFICIAL_STATISTICS_RAW
+MART_DATASETS = MART_DATASETS + _OFFICIAL_STATISTICS_MARTS
+
 ALL_DATASETS: tuple[Dataset, ...] = RAW_DATASETS + CURATED_DATASETS + MART_DATASETS
 
 _BY_TABLE = {d.table: d for d in ALL_DATASETS}
