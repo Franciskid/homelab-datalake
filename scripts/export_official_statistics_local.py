@@ -29,7 +29,7 @@ except ImportError:
 from homelab_datalake.assets import official_statistics as asset
 from homelab_datalake.parsing import official_statistics as stats
 
-SPENDING_KEYS = ("gov_10a_exp_fr", "gov_10a_taxag_fr", "nasa_10_nf_tr_fr", "nama_10_gdp_vol")
+SPENDING_KEYS = ("gov_10a_exp_fr", "gov_10a_taxag_fr", "nasa_10_nf_tr_fr", "nama_10_gdp_vol", "nama_10_pe", "earn_nt_taxwedge")
 
 
 def main() -> None:

@@ -102,6 +102,7 @@ def test_collect_spending_is_all_or_nothing_per_source(monkeypatch):
             return CPS
         return BUDGET_2025
     monkeypatch.setattr(asset, "fetch_text", fake)
+    monkeypatch.setattr(asset, "collect_pension_pages", lambda *a: [])
     monkeypatch.setattr(sp, "BUDGET_EDITIONS", (EDITION_2025,))
     monkeypatch.setattr(sp, "CAS_EDITIONS", (sp.CAS_EDITIONS[-1],))
     rows, blocks, failed = asset.collect_spending("now", Log())
@@ -122,6 +123,7 @@ def test_the_asset_lands_the_spending_blocks_and_exports_them(tmp_path, monkeypa
             return CAS_2025
         return CPS if "305_" in url else BUDGET_2025
     monkeypatch.setattr(asset, "fetch_text", fake)
+    monkeypatch.setattr(asset, "collect_pension_pages", lambda *a: [])
     monkeypatch.setattr(sp, "BUDGET_EDITIONS", (EDITION_2025,))
     monkeypatch.setattr(sp, "CAS_EDITIONS", (sp.CAS_EDITIONS[-1],))
     export_dir = tmp_path / "export"
@@ -135,3 +137,86 @@ def test_the_asset_lands_the_spending_blocks_and_exports_them(tmp_path, monkeypa
             "drees:cps_vieillesse_survie"} <= set(export["datasets"])
     landed = lake.read_table(f"{layout.prefix('official_stat_observations')}/data.parquet")
     assert {"budget", "drees", "eurostat"} == set(landed.column("source").to_pylist())
+
+
+# ---------------------------------------------------------------- COR, Service des retraites de l'État, DREES, curated values
+import io  # noqa: E402
+
+import openpyxl  # noqa: E402
+
+from homelab_datalake.parsing import curated_pensions  # noqa: E402
+from homelab_datalake.parsing.xlsx import read as read_xlsx  # noqa: E402
+
+
+def _workbook(sheets: dict[str, list[list]]) -> bytes:
+    wb = openpyxl.Workbook()
+    wb.remove(wb.active)
+    for name, rows in sheets.items():
+        ws = wb.create_sheet(name)
+        for r in rows:
+            ws.append(r)
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+def test_the_xlsx_reader_returns_numbers_text_and_row_numbers():
+    sheets = read_xlsx(_workbook({"A": [["titre", None], [None, "x", 1.5], ["y", "z"]]}))
+    assert sheets["A"][0] == (1, ["titre"]) or sheets["A"][0][1][0] == "titre"
+    row = next(r for n, r in sheets["A"] if n == 2)
+    assert row[1] == "x" and row[2] == 1.5
+
+
+def test_cor_blocks_keep_observed_and_projected_series_apart_and_the_unit_in_the_name():
+    years = [None, None, None, 2017, 2018, 2019, 2020, 2021, 2022, 2023, 2024, 2025]
+    rows = [["Titre"], [], years,
+            [None, "En % du PIB", None], [None, "Prestations totales", "Obs", None, None, None, None, None, None, 13.0, 13.5, None], [None, None, "Sc. Ref", None, None, None, None, None, None, None, None, 13.7],
+            [None, "En Mds€", None], years, [None, "Prestations totales", "Obs", None, None, None, None, None, None, 380.0, 400.0, None], [None, None, "Sc. Ref", None, None, None, None, None, None, None, None, 410.0]]
+    out = sp.cor_block_rows(read_xlsx(_workbook({"S": rows}))["S"], "")
+    keys = {(r["series"], r["scenario"], r["time"]): r["value"] for r in out}
+    assert keys[("Prestations totales [En % du PIB]", "Obs", "2024")] == 13.5
+    assert keys[("Prestations totales [En Mds€]", "Obs", "2023")] == 380.0
+    assert keys[("Prestations totales [En Mds€]", "Sc. Ref", "2025")] == 410.0
+
+
+SRE_HTML = ("<html><body><p>741 - PCMR et ATI 57 290,42 58 314,73 59 779,62 61 228,16 63 955,00 Cotisations salariales 7 120,19 7 199,54 7 355,44 7 503,80 7 529,95 "
+            "dont État 5 820,45 5 921,52 6 069,84 6 234,36 6 305,09 Contributions employeurs 49 502,64 50 075,29 51 291,87 52 618,20 55 084,40 "
+            "dont État 42 252,19 43 008,69 44 125,70 45 417,30 47 664,71</p><p>Équilibre Exécution budgétaire* 2021 2022 2023 2024 2025 "
+            "Taux de cotisation agent 11,1 11,1 11,1 11,1 11,1 Taux de contribution employeur au titre des pensions civiles 74,28 74,28 74,28 74,28 78,28 "
+            "au titre des pensions militaires 126,07 126,07 126,07 126,07 126,07</p></body></html>")
+
+
+def test_the_executed_cas_page_gives_contributions_and_rates_by_year():
+    keys = {(r["series"], r["time"]): r["value"] for r in sp.sre_rows(SRE_HTML)}
+    assert keys[("contributions_employeurs", "2023")] == 51291.87 and keys[("contributions_employeurs_etat", "2025")] == 47664.71
+    assert keys[("taux_contribution_civils_pct", "2025")] == 78.28 and keys[("taux_contribution_militaires_pct", "2021")] == 126.07
+
+
+def test_a_page_that_lost_its_tables_is_refused():
+    try:
+        sp.sre_rows("<html><body>plus de tableaux</body></html>")
+    except ValueError as error:
+        assert "no longer" in str(error)
+    else:
+        raise AssertionError
+
+
+def test_drees_workbook_resources_by_year_and_the_resource_picked_from_data_gouv():
+    wb = _workbook({"opérations_1959_2024": [[None, "1995R", "2024SD"], ["Cotisations sociales d'employeurs", 137.5, 294.9], ["* note", None, None]]})
+    keys = {(r["series"], r["time"]): (r["value"], r["scenario"]) for r in sp.cps_ressources_rows(wb)}
+    assert keys[("Cotisations sociales d'employeurs", "1995")] == (137.5, "R") and keys[("Cotisations sociales d'employeurs", "2024")][1] == "SD"
+    url, _ = sp.cps_workbook_url({"resources": [
+        {"title": "La protection sociale en France de 1959 à 2023.xlsx", "format": "vnd.openxmlformats-officedocument.spreadsheetml.sheet", "url": "old"},
+        {"title": "La protection sociale en France de 1959 à 2024.xlsx", "format": "vnd.openxmlformats-officedocument.spreadsheetml.sheet", "url": "new", "last_modified": "2026-10-23"},
+        {"title": "x.csv", "format": "csv", "url": "csv"}]})
+    assert url == "new"
+
+
+def test_curated_values_carry_their_page_and_the_programmes_add_up():
+    pap = sp.pap_rows()
+    assert all(r["page"].isdigit() for r in pap)
+    ens = [r for r in pap if r["edition"] == "PAP2026" and r["mission"] == "Enseignement scolaire" and r["time"] == "2025" and r["item"] == "contributions_equilibre_cas"]
+    assert sum(r["value"] for r in ens) > 20e9  # the school programmes carry more than 20 Md€ of CAS contributions in 2025
+    block = sp.ccss_block("now")
+    assert ["CNRACL", "CCSS octobre 2024 (résultats 2023)", "188", "https://www.vie-publique.fr/files/rapport/pdf/299216.pdf", "2023", 17484e6] in block["rows"]
+    assert all(c[5] and c[4] for c in curated_pensions.CCSS_COTISATIONS_PATRONALES)

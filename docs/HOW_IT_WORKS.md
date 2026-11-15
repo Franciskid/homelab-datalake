@@ -128,7 +128,13 @@ Pensions revenue lines; and the DREES "Comptes de la protection sociale" for old
 survivors by scheme (1959 onward). They are landed as raw inputs only: how pension
 contributions are reallocated to functions is an assumption that lives with the method in the
 renderer (`donnees/`, politico repository), so changing it never means re-landing history.
-`scripts/export_official_statistics_local.py` runs the same collectors on a laptop.
+Pension pages add: the COR's June report data files (observed series and reference scenario of resources, contributors,
+retirees, average pay and pension; read with a stdlib xlsx reader because some COR workbooks defeat openpyxl), the executed
+CAS Pensions and its contribution rates (Service des retraites de l'État page), the DREES long series of resources of social
+protection (workbook found through data.gouv.fr), employment and the tax wedge (Eurostat), and curated tables read by hand
+from PDFs with their page numbers (`parsing/curated_pensions.py`: PAP contributions to the CAS Pensions per programme, CCSS
+employer contributions of the CNRACL and the Ircantec). `scripts/export_official_statistics_local.py` runs the same
+collectors on a laptop.
 
 ### curated
 

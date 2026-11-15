@@ -229,3 +229,194 @@ def ledger_rows(source: str, dataset: str, rows: list[dict], dims: list[str], ur
             "dataset_label": label, "source_updated": updated, "source_url": url,
         })
     return out
+
+
+# ================================================================ pages on pensions: contributions, ratio, average pension
+# Sources added with the pages "ressources des retraites", "cotisants par retraité", "cotisation moyenne" and "cotisations
+# sociales des travailleurs": the COR's data files, the Service des retraites de l'État's executed CAS Pensions, the DREES's
+# long series of social protection, and the PAP/CCSS values kept in curated_pensions.py.
+
+import re  # noqa: E402
+from html import unescape  # noqa: E402
+
+from . import curated_pensions  # noqa: E402
+from .xlsx import read as read_xlsx  # noqa: E402
+
+COR_REPORT_PAGE = "https://www.cor-retraites.fr/rapports-du-cor/rapport-annuel-cor-juin-2026-evolutions-perspectives-retraites-france"
+COR_CODE = "cor_systeme_de_retraite"
+COR_STRUCTURE_CODE = "cor_structure_ressources"
+SRE_CODE = "sre_cas_pensions_execution"
+SRE_URL = "https://retraitesdeletat.gouv.fr/statistiques/cas.html"
+CPS_RESSOURCES_CODE = "cps_ressources"
+CPS_DATAGOUV = "https://www.data.gouv.fr/api/1/datasets/les-comptes-de-la-protection-sociale/"
+PAP_CODE = "pap_cas_pensions_par_programme"
+CCSS_CODE = "ccss_cotisations_patronales"
+
+
+def cor_links(page_html: str) -> dict[str, str]:
+    """The COR report page's data files by what they are: part2 (resources) and complementary (workers, pensions)."""
+    out = {}
+    for href, title in re.findall(r'<a href="([^"]+\.xlsx)" title="([^"]+)"', page_html):
+        t = unescape(title).lower()
+        url = "https://www.cor-retraites.fr" + href if href.startswith("/") else href
+        if "partie 2" in t:
+            out["part2"] = url
+        elif "complémentaires" in t or "complementaires" in t:
+            out["complementary"] = url
+    for href in re.findall(r'href="([^"]+Donn[^"]*mentaires\.xlsx)"', page_html):
+        out.setdefault("complementary", "https://www.cor-retraites.fr" + href if href.startswith("/") else href)
+    return out
+
+
+def _years_row(rows, upto: int) -> dict[int, int]:
+    """Column -> year, from the last row before `upto` with many years in it."""
+    best = {}
+    for n, r in rows:
+        if n >= upto:
+            break
+        cols = {i: int(c) for i, c in enumerate(r) if isinstance(c, float) and 1950 <= c <= 2100 and c == int(c)}
+        if len(cols) >= 8:
+            best = cols
+    return best
+
+
+def cor_block_rows(sheet: list[tuple[int, list]], prefix: str) -> list[dict]:
+    """Series of a COR sheet in blocks: a label, then one row per scenario (`Obs`, `Sc. Ref`, ...) of yearly values."""
+    out, label, unit = [], None, ""
+    for n, r in sheet:
+        cells = [c for c in r[:3]]
+        k = next((i for i, c in enumerate(cells) if c in ("Obs", "Sc. Ref")), None)
+        if k is None:
+            if len(r) > 1 and isinstance(r[1], str) and r[1].startswith("En "):
+                unit = f" [{r[1].strip()}]"
+                continue
+            if len(r) > 1 and isinstance(r[1], str) and r[1].strip() and not r[1].startswith(("Retour", "Champ", "Source", "Note", "Lecture", "Scénario")):
+                label = r[1].strip()
+            continue
+        if k >= 1 and isinstance(cells[k - 1], str) and cells[k - 1].strip():
+            label = cells[k - 1].strip()
+        if label is None:
+            continue
+        years = _years_row(sheet, n)
+        for col, year in years.items():
+            if col < len(r) and isinstance(r[col], float):
+                out.append({"series": f"{prefix}{label}{unit}", "scenario": cells[k], "time": str(year), "value": r[col]})
+    return out
+
+
+def cor_structure_rows(sheet: list[tuple[int, list]]) -> list[dict]:
+    """Figure 2.11: share of each kind of resource in the pension system's resources, per year."""
+    out = []
+    for n, r in sheet:
+        years = _years_row(sheet, n)
+        text = next((c for c in r[:2] if isinstance(c, str) and c.strip()), None)
+        if not years or text is None or n < 5:
+            continue
+        label = text.strip()
+        if not label or label.startswith(("Lecture", "Champ", "Sources")):
+            continue
+        for col, year in years.items():
+            if col < len(r) and isinstance(r[col], float):
+                out.append({"series": label, "scenario": "Obs", "time": str(year), "value": r[col]})
+    return out
+
+
+def cor_rows(part2: bytes, complementary: bytes) -> tuple[list[dict], list[dict]]:
+    p2, comp = read_xlsx(part2), read_xlsx(complementary)
+    system = []
+    system += cor_block_rows(p2["Fig 2.8"], "")
+    for r in cor_block_rows(p2["Fig 2.13"], ""):
+        system.append(r)
+    for name in ("Cotisants_Retraités", "Rému_pensions", "Prestations"):
+        system += cor_block_rows(comp[name], "")
+    return system, cor_structure_rows(p2["Fig 2.11"])
+
+
+def cor_block(rows: list[dict], code: str, label: str, fetched_at: str, dims: list[str]) -> dict:
+    return {"source": "cor", "code": code, "label": label, "updated": None, "url": COR_REPORT_PAGE, "fetched_at": fetched_at,
+            "status": "ok", "dims": dims, "labels": {}, "rows": [[r[d] for d in dims] + [r["value"]] for r in rows]}
+
+
+def sre_rows(page_html: str) -> list[dict]:
+    """Executed CAS Pensions (programme 741) revenue and the employer / agent rates, 2021-2025."""
+    text = re.sub(r"<script.*?</script>|<style.*?</style>", " ", page_html, flags=re.S)
+    text = re.sub(r"\s+", " ", unescape(re.sub(r"<[^>]+>", " ", text)))
+    num = r"(-?\d{1,3}(?: \d{3})*,\d{2})"
+    five = r"\s+".join([num] * 5)
+
+    block = text[text.index("741 - PCMR et ATI"):] if "741 - PCMR et ATI" in text else text
+    years_m = re.search(r"Équilibre Exécution budgétaire\* ((?:20\d\d ?){5})", text)
+    years = years_m.group(1).split() if years_m else ["2021", "2022", "2023", "2024", "2025"]
+    items = {}
+
+    def grab_in(t: str, pattern: str):
+        m = re.search(pattern + r"\s+" + five, t)
+        return [float(x.replace(" ", "").replace(",", ".")) for x in m.groups()] if m else None
+
+    items["cotisations_salariales"] = grab_in(block, r"Cotisations salariales")
+    items["contributions_employeurs"] = grab_in(block, r"Contributions employeurs")
+    after = block[block.index("Contributions employeurs"):] if "Contributions employeurs" in block else block
+    items["contributions_employeurs_etat"] = grab_in(after, r"dont État")
+    items["taux_contribution_civils_pct"] = grab_in(text, r"au titre des pensions civiles")
+    items["taux_contribution_militaires_pct"] = grab_in(text, r"au titre des pensions militaires")
+    items["taux_cotisation_agent_pct"] = grab_in(text, r"Taux de cotisation agent")
+    if not items["contributions_employeurs"] or not items["taux_contribution_civils_pct"]:
+        raise ValueError("the Service des retraites de l'État page no longer has the CAS Pensions revenue or rates tables")
+    return [{"series": k, "scenario": "Obs", "time": y, "value": v} for k, vals in items.items() if vals for y, v in zip(years, vals, strict=True)]
+
+
+def cps_ressources_rows(workbook: bytes) -> list[dict]:
+    """Resources and uses of social protection, all risks, in million euros (opérations sheet), 1959 onwards."""
+    sheets = read_xlsx(workbook)
+    name = next((n for n in sheets if n.lower().startswith("opérations_19") or n.lower().startswith("operations_19")), None)
+    if not name:
+        raise ValueError("the DREES workbook has no 'opérations_19xx_20xx' sheet")
+    rows = sheets[name]
+    header = next(r for _, r in rows if any(isinstance(c, str) and re.fullmatch(r"\d{4}[A-Z]*", c) for c in r))
+    cols = {i: c[:4] for i, c in enumerate(header) if isinstance(c, str) and re.fullmatch(r"\d{4}[A-Z]*", c)}
+    out = []
+    for _, r in rows:
+        label = r[0] if r and isinstance(r[0], str) else None
+        if not label or label.startswith(("*", "Source")) or label == "":
+            continue
+        for col, year in cols.items():
+            if col < len(r) and isinstance(r[col], float):
+                out.append({"series": label.strip(), "scenario": header[col][4:] or "DEF", "time": year, "value": r[col]})
+    return out
+
+
+def cps_workbook_url(datagouv_json: dict) -> tuple[str, str]:
+    """The newest 'La protection sociale en France de 1959 à AAAA' workbook among the dataset's resources."""
+    cands = [r for r in datagouv_json.get("resources", [])
+             if (r.get("title") or "").startswith("La protection sociale en France de 1959") and (r.get("format") or "").endswith("sheet")]
+    if not cands:
+        raise ValueError("data.gouv.fr no longer lists the DREES long-series workbook")
+    best = max(cands, key=lambda r: ((r.get("title") or ""), r.get("last_modified") or ""))
+    return best["url"], best.get("last_modified") or ""
+
+
+def pap_rows() -> list[dict]:
+    out = []
+    for edition, mission, programme, year, cat22, cas, civ, mil, page, url in curated_pensions.PAP_CAS_PENSIONS:
+        for item, v in (("cotisations_sociales", cat22), ("contributions_equilibre_cas", cas), ("civils", civ), ("militaires", mil)):
+            if v is not None:
+                out.append({"edition": edition, "mission": mission, "programme": programme, "item": item, "page": str(page), "time": year, "value": float(v)})
+    return out
+
+
+def pap_block(fetched_at: str) -> dict:
+    dims = ["edition", "mission", "programme", "item", "page", "time"]
+    rows = pap_rows()
+    urls = {r[0] + "|" + r[1]: r[9] for r in curated_pensions.PAP_CAS_PENSIONS}
+    return {"source": "curated", "code": PAP_CODE, "label": "PAP : contributions d'équilibre au CAS Pensions par programme", "updated": None,
+            "url": "https://www.assemblee-nationale.fr/dyn/17/budget", "fetched_at": fetched_at, "status": "ok", "dims": dims,
+            "labels": {}, "files": urls, "rows": [[r[d] for d in dims] + [r["value"]] for r in rows]}
+
+
+def ccss_block(fetched_at: str) -> dict:
+    dims = ["series", "edition", "page", "url", "time"]
+    rows = [[sch, rep, str(pg), url, y, float(v) * 1e6] for sch, y, v, rep, pg, url in curated_pensions.CCSS_COTISATIONS_PATRONALES]
+    rows += [["CNRACL taux employeur (%)", src, "", url, y, float(v)] for y, v, src, url in curated_pensions.CNRACL_TAUX_EMPLOYEUR]
+    return {"source": "curated", "code": CCSS_CODE, "label": "CCSS : cotisations patronales de la CNRACL et de l'Ircantec (euros) et taux employeur CNRACL (%)",
+            "updated": None, "url": "https://www.vie-publique.fr/files/rapport/pdf/299216.pdf", "fetched_at": fetched_at, "status": "ok",
+            "dims": dims, "labels": {}, "rows": rows}
