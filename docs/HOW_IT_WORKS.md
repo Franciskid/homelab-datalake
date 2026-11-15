@@ -101,7 +101,7 @@ in any other file. If you move a dataset, change `layout.py` and run
 | `raw/monitoring/camera/events` | One camera event | `dt` |
 | `raw/monitoring/camera/clips` | One video clip record | `dt` |
 | `raw/monitoring/camera/logs` | One activity log entry | `dt` |
-| `raw/official_statistics/publishers/observations` | One version of one official figure (Eurostat, SSMSI) | none |
+| `raw/official_statistics/publishers/observations` | One version of one official figure (Eurostat, SSMSI, State budget, DREES) | none |
 
 The three `infra_control` tables come from fraserv-infra's infra-control (its export
 routes, the lake's own client token), which owns the NPM blocklist and the installation's
@@ -117,6 +117,24 @@ writes `official-statistics.json` into the directory shared with the politico st
 05:40 UTC. A source that fails that morning keeps its previous block in the file, marked
 `stale`. `fct_official_stat_observation` is the current value of each figure with its
 revision count.
+
+For politico.fraserv.fr's "Dépenses publiques" the same run also reads: French general-government
+expenditure by COFOG function (Eurostat `gov_10a_exp`, all 80 codes, 1995 onward, total /
+compensation of employees / social benefits, by sub-sector), the social contributions received
+(`gov_10a_taxag`, actual and imputed employers' ones), employers' contributions and pay of the
+whole government (`nasa_10_nf_tr`), GDP in volume (`nama_10_gdp`); the State budget's personnel
+categories by programme (data.economie.gouv.fr, editions 2019, 2023, 2024, 2025); the CAS
+Pensions revenue lines; and the DREES "Comptes de la protection sociale" for old age and
+survivors by scheme (1959 onward). They are landed as raw inputs only: how pension
+contributions are reallocated to functions is an assumption that lives with the method in the
+renderer (`donnees/`, politico repository), so changing it never means re-landing history.
+Pension pages add: the COR's June report data files (observed series and reference scenario of resources, contributors,
+retirees, average pay and pension; read with a stdlib xlsx reader because some COR workbooks defeat openpyxl), the executed
+CAS Pensions and its contribution rates (Service des retraites de l'État page), the DREES long series of resources of social
+protection (workbook found through data.gouv.fr), employment and the tax wedge (Eurostat), and curated tables read by hand
+from PDFs with their page numbers (`parsing/curated_pensions.py`: PAP contributions to the CAS Pensions per programme, CCSS
+employer contributions of the CNRACL and the Ircantec). `scripts/export_official_statistics_local.py` runs the same
+collectors on a laptop.
 
 ### curated
 

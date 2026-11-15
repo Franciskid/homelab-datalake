@@ -37,6 +37,7 @@ from dagster import (
 from homelab_datalake import lakeio, layout
 from homelab_datalake.parsing import ledger
 from homelab_datalake.parsing import official_statistics as stats
+from homelab_datalake.parsing import public_spending as spending
 from homelab_datalake.resources import LakeStorage
 
 LEDGER_KEY = f"{layout.prefix('official_stat_observations')}/data.parquet"
@@ -80,6 +81,92 @@ def fetch_ssmsi() -> tuple[list[dict], dict]:
     return stats.ssmsi_rows(text), resource
 
 
+def fetch_text(url: str) -> str:
+    return _get(url).decode("utf-8")
+
+
+def collect_pension_pages(fetched_at: str, log, land) -> list[str]:
+    """The COR's data, the executed CAS Pensions, the DREES long series and the curated PAP/CCSS values."""
+    failed: list[str] = []
+    try:
+        page = fetch_text(spending.COR_REPORT_PAGE)
+        links = spending.cor_links(page)
+        system, structure = spending.cor_rows(_get(links["part2"]), _get(links["complementary"]))
+        for code, rows_, dims, label in ((spending.COR_CODE, system, ["series", "scenario", "time"], "COR : système de retraite, cotisants, pensions moyennes"),
+                                         (spending.COR_STRUCTURE_CODE, structure, ["series", "scenario", "time"], "COR : structure des ressources du système de retraite")):
+            block = spending.cor_block(rows_, code, label, fetched_at, dims)
+            land("cor", code, block, rows_)
+    except Exception as error:  # noqa: BLE001
+        log.warning("COR data failed: %s", error)
+        failed += [f"cor:{spending.COR_CODE}", f"cor:{spending.COR_STRUCTURE_CODE}"]
+    try:
+        rows_ = spending.sre_rows(fetch_text(spending.SRE_URL))
+        block = {"source": "sre", "code": spending.SRE_CODE, "label": "Service des retraites de l'État : CAS Pensions exécuté et taux de contribution",
+                 "updated": None, "url": spending.SRE_URL, "fetched_at": fetched_at, "status": "ok", "dims": ["series", "scenario", "time"],
+                 "labels": {}, "rows": [[r["series"], r["scenario"], r["time"], r["value"]] for r in rows_]}
+        land("sre", spending.SRE_CODE, block, rows_)
+    except Exception as error:  # noqa: BLE001
+        log.warning("Service des retraites de l'État failed: %s", error)
+        failed.append(f"sre:{spending.SRE_CODE}")
+    try:
+        import json as _json
+        url, modified = spending.cps_workbook_url(_json.loads(fetch_text(spending.CPS_DATAGOUV)))
+        rows_ = spending.cps_ressources_rows(_get(url))
+        block = {"source": "drees", "code": spending.CPS_RESSOURCES_CODE, "label": "DREES, comptes de la protection sociale : ressources et emplois, tous risques (M€)",
+                 "updated": modified, "url": spending.page_url(spending.DREES, spending.CPS_DATASET), "file": url, "fetched_at": fetched_at, "status": "ok",
+                 "dims": ["series", "scenario", "time"], "labels": {}, "rows": [[r["series"], r["scenario"], r["time"], r["value"]] for r in rows_]}
+        land("drees", spending.CPS_RESSOURCES_CODE, block, rows_)
+    except Exception as error:  # noqa: BLE001
+        log.warning("DREES long series failed: %s", error)
+        failed.append(f"drees:{spending.CPS_RESSOURCES_CODE}")
+    for code, block in ((spending.PAP_CODE, spending.pap_block(fetched_at)), (spending.CCSS_CODE, spending.ccss_block(fetched_at))):
+        parsed = [dict(zip(block["dims"] + ["value"], r, strict=True)) for r in block["rows"]]
+        for r in parsed:
+            r.setdefault("time", r.get("time"))
+        land("curated", code, block, parsed)
+    return failed
+
+
+def collect_spending(fetched_at: str, log) -> tuple[list[dict], dict[str, dict], list[str]]:
+    """The State budget, the CAS Pensions revenue and the DREES pensions by scheme.
+
+    Each is all-or-nothing: if one edition of the budget cannot be read, the whole block is
+    reported failed so the export keeps yesterday's complete block (marked stale) instead of
+    a partial one.
+    """
+    rows: list[dict] = []
+    blocks: dict[str, dict] = {}
+    failed: list[str] = []
+
+    def land(source: str, code: str, block: dict, parsed: list[dict]) -> None:
+        rows.extend(spending.ledger_rows(source, code, parsed, block["dims"], block["url"], block["label"],
+                                         block.get("updated")))
+        blocks[stats.dataset_key(source, code)] = block
+
+    try:
+        parsed = [r for e in spending.BUDGET_EDITIONS
+                  for r in spending.budget_rows(fetch_text(spending.export_url(spending.ECONOMIE, e.dataset)), e)]
+        land("budget", spending.BUDGET_CODE, spending.budget_block(parsed, list(spending.BUDGET_EDITIONS), fetched_at), parsed)
+    except Exception as error:  # noqa: BLE001 -- one source down must not stop the others
+        log.warning("state budget failed: %s", error)
+        failed.append(f"budget:{spending.BUDGET_CODE}")
+    try:
+        parsed = [r for e in spending.CAS_EDITIONS
+                  for r in spending.cas_rows(fetch_text(spending.export_url(spending.ECONOMIE, e.dataset)), e)]
+        land("budget", spending.CAS_CODE, spending.cas_block(parsed, list(spending.CAS_EDITIONS), fetched_at), parsed)
+    except Exception as error:  # noqa: BLE001
+        log.warning("CAS Pensions revenue failed: %s", error)
+        failed.append(f"budget:{spending.CAS_CODE}")
+    failed += collect_pension_pages(fetched_at, log, land)
+    try:
+        parsed = spending.cps_rows(fetch_text(spending.export_url(spending.DREES, spending.CPS_DATASET)))
+        land("drees", spending.CPS_CODE, spending.cps_block(parsed, fetched_at, None), parsed)
+    except Exception as error:  # noqa: BLE001
+        log.warning("DREES protection sociale failed: %s", error)
+        failed.append(f"drees:{spending.CPS_CODE}")
+    return rows, blocks, failed
+
+
 def read_previous_export(directory: Path) -> dict | None:
     path = directory / EXPORT_NAME
     if not path.exists():
@@ -109,11 +196,11 @@ def collect(log) -> tuple[list[dict], dict[str, dict], list[str]]:
         try:
             payload = fetch_eurostat(query)
         except Exception as error:  # noqa: BLE001 -- one dataset down must not stop the others
-            log.warning("eurostat %s failed: %s", query.code, error)
-            failed.append(f"eurostat:{query.code}")
+            log.warning("eurostat %s failed: %s", query.key, error)
+            failed.append(f"eurostat:{query.key}")
             continue
         rows.extend(stats.eurostat_ledger_rows(query, payload))
-        blocks[stats.dataset_key("eurostat", query.code)] = stats.eurostat_block(query, payload, fetched_at)
+        blocks[stats.dataset_key("eurostat", query.key)] = stats.eurostat_block(query, payload, fetched_at)
     try:
         ssmsi, resource = fetch_ssmsi()
         rows.extend(stats.ssmsi_ledger_rows(ssmsi, resource))
@@ -121,7 +208,8 @@ def collect(log) -> tuple[list[dict], dict[str, dict], list[str]]:
     except Exception as error:  # noqa: BLE001
         log.warning("ssmsi failed: %s", error)
         failed.append(f"ssmsi:{stats.SSMSI_CODE}")
-    return rows, blocks, failed
+    more_rows, more_blocks, more_failed = collect_spending(fetched_at, log)
+    return rows + more_rows, {**blocks, **more_blocks}, failed + more_failed
 
 
 @asset(
