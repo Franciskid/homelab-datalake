@@ -169,6 +169,17 @@ from PDFs with their page numbers (`parsing/curated_pensions.py`: PAP contributi
 employer contributions of the CNRACL and the Ircantec). `scripts/export_official_statistics_local.py` runs the same
 collectors on a laptop.
 
+Offending by nationality (`parsing/crime_nationality.py`, `assets/crime_nationality.py`, called by the same daily asset, one block
+`crime:<code>` per table, each source all-or-nothing and stale-on-failure): Switzerland (OFS SDMX `DF_SUS_NATIONALITIES_LAWS`, persons
+convicted *and* the permanent resident population by 178 nationalities, sex, age and population category; `DF_SUS_PERSONS` 2007 onward),
+Germany (BKA PKS table T62, suspects by offence and nationality, read after the BKA's cookie redirect), the Netherlands (CBS StatLine
+85656NED and 85510NED, one OData request per offence and year because CBS refuses 10 000 records or more), Denmark (Statbank STRAFNA3 and
+FOLK2, in chunks of four years), Italy (ISTAT SDMX 73_230), Spain (INE Tempus 25645, 28402, 28305), France (SSMSI "mis en cause" workbook on
+data.gouv.fr, statistical secrecy left out) and the Eurostat populations by citizenship and by country of birth for the seven countries.
+Country names in six languages map to ISO3 through `parsing/country_names.py` (generated from Natural Earth by politico's
+`donnees/scripts/build-world-geo.py`). Nothing is scraped around a protection: the interieur.gouv.fr PDFs are not touched.
+`scripts/export_official_statistics_local.py --only crime` runs just these collectors on a laptop and merges them into an existing export.
+
 Phase 7b adds (all public, no key): Insee workbooks on immigrants and descendants of immigrants (stock since 1911, origin, age,
 employment, unemployment, diplomas, living standards, housing), on the Maastricht debt, deficit and interest, and on suspects by
 nationality, each kept *as a grid* (one row per numeric cell, the text of every text cell as labels), so the renderer picks cells by

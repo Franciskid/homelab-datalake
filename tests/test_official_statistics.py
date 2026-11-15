@@ -105,6 +105,7 @@ def test_the_asset_lands_the_ledger_and_writes_the_export(tmp_path, monkeypatch)
     monkeypatch.setattr(asset, "fetch_eurostat", lambda q: PAYLOAD)
     monkeypatch.setattr(asset, "collect_deeper", lambda fetched_at, log: ([], {}, []))
     monkeypatch.setattr(asset, "collect_spending", lambda fetched_at, log: ([], {}, []))
+    monkeypatch.setattr(asset, "collect_crime", lambda fetched_at, log: ([], {}, []))
     monkeypatch.setattr(asset, "fetch_ssmsi", lambda: (stats.ssmsi_rows(SSMSI_CSV),
                                                        {"title": "DEP - Base", "last_modified": "2026-07-09", "url": "u"}))
     export_dir = tmp_path / "export"

@@ -27,6 +27,7 @@ except ImportError:
     pass
 
 from homelab_datalake.assets import official_statistics as asset
+from homelab_datalake.assets.crime_nationality import collect_crime
 from homelab_datalake.parsing import official_statistics as stats
 
 SPENDING_KEYS = ("gov_10a_exp_fr", "gov_10a_taxag_fr", "nasa_10_nf_tr_fr", "nama_10_gdp_vol", "nama_10_gdp_d1", "nama_10_pe", "earn_nt_taxwedge", "gov_10a_main_tr", "irt_lt_mcby_a")
@@ -35,14 +36,21 @@ SPENDING_KEYS = ("gov_10a_exp_fr", "gov_10a_taxag_fr", "nasa_10_nf_tr_fr", "nama
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--out", required=True, type=Path)
-    ap.add_argument("--only", choices=["spending"], default=None)
+    ap.add_argument("--only", choices=["spending", "crime"], default=None)
     args = ap.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     log = logging.getLogger("export")
     args.out.mkdir(parents=True, exist_ok=True)
     fetched_at = datetime.now(UTC).isoformat(timespec="seconds")
     previous = asset.read_previous_export(args.out)
-    if args.only == "spending":
+    if args.only == "crime":
+        # The offending-by-nationality sources only (Switzerland, Germany, the Netherlands, Denmark, Italy, Spain, France and the
+        # Eurostat populations), merged into an existing file in --out: the rest of the export stays as it is.
+        _rows, blocks, failed = collect_crime(fetched_at, log)
+        merged = dict((previous or {}).get("datasets") or {})
+        merged.update(blocks)
+        export = {"format": stats.EXPORT_FORMAT, "generated_at": fetched_at, "datasets": merged}
+    elif args.only == "spending":
         blocks: dict[str, dict] = {}
         failed: list[str] = []
         for query in (q for q in stats.EUROSTAT_QUERIES if q.key in SPENDING_KEYS):
