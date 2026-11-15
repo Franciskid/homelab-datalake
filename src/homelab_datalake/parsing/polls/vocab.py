@@ -1,4 +1,4 @@
-# Vendored from the politico repository (scripts/pollslib/vocab.py, 282ab13). Do not edit here: change it there and run scripts/vendor-pollslib.py.
+# Vendored from the politico repository (scripts/pollslib/vocab.py, ee9ed1d). Do not edit here: change it there and run scripts/vendor-pollslib.py.
 """Common vocabulary for the categories of a poll's cross-tabulations.
 
 Every institute words its breakdown categories its own way ("18-24 ans", "18 à 24 ans", "Moins de 25 ans"; "Ouvriers",
@@ -185,3 +185,13 @@ def categorize(section: str | None, label: str) -> dict:
         return {"dimension": dim, "category": re.sub(r"[^a-z0-9]+", "-", n).strip("-")[:60], "parent": None, "known": True}
     slug = re.sub(r"[^a-z0-9]+", "-", n).strip("-")[:60] or "inconnu"
     return {"dimension": dim or "autre", "category": slug, "parent": None, "known": False}
+
+
+# Display labels for age categories. Some reports print the label in an order the text layer scrambles
+# ("65 plus ans"); the page shows the canonical wording and keeps the institute's text in label_original.
+AGE_DISPLAY = {"18-24": "18-24 ans", "25-34": "25-34 ans", "35-49": "35-49 ans", "50-64": "50-64 ans",
+               "65+": "65 ans et plus", "70+": "70 ans et plus", "75+": "75 ans et plus"}
+
+
+def display_label(dimension: str, category: str, label: str) -> str:
+    return AGE_DISPLAY.get(category, label) if dimension == "age" else label

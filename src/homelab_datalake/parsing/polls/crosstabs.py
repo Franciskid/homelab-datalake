@@ -1,4 +1,4 @@
-# Vendored from the politico repository (scripts/pollslib/crosstabs.py, 282ab13). Do not edit here: change it there and run scripts/vendor-pollslib.py.
+# Vendored from the politico repository (scripts/pollslib/crosstabs.py, ee9ed1d). Do not edit here: change it there and run scripts/vendor-pollslib.py.
 """Cross-tabulations of other institutes' reports (Elabe's are in elabe.py).
 
 Two layouts exist in the reports we hold:
@@ -113,7 +113,7 @@ def attach_category_rows(pdf, text: str, page: int, poll: dict, names: dict, que
     groups = []
     for r in parsed["rows"]:
         cat = vocab.categorize(r["section"], r["label"])
-        groups.append({"dimension": cat["dimension"], "category": cat["category"], "parent": cat["parent"], "label": r["label"], "section": r["section"],
+        groups.append({"dimension": cat["dimension"], "category": cat["category"], "parent": cat["parent"], "label": vocab.display_label(cat["dimension"], cat["category"], r["label"]), "label_original": r["label"], "section": r["section"],
                        "known": cat["known"], "values": dict(zip(cands, r["values"], strict=True)), "raw": dict(zip(cands, r["raw"], strict=True))})
     return {"question": question, "scenario": sc["id"], "page": page, "base": None, "columns": cands,
             "total": dict(zip(cands, parsed["total"]["values"], strict=True)) if parsed["total"] else None,
@@ -175,7 +175,7 @@ def opinionway_page(text: str, names: dict, page: int, poll: dict, alias_list=No
     for j, (section, label) in enumerate(cols):
         k = j + (1 if has_total else 0)
         cat = vocab.categorize(section, label)
-        groups.append({"dimension": cat["dimension"] if cat["known"] else section, "category": cat["category"], "parent": cat["parent"], "label": label, "section": section,
+        groups.append({"dimension": cat["dimension"] if cat["known"] else section, "category": cat["category"], "parent": cat["parent"], "label": vocab.display_label(cat["dimension"], cat["category"], label), "label_original": label, "section": section,
                        "known": True, "values": {cid: v[k][0] for cid, v in rows}, "raw": {cid: v[k][1] for cid, v in rows}})
     return {"question": question, "scenario": sc["id"], "page": page, "base": None, "columns": order, "total": {cid: v[0][0] for cid, v in rows} if has_total else None,
             "groups": groups, "problems": [], "part": "crosstab", "note": "candidate rows; '-' printed for nobody"}
