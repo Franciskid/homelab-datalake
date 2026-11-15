@@ -123,6 +123,7 @@ def test_the_asset_lands_the_spending_blocks_and_exports_them(tmp_path, monkeypa
             return CAS_2025
         return CPS if "305_" in url else BUDGET_2025
     monkeypatch.setattr(asset, "fetch_text", fake)
+    monkeypatch.setattr(asset, "collect_deeper", lambda fetched_at, log: ([], {}, []))
     monkeypatch.setattr(asset, "collect_pension_pages", lambda *a: [])
     monkeypatch.setattr(sp, "BUDGET_EDITIONS", (EDITION_2025,))
     monkeypatch.setattr(sp, "CAS_EDITIONS", (sp.CAS_EDITIONS[-1],))

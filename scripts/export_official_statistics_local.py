@@ -7,7 +7,7 @@ export shape, written to a directory of your choice. politico.fraserv.fr's rende
     python scripts/export_official_statistics_local.py --out /tmp/official        # everything
     python scripts/export_official_statistics_local.py --out /tmp/official --only spending
 
-`--only spending` fetches just the Dépenses publiques inputs (the four public-spending Eurostat
+`--only spending` fetches just the deeper series too and the Dépenses publiques inputs (the four public-spending Eurostat
 queries, the State budget, the CAS Pensions revenue and the DREES accounts) and merges them
 into an existing file in --out, leaving the other blocks as they are.
 """
@@ -29,7 +29,7 @@ except ImportError:
 from homelab_datalake.assets import official_statistics as asset
 from homelab_datalake.parsing import official_statistics as stats
 
-SPENDING_KEYS = ("gov_10a_exp_fr", "gov_10a_taxag_fr", "nasa_10_nf_tr_fr", "nama_10_gdp_vol", "nama_10_gdp_d1", "nama_10_pe", "earn_nt_taxwedge")
+SPENDING_KEYS = ("gov_10a_exp_fr", "gov_10a_taxag_fr", "nasa_10_nf_tr_fr", "nama_10_gdp_vol", "nama_10_gdp_d1", "nama_10_pe", "earn_nt_taxwedge", "gov_10a_main_tr", "irt_lt_mcby_a")
 
 
 def main() -> None:
@@ -55,6 +55,9 @@ def main() -> None:
         _rows, more, more_failed = asset.collect_spending(fetched_at, log)
         blocks.update(more)
         failed += more_failed
+        _rows, deep, deep_failed = asset.collect_deeper(fetched_at, log)
+        blocks.update(deep)
+        failed += deep_failed
         merged = dict((previous or {}).get("datasets") or {})
         merged.update(blocks)
         export = {"format": stats.EXPORT_FORMAT, "generated_at": fetched_at, "datasets": merged}

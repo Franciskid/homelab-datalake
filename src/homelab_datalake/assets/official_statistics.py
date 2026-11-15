@@ -37,6 +37,7 @@ from dagster import (
 from homelab_datalake import lakeio, layout
 from homelab_datalake.parsing import ledger
 from homelab_datalake.parsing import official_statistics as stats
+from homelab_datalake.parsing import deeper_series as deeper
 from homelab_datalake.parsing import public_spending as spending
 from homelab_datalake.resources import LakeStorage
 
@@ -127,6 +128,68 @@ def collect_pension_pages(fetched_at: str, log, land) -> list[str]:
     return failed
 
 
+def collect_deeper(fetched_at: str, log) -> tuple[list[dict], dict[str, dict], list[str]]:
+    """Phase 7b inputs: Insee workbooks, price index, OECD tax wedge, Banque de France holders, SSMSI regions, Justice prisons.
+    Each source is all-or-nothing and fails alone, so the export keeps yesterday's block (marked stale)."""
+    rows: list[dict] = []
+    blocks: dict[str, dict] = {}
+    failed: list[str] = []
+
+    def land(source: str, code: str, block: dict, parsed: list[dict]) -> None:
+        rows.extend(spending.ledger_rows(source, code, parsed, block["dims"], block["url"], block["label"], block.get("updated")))
+        blocks[stats.dataset_key(source, code)] = block
+
+    def table(source, code, label, url, parsed, dims, extra=None):
+        block = {"source": source, "code": code, "label": label, "updated": None, "url": url, "fetched_at": fetched_at, "status": "ok",
+                 "dims": dims, "labels": {}, "rows": [[r[d] for d in dims] + [r["value"]] for r in parsed], **(extra or {})}
+        land(source, code, block, parsed)
+
+    for wb in deeper.WORKBOOKS:
+        try:
+            cells, texts = deeper.grid_rows(_get(wb.url), wb.sheets)
+            land("workbook", wb.code, deeper.grid_block(wb, cells, texts, fetched_at), cells)
+        except Exception as error:  # noqa: BLE001
+            log.warning("workbook %s failed: %s", wb.code, error)
+            failed.append(f"workbook:{wb.code}")
+    try:
+        parsed = deeper.ipc_annual(fetch_text(deeper.IPC_URL))
+        table("insee", "ipc_menages_annuel", "Insee, indice des prix à la consommation (ensemble des ménages, base 2015), moyenne annuelle", deeper.IPC_PAGE, parsed, ["series", "time"])
+    except Exception as error:  # noqa: BLE001
+        log.warning("Insee price index failed: %s", error)
+        failed.append("insee:ipc_menages_annuel")
+    try:
+        parsed = deeper.oecd_wedge_rows(fetch_text(deeper.OECD_URL))
+        table("oecd", "tax_wedge", "OCDE, Taxing Wages : coin fiscal (% du coût du travail), célibataire sans enfant", deeper.OECD_PAGE, parsed, ["income", "geo", "time"])
+    except Exception as error:  # noqa: BLE001
+        log.warning("OECD tax wedge failed: %s", error)
+        failed.append("oecd:tax_wedge")
+    try:
+        import json as _json
+        parsed = deeper.bdf_rows(_json.loads(fetch_text(deeper.BDF_URL)))
+        table("bdf", "non_residents_debt", "Banque de France (via DBnomics) : part des non-résidents dans la dette négociable de l'État", deeper.BDF_PAGE, parsed, ["series", "time"])
+    except Exception as error:  # noqa: BLE001
+        log.warning("Banque de France holders failed: %s", error)
+        failed.append("bdf:non_residents_debt")
+    try:
+        import json as _json
+        resource = deeper.ssmsi_regional_resource(_json.loads(fetch_text(deeper.SSMSI_DATASET_API)))
+        parsed = deeper.ssmsi_regional_rows(fetch_text(resource["url"]))
+        table("ssmsi", "delinquance_regionale", resource.get("title") or "SSMSI, base régionale", stats.SSMSI_PAGE, parsed, ["indicateur", "unite", "mesure", "geo", "time"], {"file": resource["url"]})
+    except Exception as error:  # noqa: BLE001
+        log.warning("SSMSI regional base failed: %s", error)
+        failed.append("ssmsi:delinquance_regionale")
+    try:
+        import json as _json
+        resource = deeper.justice_latest(_json.loads(fetch_text(deeper.JUSTICE_API)))
+        wb = deeper.Workbook("justice_population_detenue", "Ministère de la Justice : statistique mensuelle de la population écrouée et détenue (dernier mois)", deeper.JUSTICE_PAGE, resource["url"], deeper.JUSTICE_SHEETS)
+        cells, texts = deeper.grid_rows(_get(wb.url), wb.sheets)
+        land("workbook", wb.code, deeper.grid_block(wb, cells, texts, fetched_at), cells)
+    except Exception as error:  # noqa: BLE001
+        log.warning("Justice prison statistics failed: %s", error)
+        failed.append("workbook:justice_population_detenue")
+    return rows, blocks, failed
+
+
 def collect_spending(fetched_at: str, log) -> tuple[list[dict], dict[str, dict], list[str]]:
     """The State budget, the CAS Pensions revenue and the DREES pensions by scheme.
 
@@ -209,7 +272,8 @@ def collect(log) -> tuple[list[dict], dict[str, dict], list[str]]:
         log.warning("ssmsi failed: %s", error)
         failed.append(f"ssmsi:{stats.SSMSI_CODE}")
     more_rows, more_blocks, more_failed = collect_spending(fetched_at, log)
-    return rows + more_rows, {**blocks, **more_blocks}, failed + more_failed
+    deep_rows, deep_blocks, deep_failed = collect_deeper(fetched_at, log)
+    return rows + more_rows + deep_rows, {**blocks, **more_blocks, **deep_blocks}, failed + more_failed + deep_failed
 
 
 @asset(

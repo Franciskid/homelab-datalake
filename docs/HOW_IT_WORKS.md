@@ -136,6 +136,16 @@ from PDFs with their page numbers (`parsing/curated_pensions.py`: PAP contributi
 employer contributions of the CNRACL and the Ircantec). `scripts/export_official_statistics_local.py` runs the same
 collectors on a laptop.
 
+Phase 7b adds (all public, no key): Insee workbooks on immigrants and descendants of immigrants (stock since 1911, origin, age,
+employment, unemployment, diplomas, living standards, housing), on the Maastricht debt, deficit and interest, and on suspects by
+nationality, each kept *as a grid* (one row per numeric cell, the text of every text cell as labels), so the renderer picks cells by
+their labels and a changed layout withholds a page instead of publishing a wrong cell; Insee's consumer price index (annual mean of
+the twelve months); the OECD tax wedge (average wage and 67 % of it, by country); the Banque de France's share of the State's
+negotiable debt held by non-residents (through DBnomics); the SSMSI's regional base; the Ministry of Justice's latest monthly prison
+workbook; and two more Eurostat queries (`gov_10a_main` revenue and interest, annual 10-year yields). The CNRACL employer rate is
+known year by year from 2013 and four more State missions are in the curated PAP table. The workbook URLs are edition-specific
+(Insee page ids change each year): `parsing/deeper_series.py` lists them in one place.
+
 ### curated
 
 | Path | dbt model | What the layer adds |
