@@ -80,7 +80,7 @@ def db_path(root: Path) -> Path:
 
 
 def script_env(root: Path) -> dict:
-    return {"PATH": os.environ.get("PATH", ""), "HOME": os.environ.get("HOME", "/tmp"), "POSITIONS_ROOT": str(root),
+    return {"PATH": os.environ.get("PATH", ""), "HOME": os.environ.get("HOME", str(Path.cwd())), "POSITIONS_ROOT": str(root),
             "SSL_CERT_FILE": os.environ.get("SSL_CERT_FILE", ""), "LANG": "C.UTF-8"}
 
 

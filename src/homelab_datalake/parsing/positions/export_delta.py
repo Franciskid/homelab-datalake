@@ -1,4 +1,4 @@
-# Vendored from the politico repository (scripts/positions/export_delta.py, bf1694c). Do not edit here: change it there and run scripts/vendor-positions.py.
+# Vendored from the politico repository (scripts/positions/export_delta.py, 135eb0f). Do not edit here: change it there and run scripts/vendor-positions.py.
 """Server side: what is new in the collection database since the last export, as a small delta the Mac can pull.
 
   python3 -I scripts/positions/export_delta.py --db positions.sqlite --out /exports/positions [--runs runs.json] [--keep-days 60]
@@ -67,6 +67,8 @@ def build_delta(src: sqlite3.Connection, state: dict, root: Path, tmp_db: Path, 
     if since:   # a window (dry run, reporting): only the ballots dated inside it
         recent = {r[0] for r in src.execute('SELECT id FROM ballots WHERE date >= ?', (since,))}
         votes = [v for v in votes if v['ballot'] in recent]
+    outside = [d for d in docs if d['path'] and (Path(d['path']).is_absolute() or '..' in Path(d['path']).parts)]
+    docs = [d for d in docs if d not in outside]   # a document whose text sits outside the root cannot travel: left out, reported
     if not docs and not votes:
         return None
     d = connect(tmp_db)
@@ -92,7 +94,7 @@ def build_delta(src: sqlite3.Connection, state: dict, root: Path, tmp_db: Path, 
         d.execute('COMMIT')
     finally:
         d.close()
-    return {'documents': docs, 'votes': len(votes), 'ballots': len(ballots), 'turns': len(turns), 'raw_files': len(raws),
+    return {'documents': docs, 'skipped_outside_root': [d['path'] for d in outside], 'votes': len(votes), 'ballots': len(ballots), 'turns': len(turns), 'raw_files': len(raws),
             'vote_mark': max((v['_rowid'] for v in votes), default=vote_mark)}
 
 
@@ -138,7 +140,7 @@ def export(db_path, out: Path, root: Path = ROOT, runs: list | None = None, keep
                          'bytes': (out / 'deltas' / name).stat().st_size, 'created_at': started, 'schema_version': version(src),
                          'counts': {'documents': len(new_docs), 'ballots': built['ballots'], 'votes': built['votes'],
                                     'turns': built['turns'], 'raw_files': built['raw_files']},
-                         'files_missing': missing}
+                         'files_missing': missing, 'skipped_outside_root': built['skipped_outside_root']}
                 per_person: dict = {}
                 for e in new_docs:
                     per_person.setdefault(e['person'], {}).setdefault(e['source'], 0)

@@ -1,4 +1,4 @@
-# Vendored from the politico repository (scripts/positions/watch_programmes.py, e83b8f0). Do not edit here: change it there and run scripts/vendor-positions.py.
+# Vendored from the politico repository (scripts/positions/watch_programmes.py, b57804e). Do not edit here: change it there and run scripts/vendor-positions.py.
 """2027 programme watcher.
 
   python3 -I scripts/positions/watch_programmes.py [--people main|id,id] [--db FILE] [--no-db] [--refresh]
@@ -168,7 +168,10 @@ def store_document(conn, t: dict, found: dict, state: dict, today: str) -> str:
     path = folder / f"{today}-{found['hash'][:12]}.txt"
     path.write_text(text, encoding='utf-8')
     state['programme_text_path'] = str(path)
-    if conn is not None and found['material']:
+    # a materially new version, or a database that has never seen this target's programme (rebuilt, or a new server) while the state file has
+    never_stored = conn is not None and not conn.execute(
+        "SELECT 1 FROM documents WHERE source = 'programme-watch' AND person = ? AND external_id LIKE ?", (t['person'], f"{t['key']}-%")).fetchone()
+    if conn is not None and (found['material'] or never_stored):
         known = conn.execute('SELECT 1 FROM people WHERE id = ?', (t['person'],)).fetchone()
         if known:
             conn.execute(

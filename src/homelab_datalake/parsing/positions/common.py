@@ -1,4 +1,4 @@
-# Vendored from the politico repository (scripts/positions/common.py, e83b8f0). Do not edit here: change it there and run scripts/vendor-positions.py.
+# Vendored from the politico repository (scripts/positions/common.py, 135eb0f). Do not edit here: change it there and run scripts/vendor-positions.py.
 """Shared paths, name normalisation and a polite, cached HTTP fetcher.
 
 Everything here is stdlib. Scripts that read downloaded data run with `python3 -I`, so each
@@ -79,11 +79,13 @@ def now() -> str:
 
 
 def rel(path: Path | str) -> str:
-    p = Path(path).resolve()
-    try:
-        return str(p.relative_to(ROOT))
-    except ValueError:
-        return str(p)
+    """Path relative to the repository root (or POSITIONS_ROOT). A cache directory symlinked from elsewhere stays under the root."""
+    for p in (Path(path).resolve(), Path(os.path.abspath(path))):
+        try:
+            return str(p.relative_to(ROOT))
+        except ValueError:
+            continue
+    return str(Path(path).resolve())
 
 
 def sha256_file(path: Path) -> str:

@@ -126,11 +126,13 @@ def test_vendored_scripts_run_offline_and_export_a_delta(tmp_path):
     """The vendored collector builds its database from the frozen roster (no poll file here), and the exporter reads it."""
     root, out = tmp_path / "state", tmp_path / "export"
     env = pc.script_env(root)
-    people = subprocess.run([sys.executable, "-I", str(pc.VENDORED / "collect.py"), "people", "--db", str(pc.db_path(root))],
+    people = subprocess.run(  # noqa: S603
+                            [sys.executable, "-I", str(pc.VENDORED / "collect.py"), "people", "--db", str(pc.db_path(root))],
                             env=env, capture_output=True, text=True, check=False)
     assert people.returncode == 0, people.stderr
     assert "marine-le-pen" in people.stdout and "orbit" in people.stdout
-    exported = subprocess.run([sys.executable, "-I", str(pc.VENDORED / "export_delta.py"), "--db", str(pc.db_path(root)), "--out", str(out)],
+    exported = subprocess.run(  # noqa: S603
+                              [sys.executable, "-I", str(pc.VENDORED / "export_delta.py"), "--db", str(pc.db_path(root)), "--out", str(out)],
                               env=env, capture_output=True, text=True, check=False)
     assert exported.returncode == 0, exported.stderr
     assert json.loads(exported.stdout)["new"] is False   # no document and no vote yet
