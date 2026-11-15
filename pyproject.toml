@@ -77,6 +77,8 @@ select = ["E", "F", "W", "I", "B", "UP", "S", "DTZ", "RUF", "BLE", "ISC", "C4"]
 ignore = ["E501"]  # line-length is enforced by the formatter, not as an error
 
 [tool.ruff.lint.per-file-ignores]
+# Vendored from the politico repository (scripts/vendor-pollslib.py); its own rules apply there, the copy is not edited here.
+"src/homelab_datalake/parsing/polls/*" = ["ALL"]
 # S101: asserts are the point of a test file.
 # S105/S106: a test that checks how a credential is escaped has to name one, and
 # the strings here are literally "secret" and "a'b".

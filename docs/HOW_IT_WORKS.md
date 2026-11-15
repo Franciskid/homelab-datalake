@@ -118,6 +118,39 @@ writes `official-statistics.json` into the directory shared with the politico st
 `stale`. `fct_official_stat_observation` is the current value of each figure with its
 revision count.
 
+### Poll ingestion (`polls_ingestion`)
+
+politico.fraserv.fr's observatory shows the voting-intention polls of every institute. Each morning at 06:10 UTC (after the
+official statistics) `polls_ingestion` looks for new reports and writes `polls-export.json` into the same directory as
+`official-statistics.json`. The site fetches that file when it loads, so a new poll appears without a redeploy.
+
+1. **Discovery.** The Commission des sondages notices list (every "Pres IV" notice of the last 45 days), the publication pages
+   of the institutes (Elabe, Ifop, OpinionWay, Harris/Toluna, Cluster17, Ipsos, Odoxa, Verian, YouGov, BVA: listing, then article,
+   then PDF) and the French Wikipedia table of polls, which has no document and so is only a cross-check: a poll it lists that
+   no report matched is reported as `wikipedia_only`.
+2. **Download and read.** Only https, 60 MB at most, and only through `pdftotext` (poppler-utils in the image). Elabe's full
+   report has its own parser; every other report goes through the generic table reader. Both are the code of the politico
+   repository's `scripts/pollslib`, **vendored** into `src/homelab_datalake/parsing/polls/` by politico's
+   `scripts/vendor-pollslib.py` (the copy carries a header and is not edited here).
+3. **Validation.** ISO dates with a fieldwork of at most 20 days, sample size, https source, a page for every hypothesis,
+   known candidate ids, scores summing to 100 ± 2 (a duel has exactly two candidates), cross-tab totals equal to the published
+   scores, no duplicate (same id, or same institute and fieldwork dates, or the same figures a day apart).
+4. **Verdict.** `auto`: every check passes and the reader is trusted (Elabe's full report; Ifop, OpinionWay and YouGov through
+   the generic reader, measured against 86 hand-checked reports). Published polls carry `reviewed: false` and
+   `ingest.mode: "auto"`; the poll popup says "relevé automatique, non relu". Everything else is `review`: never published,
+   listed in `review` with its reasons (`scripts/polls-review.py list` in the politico repository).
+5. **Memory.** The previous export is the job's state: a report already read is not downloaded again; a review item stays until
+   the site bundles that poll.
+
+The export holds only what is new compared with the polls the site bundles, which the job reads from
+`https://politico.fraserv.fr/polls-index.json` (override `POLLS_INDEX_URL`; with the site unreachable it falls back to a
+`polls-index.json` next to the export, and without either it refuses to run rather than ingest blind). Its shape is documented
+in the politico repository's `docs/polls-data-schema.md`: polls, plus cross-tabs, certainty of choice, camp-leadership and other
+questions. A source that fails (or whose page changed) is reported in `job.sources` and the check `sources_answered` warns; the
+others still run.
+
+Environment: `POLLS_EXPORT_DIR` (default `OFFICIAL_STATS_EXPORT_DIR`, else `/exports/politico`), `POLLS_INDEX_URL`.
+
 For politico.fraserv.fr's "Dépenses publiques" the same run also reads: French general-government
 expenditure by COFOG function (Eurostat `gov_10a_exp`, all 80 codes, 1995 onward, total /
 compensation of employees / social benefits, by sub-sector), the social contributions received
@@ -212,6 +245,7 @@ The files are in `src/homelab_datalake/assets/`.
 | `tmdb.py` | `tmdb_titles_raw` | `raw/media/tmdb/titles` |
 | `camera.py` | `camera_events_raw` | `raw/monitoring/camera/*` |
 | `official_statistics.py` | `official_statistics_raw` | `raw/official_statistics/publishers/observations`, and the politico export |
+| `polls_ingestion.py` | `polls_ingestion` | `polls-export.json` in the politico export directory (no lake table) |
 | `warehouse.py` | `warehouse_tables` | The DuckDB tables `raw.*` |
 | `dbt_marts.py` | `dbt_marts` | The DuckDB staging, intermediate and mart models |
 | `publish.py` | `lake_curated`, `lake_marts` | `curated/*` and `marts/*` in the lake |
