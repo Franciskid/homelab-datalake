@@ -116,3 +116,12 @@ CNRACL_TAUX_EMPLOYEUR = (
     ("2023", 30.65, "IGAS/IGF, Situation financière de la CNRACL (2024)", "https://www.vie-publique.fr/files/rapport/pdf/295580.pdf"),
     ("2024", 31.65, "CCSS octobre 2024, fiche 4.11", "https://www.vie-publique.fr/files/rapport/pdf/299216.pdf"),
 )
+
+# Contributors and beneficiaries (old-age) of two schemes, annual average, CCSS octobre 2024, table 1 of the scheme's fiche.
+# (scheme, kind, year, number, page)
+CCSS_EFFECTIFS = (
+    ("FPE", "cotisants", "2022", 2033691, 186), ("FPE", "cotisants", "2023", 2028245, 186), ("FPE", "cotisants", "2024", 2021679, 186),
+    ("FPE", "beneficiaires", "2022", 2244346, 186), ("FPE", "beneficiaires", "2023", 2260477, 186), ("FPE", "beneficiaires", "2024", 2269437, 186),
+    ("CNRACL", "cotisants", "2022", 2140201, 188), ("CNRACL", "cotisants", "2023", 2144492, 188), ("CNRACL", "cotisants", "2024", 2145992, 188),
+    ("CNRACL", "beneficiaires", "2022", 1276473, 188), ("CNRACL", "beneficiaires", "2023", 1323278, 188), ("CNRACL", "beneficiaires", "2024", 1358974, 188),
+)

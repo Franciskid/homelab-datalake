@@ -417,6 +417,8 @@ def ccss_block(fetched_at: str) -> dict:
     dims = ["series", "edition", "page", "url", "time"]
     rows = [[sch, rep, str(pg), url, y, float(v) * 1e6] for sch, y, v, rep, pg, url in curated_pensions.CCSS_COTISATIONS_PATRONALES]
     rows += [["CNRACL taux employeur (%)", src, "", url, y, float(v)] for y, v, src, url in curated_pensions.CNRACL_TAUX_EMPLOYEUR]
+    rows += [[f"{sch} {kind}", "CCSS octobre 2024", str(pg), "https://www.vie-publique.fr/files/rapport/pdf/299216.pdf", y, float(n)]
+             for sch, kind, y, n, pg in curated_pensions.CCSS_EFFECTIFS]
     return {"source": "curated", "code": CCSS_CODE, "label": "CCSS : cotisations patronales de la CNRACL et de l'Ircantec (euros) et taux employeur CNRACL (%)",
             "updated": None, "url": "https://www.vie-publique.fr/files/rapport/pdf/299216.pdf", "fetched_at": fetched_at, "status": "ok",
             "dims": dims, "labels": {}, "rows": rows}
