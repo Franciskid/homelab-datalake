@@ -1,4 +1,4 @@
-# Vendored from the politico repository (scripts/pollslib/pipeline.py, 282ab13). Do not edit here: change it there and run scripts/vendor-pollslib.py.
+# Vendored from the politico repository (scripts/pollslib/pipeline.py, 9070b83). Do not edit here: change it there and run scripts/vendor-pollslib.py.
 """From a downloaded report to validated poll records: parse, validate, de-duplicate, classify, merge.
 
 Used by the homelab datalake's daily job (vendored copy) and by scripts/polls-ingest.py in this repository.
@@ -112,9 +112,12 @@ def is_duplicate(poll: dict, existing: list[dict]) -> dict | None:
     return None
 
 
-def classify(parsed: dict, round_index: int, poll: dict, candidates: dict, details_errors: list[str], today: date | None = None) -> tuple[str, list[str]]:
+def classify(parsed: dict, round_index: int, poll: dict, candidates: dict, details_errors: list[str], today: date | None = None,
+             reference: list[dict] | None = None) -> tuple[str, list[str]]:
     """('auto' | 'review', reasons). Auto needs a trusted parser and no error of any kind."""
     reasons = list(parsed.get("problems", [])) + validate.poll_problems(poll, round_index, candidates, today) + details_errors
+    if reference:
+        reasons += validate.plausibility(poll, reference, threshold=12.0 if round_index == 1 else 10.0)
     if parsed["parser"] in AUTO_PARSERS:
         trusted = True
     else:

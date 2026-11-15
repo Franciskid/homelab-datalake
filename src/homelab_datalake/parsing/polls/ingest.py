@@ -1,4 +1,4 @@
-# Vendored from the politico repository (scripts/pollslib/ingest.py, 282ab13). Do not edit here: change it there and run scripts/vendor-pollslib.py.
+# Vendored from the politico repository (scripts/pollslib/ingest.py, 9070b83). Do not edit here: change it there and run scripts/vendor-pollslib.py.
 """One run of the daily poll ingestion: discover, download, extract, validate, classify, export.
 
 The network is injected (`fetch(url) -> (bytes, content_type)`), so the same function runs on fixtures in tests, on live pages
@@ -151,7 +151,7 @@ def process_document(cand: dict, data: bytes, names: dict, known: list[list[dict
         else:
             d = pipeline.details_for(parsed["details"], poll) if parsed["details"] else None
             derrs, dwarn = validate.details_problems(d or {}, poll)
-            verdict, reasons = pipeline.classify(parsed, ri, poll, names, derrs, today)
+            verdict, reasons = pipeline.classify(parsed, ri, poll, names, derrs, today, reference=known[ri])
             if poll.get("end") and poll["end"] < cutoff.isoformat():
                 verdict, reasons = "review", reasons + [f"fieldwork ended {poll['end']}, before the {since_days}-day window"]
             entry.update({"status": "ingested" if verdict == "auto" else "review", "reasons": reasons, "warnings": dwarn[:5], "details": d})

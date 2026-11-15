@@ -1,4 +1,4 @@
-# Vendored from the politico repository (scripts/pollslib/validate.py, 282ab13). Do not edit here: change it there and run scripts/vendor-pollslib.py.
+# Vendored from the politico repository (scripts/pollslib/validate.py, 9070b83). Do not edit here: change it there and run scripts/vendor-pollslib.py.
 """Validation of poll records and their details; the verdict that decides auto-publication.
 
 A poll is `auto` only when it has no error. Warnings (unknown category labels, a cross-tab total that drifts by rounding)
@@ -112,3 +112,34 @@ def details_problems(details: dict, poll: dict, tol: float = 0.51) -> tuple[list
                 if a.get("first") is not None and a.get("total") is not None and a["first"] > a["total"]:
                     errs.append(f"camp p.{q['page']}: {a['person']} first {a['first']} > total {a['total']}")
     return errs, warns
+
+
+def plausibility(poll: dict, reference: list[dict], window_days: int = 60, threshold: float = 10.0, min_values: int = 5) -> list[str]:
+    """Reasons to doubt a reading that passes every arithmetic check: a score far from what other polls of the same weeks gave.
+
+    The case it exists for: a published table whose labels are swapped (an institute once printed Le Pen 4 % / Zemmour 34 %), which
+    sums to 100 and uses known ids. Each score is compared with the median of the same candidate in the reference polls that ended
+    within `window_days` of this one; more than `threshold` points away is a reason (with at least `min_values` reference values).
+    """
+    end = _d(poll.get("end"))
+    if not end:
+        return []
+    near = [q for q in reference if (qe := _d(q.get("end"))) and abs((qe - end).days) <= window_days and q.get("id") != poll.get("id")]
+    out = []
+    for s in poll.get("scenarios", []):
+        duel = len(s.get("scores", {})) == 2
+        ref: dict[str, list[float]] = {}
+        for q in near:
+            for t in q.get("scenarios", []):
+                if duel and set(t.get("scores", {})) != set(s["scores"]):   # a duel's score depends on the opponent
+                    continue
+                for c, v in t.get("scores", {}).items():
+                    ref.setdefault(c, []).append(v)
+        for c, v in s.get("scores", {}).items():
+            vals = sorted(ref.get(c, []))
+            if len(vals) < (3 if duel else min_values):
+                continue
+            med = vals[len(vals) // 2]
+            if abs(v - med) > threshold:
+                out.append(f"{s.get('id')}: {c} at {v:g} is {abs(v - med):.0f} points from the {med:g} other polls of the same weeks give (labels swapped in the report?)")
+    return out[:6]
