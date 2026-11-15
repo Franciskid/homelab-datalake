@@ -151,6 +151,42 @@ others still run.
 
 Environment: `POLLS_EXPORT_DIR` (default `OFFICIAL_STATS_EXPORT_DIR`, else `/exports/politico`), `POLLS_INDEX_URL`.
 
+For politico.fraserv.fr's "Dépenses publiques" the same run also reads: French general-government
+expenditure by COFOG function (Eurostat `gov_10a_exp`, all 80 codes, 1995 onward, total /
+compensation of employees / social benefits, by sub-sector), the social contributions received
+(`gov_10a_taxag`, actual and imputed employers' ones), employers' contributions and pay of the
+whole government (`nasa_10_nf_tr`), GDP in volume (`nama_10_gdp`); the State budget's personnel
+categories by programme (data.economie.gouv.fr, editions 2019, 2023, 2024, 2025); the CAS
+Pensions revenue lines; and the DREES "Comptes de la protection sociale" for old age and
+survivors by scheme (1959 onward). They are landed as raw inputs only: how pension
+contributions are reallocated to functions is an assumption that lives with the method in the
+renderer (`donnees/`, politico repository), so changing it never means re-landing history.
+Pension pages add: the COR's June report data files (observed series and reference scenario of resources, contributors,
+retirees, average pay and pension; read with a stdlib xlsx reader because some COR workbooks defeat openpyxl), the executed
+CAS Pensions and its contribution rates (Service des retraites de l'État page), the DREES long series of resources of social
+protection (workbook found through data.gouv.fr), employment and the tax wedge (Eurostat), and curated tables read by hand
+from PDFs with their page numbers (`parsing/curated_pensions.py`: PAP contributions to the CAS Pensions per programme, CCSS
+employer contributions of the CNRACL and the Ircantec). `scripts/export_official_statistics_local.py` runs the same
+collectors on a laptop.
+
+Phase 7b adds (all public, no key): Insee workbooks on immigrants and descendants of immigrants (stock since 1911, origin, age,
+employment, unemployment, diplomas, living standards, housing), on the Maastricht debt, deficit and interest, and on suspects by
+nationality, each kept *as a grid* (one row per numeric cell, the text of every text cell as labels), so the renderer picks cells by
+their labels and a changed layout withholds a page instead of publishing a wrong cell; Insee's consumer price index (annual mean of
+the twelve months); the OECD tax wedge (average wage and 67 % of it, by country); the Banque de France's share of the State's
+negotiable debt held by non-residents (through DBnomics); the SSMSI's regional base; the Ministry of Justice's latest monthly prison
+workbook; and two more Eurostat queries (`gov_10a_main` revenue and interest, annual 10-year yields). The CNRACL employer rate is
+known year by year from 2013 and four more State missions are in the curated PAP table. The workbook URLs are edition-specific
+(Insee page ids change each year): `parsing/deeper_series.py` lists them in one place.
+
+Debt history (round 7c): two more Insee workbooks, kept as grids like the others. `insee_dette_longue` (page 2830192) is the
+Maastricht debt of the general government by sub-sector, **1978 to the latest year**, in billions of euros and as a share of GDP
+(national accounts base 2020; Insee recomputes the whole series at constant definition, so there is no break inside it).
+`insee_population_longue` (bilan démographique, tableaux rétrospectifs, page 8721185, file POP1) gives the population at 1 January:
+France since 1982 and France métropolitaine since 1901 (the two tabs `FR` and `FM`), which is what turns the debt into a figure per
+head before 1994. The two populations do not cover the same territory (about 2.3 % apart in 1982): the renderer says where it
+switches. Consumer prices stay from 1990: Insee's BDM index has no earlier annual series.
+
 ### Positions collection (`positions_*`)
 
 politico.fraserv.fr's positions pipeline needs the statements, votes and programmes of the 2027 candidates and of the people
@@ -187,42 +223,6 @@ delta to pull.
 Checks (warn only): `steps_succeeded` and `export_written`. A run fails when every step of it failed.
 Environment: `POSITIONS_STATE_DIR` (default `/state/positions`), `POSITIONS_EXPORT_DIR` (default `/exports/positions`),
 `POLLS_EXPORT_DIR`, `POLLS_INDEX_URL`. `scripts/positions_collect_local.py` runs one cycle on a laptop.
-
-For politico.fraserv.fr's "Dépenses publiques" the same run also reads: French general-government
-expenditure by COFOG function (Eurostat `gov_10a_exp`, all 80 codes, 1995 onward, total /
-compensation of employees / social benefits, by sub-sector), the social contributions received
-(`gov_10a_taxag`, actual and imputed employers' ones), employers' contributions and pay of the
-whole government (`nasa_10_nf_tr`), GDP in volume (`nama_10_gdp`); the State budget's personnel
-categories by programme (data.economie.gouv.fr, editions 2019, 2023, 2024, 2025); the CAS
-Pensions revenue lines; and the DREES "Comptes de la protection sociale" for old age and
-survivors by scheme (1959 onward). They are landed as raw inputs only: how pension
-contributions are reallocated to functions is an assumption that lives with the method in the
-renderer (`donnees/`, politico repository), so changing it never means re-landing history.
-Pension pages add: the COR's June report data files (observed series and reference scenario of resources, contributors,
-retirees, average pay and pension; read with a stdlib xlsx reader because some COR workbooks defeat openpyxl), the executed
-CAS Pensions and its contribution rates (Service des retraites de l'État page), the DREES long series of resources of social
-protection (workbook found through data.gouv.fr), employment and the tax wedge (Eurostat), and curated tables read by hand
-from PDFs with their page numbers (`parsing/curated_pensions.py`: PAP contributions to the CAS Pensions per programme, CCSS
-employer contributions of the CNRACL and the Ircantec). `scripts/export_official_statistics_local.py` runs the same
-collectors on a laptop.
-
-Phase 7b adds (all public, no key): Insee workbooks on immigrants and descendants of immigrants (stock since 1911, origin, age,
-employment, unemployment, diplomas, living standards, housing), on the Maastricht debt, deficit and interest, and on suspects by
-nationality, each kept *as a grid* (one row per numeric cell, the text of every text cell as labels), so the renderer picks cells by
-their labels and a changed layout withholds a page instead of publishing a wrong cell; Insee's consumer price index (annual mean of
-the twelve months); the OECD tax wedge (average wage and 67 % of it, by country); the Banque de France's share of the State's
-negotiable debt held by non-residents (through DBnomics); the SSMSI's regional base; the Ministry of Justice's latest monthly prison
-workbook; and two more Eurostat queries (`gov_10a_main` revenue and interest, annual 10-year yields). The CNRACL employer rate is
-known year by year from 2013 and four more State missions are in the curated PAP table. The workbook URLs are edition-specific
-(Insee page ids change each year): `parsing/deeper_series.py` lists them in one place.
-
-Debt history (round 7c): two more Insee workbooks, kept as grids like the others. `insee_dette_longue` (page 2830192) is the
-Maastricht debt of the general government by sub-sector, **1978 to the latest year**, in billions of euros and as a share of GDP
-(national accounts base 2020; Insee recomputes the whole series at constant definition, so there is no break inside it).
-`insee_population_longue` (bilan démographique, tableaux rétrospectifs, page 8721185, file POP1) gives the population at 1 January:
-France since 1982 and France métropolitaine since 1901 (the two tabs `FR` and `FM`), which is what turns the debt into a figure per
-head before 1994. The two populations do not cover the same territory (about 2.3 % apart in 1982): the renderer says where it
-switches. Consumer prices stay from 1990: Insee's BDM index has no earlier annual series.
 
 ### curated
 
