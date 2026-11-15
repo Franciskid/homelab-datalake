@@ -1,0 +1,101 @@
+{
+ "_doc": "Historical figures: where each one's campaign and presidential documents are collected from. 'archelec' = the en_soutien_a value in Sciences Po's Archives électorales (Internet Archive collection archiveselectoralesducevipof). 'programmes' = hand-listed official programmes (programmes.json format) with provenance. Add only URLs actually seen to be public. 'surname' + 'own_publishers': a document counts as the person's own campaign material only when its publisher (Archelec 'editeur', segments split on ';') names the person or matches one of the person's own party patterns; otherwise it is stored in third_party_documents. 'aliases': other ways a campaign publisher names the person.",
+ "people": {
+  "charles-de-gaulle": {
+   "archelec": "DE GAULLE Charles",
+   "elections": [
+    1965
+   ],
+   "surname": "Gaulle",
+   "own_publishers": [
+    "^Union pour la nouvelle R[ée]publique"
+   ]
+  },
+  "georges-pompidou": {
+   "archelec": "POMPIDOU Georges",
+   "elections": [
+    1969
+   ],
+   "surname": "Pompidou",
+   "own_publishers": [
+    "^Union des d[ée]mocrates pour la R[ée]publique",
+    "^Union pour la d[ée]fense de la R[ée]publique"
+   ]
+  },
+  "valery-giscard-d-estaing": {
+   "archelec": "GISCARD D'ESTAING Valéry",
+   "elections": [
+    1974,
+    1981
+   ],
+   "surname": "Giscard",
+   "own_publishers": [
+    "^Union pour la d[ée]mocratie fran[çc]aise",
+    "^R[ée]publicains ind[ée]pendants",
+    "^Jeunes r[ée]publicains ind[ée]pendants",
+    "^Parti r[ée]publicain",
+    "^F[ée]d[ée]ration nationale des r[ée]publicains ind[ée]pendants"
+   ],
+   "aliases": [
+    "VGE"
+   ]
+  },
+  "francois-mitterrand": {
+   "archelec": "MITTERRAND François",
+   "elections": [
+    1965,
+    1974,
+    1981,
+    1988
+   ],
+   "surname": "Mitterrand",
+   "own_publishers": [
+    "^Parti socialiste(?! unifi[ée])",
+    "^Convention des institutions r[ée]publicaines"
+   ]
+  },
+  "jacques-chirac": {
+   "archelec": "CHIRAC Jacques",
+   "elections": [
+    1981,
+    1988,
+    1995,
+    2002
+   ],
+   "surname": "Chirac",
+   "own_publishers": [
+    "^Rassemblement pour la R[ée]publique",
+    "^Union en mouvement",
+    "^Union pour un mouvement populaire"
+   ]
+  },
+  "nicolas-sarkozy": {
+   "archelec": "SARKOZY Nicolas",
+   "elections": [
+    2007,
+    2012
+   ],
+   "surname": "Sarkozy",
+   "own_publishers": [
+    "^Union pour un mouvement populaire"
+   ]
+  },
+  "francois-hollande": {
+   "archelec": "HOLLANDE François",
+   "elections": [
+    2012
+   ],
+   "surname": "Hollande",
+   "own_publishers": [
+    "^Parti socialiste(?! unifi[ée])"
+   ]
+  },
+  "emmanuel-macron": {
+   "elections": [
+    2017,
+    2022
+   ],
+   "note": "Archelec stops at 2012; 2017 and 2022 programmes are in programmes.json / vie-publique."
+  }
+ }
+}

@@ -1,0 +1,1 @@
+politico scripts/positions at e83b8f0; see scripts/vendor-positions.py

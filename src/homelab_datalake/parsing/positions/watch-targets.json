@@ -1,0 +1,149 @@
+{
+ "_doc": "Official pages to watch for a published 2027 programme (watch_programmes.py). `seen` = where the address was found and when; party pages are marked attribution 'parti'. Candidates without an entry have no official site found: François Hollande (not a declared candidate; no personal site; Parti socialiste pages are attached to Olivier Faure), Bruno Retailleau (only the LR party page; no personal campaign site found), Jordan Bardella (RN site only). marinelepen.fr is a parked domain (SCORE online marketing) and is deliberately not listed.",
+ "targets": [
+  {
+   "person": "marine-le-pen",
+   "key": "rn-site",
+   "label": "Rassemblement national — site officiel",
+   "url": "https://rassemblementnational.fr/",
+   "seen": "Domaine officiel du parti (en 2026-11-15 : répond 307 sans destination, relevé tel quel)",
+   "attribution": "parti"
+  },
+  {
+   "person": "jordan-bardella",
+   "key": "rn-site-bardella",
+   "label": "Rassemblement national — site officiel",
+   "url": "https://rassemblementnational.fr/",
+   "seen": "Domaine officiel du parti ; pas de site de campagne personnel confirmé (bardella2027.fr répond 403 aux robots, propriétaire non vérifié, non suivi)",
+   "attribution": "parti"
+  },
+  {
+   "person": "edouard-philippe",
+   "key": "philippe-programme",
+   "label": "Édouard Philippe — programme",
+   "url": "https://www.edouardphilippe.fr/programme",
+   "seen": "Lien « Programme » du site de campagne edouardphilippe.fr, vu le 2026-11-15",
+   "attribution": "personnelle"
+  },
+  {
+   "person": "edouard-philippe",
+   "key": "horizons-site",
+   "label": "Horizons — site du parti",
+   "url": "https://horizonsleparti.fr/",
+   "seen": "Site du parti (infobox Wikipédia Horizons, vu le 2026-11-15)",
+   "attribution": "parti"
+  },
+  {
+   "person": "jean-luc-melenchon",
+   "key": "melenchon-livre",
+   "label": "L'Avenir en commun — livre en ligne",
+   "url": "https://melenchon2027.fr/programme/livre",
+   "seen": "Déjà dans programmes.json ; le site redirige /programme vers /programme/livre",
+   "attribution": "personnelle"
+  },
+  {
+   "person": "raphael-glucksmann",
+   "key": "glucksmann-site",
+   "label": "Raphaël Glucksmann — site de campagne",
+   "url": "https://glucks2027.fr/",
+   "seen": "raphaelglucksmann.fr redirige vers glucks2027.fr (2026-11-15)",
+   "attribution": "personnelle"
+  },
+  {
+   "person": "raphael-glucksmann",
+   "key": "pp-projet",
+   "label": "Place publique — le projet",
+   "url": "https://place-publique.eu/pages/69jA2SKIG5udlNX7wI3dmc/le-projet",
+   "seen": "Lien « le projet » de place-publique.eu, vu le 2026-11-15",
+   "attribution": "parti"
+  },
+  {
+   "person": "gabriel-attal",
+   "key": "attal-programme",
+   "label": "Gabriel Attal — programme",
+   "url": "https://gabrielattal.fr/pages/1FEfzGXN5ynz28wiZ1970b/programme",
+   "seen": "Lien « programme » de gabrielattal.fr, vu le 2026-11-15",
+   "attribution": "personnelle"
+  },
+  {
+   "person": "bruno-retailleau",
+   "key": "lr-propositions",
+   "label": "Les Républicains — nos propositions",
+   "url": "https://republicains.fr/nos-propositions/",
+   "seen": "Lien « nos propositions » de republicains.fr, vu le 2026-11-15 (pas de site de campagne personnel confirmé)",
+   "attribution": "parti"
+  },
+  {
+   "person": "david-lisnard",
+   "key": "lisnard-programme",
+   "label": "Nouvelle Énergie — notre programme",
+   "url": "https://www.unenouvelleenergie.fr/notre-programme/",
+   "seen": "Lien « notre programme » de unenouvelleenergie.fr, vu le 2026-11-15",
+   "attribution": "personnelle"
+  },
+  {
+   "person": "olivier-faure",
+   "key": "faure-propositions",
+   "label": "Olivier Faure — mes propositions",
+   "url": "https://avecfaure2027.fr/mes-propositions",
+   "seen": "olivierfaure.fr redirige vers avecfaure2027.fr ; lien « mes propositions », vu le 2026-11-15",
+   "attribution": "personnelle"
+  },
+  {
+   "person": "olivier-faure",
+   "key": "ps-projet",
+   "label": "Parti socialiste — projet socialiste",
+   "url": "https://projet-socialiste.fr/",
+   "seen": "Lien depuis parti-socialiste.fr, vu le 2026-11-15",
+   "attribution": "parti"
+  },
+  {
+   "person": "eric-zemmour",
+   "key": "zemmour-programme",
+   "label": "Reconquête — le programme pour la France",
+   "url": "https://leprogrammepourlafrance.fr/",
+   "seen": "Lien depuis parti-reconquete.fr, vu le 2026-11-15",
+   "attribution": "parti"
+  },
+  {
+   "person": "eric-zemmour",
+   "key": "zemmour-site",
+   "label": "Éric Zemmour — site personnel",
+   "url": "https://www.ericzemmour.fr/",
+   "seen": "Site personnel (répond 200, 2026-11-15)",
+   "attribution": "personnelle"
+  },
+  {
+   "person": "marine-tondelier",
+   "key": "tondelier-programme",
+   "label": "Marine Tondelier — le programme",
+   "url": "https://marinetondelier.fr/le-programme",
+   "seen": "Lien « le programme » de marinetondelier.fr, vu le 2026-11-15 (redirige vers lesecologistes.fr/share/page/…/projet)",
+   "attribution": "personnelle"
+  },
+  {
+   "person": "francois-ruffin",
+   "key": "ruffin-site",
+   "label": "François Ruffin 2027",
+   "url": "https://nouspresident.fr/",
+   "seen": "ruffin2027.fr redirige vers nouspresident.fr (2026-11-15)",
+   "attribution": "personnelle"
+  },
+  {
+   "person": "dominique-de-villepin",
+   "key": "lfh-site",
+   "label": "La France humaniste — site du mouvement",
+   "url": "https://lafrancehumaniste.fr/",
+   "seen": "Site du mouvement (infobox Wikipédia, vu le 2026-11-15) ; page programme/economie.html liée",
+   "attribution": "parti"
+  },
+  {
+   "person": "fabien-roussel",
+   "key": "roussel-site",
+   "label": "Fabien Roussel 2027",
+   "url": "http://www.fabienroussel2027.fr/",
+   "seen": "fabienroussel2027.fr redirige vers www.fabienroussel2027.fr (2026-11-15)",
+   "attribution": "personnelle"
+  }
+ ]
+}

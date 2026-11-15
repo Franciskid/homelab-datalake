@@ -151,6 +151,43 @@ others still run.
 
 Environment: `POLLS_EXPORT_DIR` (default `OFFICIAL_STATS_EXPORT_DIR`, else `/exports/politico`), `POLLS_INDEX_URL`.
 
+### Positions collection (`positions_*`)
+
+politico.fraserv.fr's positions pipeline needs the statements, votes and programmes of the 2027 candidates and of the people
+close to them (their "orbit"). The datalake collects them on a schedule. It never publishes anything. It gives the Mac a small
+delta to pull.
+
+| Job | Schedule (UTC) | What it does |
+|---|---|---|
+| `positions_votes_daily` | daily 05:10 | Ballots of the Assemblée nationale (17th legislature), the Sénat and the European Parliament (HowTheyVote, 9th and 10th terms). |
+| `positions_watch_daily` | daily 06:40 | The programme watcher: each candidate's official page is fetched and hashed, and a new version is stored when it changes materially. Then the candidacy detector (below). |
+| `positions_texts_weekly` | Monday 07:30 | New vie-publique speeches (at most 120 pages a run, 3 s apart), then the Assemblée and Sénat debates (comptes rendus intégraux). |
+| `positions_backfill_manual` | none (run by hand) | The first full collection, with the history. It takes hours. It is resumable: run it again after an interruption. |
+
+1. **The code** is the politico repository's `scripts/positions`, **vendored** into `src/homelab_datalake/parsing/positions/` by
+   politico's `scripts/vendor-positions.py` (it also freezes the list of tracked people, `people-roster.json`). Each step runs as a
+   subprocess (`python -I collect.py <step> --people tracked --revalidate`), so these generic module names stay out of the
+   Dagster process. To change who is tracked, edit `people.json` in politico, re-vendor and deploy.
+2. **State** lives in the `positions-state` volume (`/state/positions`): the SQLite database, the downloaded dumps and the
+   extracted texts. One collection runs at a time (a file lock). The volume can be rebuilt: delete it and run the backfill.
+3. **Polite.** robots.txt (RFC 9309), a rate limit for each host, a circuit breaker after 8 consecutive 5xx answers from one host,
+   and every download cached with its sidecar. A big dump (the Sénat debates are about 550 MB) is fetched again only when its
+   ETag or Last-Modified changed (a HEAD request checks).
+4. **Export.** After each job, `export_delta.py` writes into `/exports/positions` (host `POSITIONS_EXPORT_HOST_DIR`, default
+   `/home/francois/dev/politico-positions-export`): `manifest.json` (sequence number, the deltas kept for 60 days, the new documents
+   with their sha256 and provenance), `manifests/`, `deltas/delta-<seq>-<time>.sqlite.gz` (a database with the same schema holding only
+   what is new), `files/` (the text of every exported document), `candidacy-proposals.json`, `programme-watch.json`. Raw dumps
+   are never exported. The Mac pulls the directory with rsync over ssh (`scripts/positions/pull-positions.sh` in politico) and
+   `scripts/positions/sync.py` merges it.
+5. **Candidacies.** The detector reads three signals and writes proposals, never people: a candidate id in an ingested poll
+   (`polls-export.json`, the site's `polls-index.json`) that the roster does not know; a programme newly published for a tracked
+   person; the French Wikipedia page "Candidatures à l'élection présidentielle française de 2027" (new names under "Candidats
+   déclarés", names under "Candidatures retirées"). A person decides on the Mac (`candidacies.py review`, `--accept`, `--dismiss`).
+
+Checks (warn only): `steps_succeeded` and `export_written`. A run fails when every step of it failed.
+Environment: `POSITIONS_STATE_DIR` (default `/state/positions`), `POSITIONS_EXPORT_DIR` (default `/exports/positions`),
+`POLLS_EXPORT_DIR`, `POLLS_INDEX_URL`. `scripts/positions_collect_local.py` runs one cycle on a laptop.
+
 For politico.fraserv.fr's "Dépenses publiques" the same run also reads: French general-government
 expenditure by COFOG function (Eurostat `gov_10a_exp`, all 80 codes, 1995 onward, total /
 compensation of employees / social benefits, by sub-sector), the social contributions received

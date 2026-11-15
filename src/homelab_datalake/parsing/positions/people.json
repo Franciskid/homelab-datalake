@@ -1,0 +1,725 @@
+{
+  "_doc": "Who the positions pipeline tracks. Candidate ids and names come from src/data/fr-polling-2027.json; this file only adds party, birth year (used to tell homonyms apart when matching chamber members) and historical figures. Orbit members go in `orbit` with orbit_of and orbit_weight (0.3–0.5: 0.5 = party head / campaign chief / co-leader, 0.4 = group president, party officer or spokesperson, 0.3 = narrower ally), a one-line `justification` and a `source` page (checked by orbit_check.py, which also fills birth_year); a person has one `orbit_of` only. `orbit_existing` lists people already tracked as candidates who also count as orbit of another candidate (not stored in the database: the site builder reads it). `external_ids` pins a match by hand when the automatic name match is wrong or ambiguous.",
+  "exclude": ["vote-blanc"],
+  "candidates": {
+    "jordan-bardella": {"party": "RN", "birth_year": 1995},
+    "marine-le-pen": {"party": "RN", "birth_year": 1968},
+    "edouard-philippe": {"party": "Horizons", "birth_year": 1970},
+    "jean-luc-melenchon": {"party": "LFI", "birth_year": 1951},
+    "raphael-glucksmann": {"party": "Place publique", "birth_year": 1979},
+    "gabriel-attal": {"party": "Renaissance", "birth_year": 1989},
+    "bruno-retailleau": {"party": "LR", "birth_year": 1960},
+    "francois-hollande": {"party": "PS", "birth_year": 1954, "tags": ["president"]},
+    "david-lisnard": {"party": "Nouvelle Énergie", "birth_year": 1969},
+    "olivier-faure": {"party": "PS", "birth_year": 1968},
+    "eric-zemmour": {"party": "Reconquête", "birth_year": 1958},
+    "marine-tondelier": {"party": "Les Écologistes", "birth_year": 1986},
+    "francois-ruffin": {"party": "Debout !", "birth_year": 1975},
+    "dominique-de-villepin": {"party": "La France humaniste", "birth_year": 1953},
+    "fabien-roussel": {"party": "PCF", "birth_year": 1969},
+    "nicolas-dupont-aignan": {"party": "DLF", "birth_year": 1961},
+    "nathalie-arthaud": {"party": "LO", "birth_year": 1970},
+    "philippe-poutou": {"party": "NPA", "birth_year": 1967},
+    "laurent-wauquiez": {"party": "LR", "birth_year": 1975},
+    "jean-lassalle": {"party": "Résistons !", "birth_year": 1955},
+    "yannick-jadot": {"party": "Les Écologistes", "birth_year": 1967},
+    "gerald-darmanin": {"party": "Renaissance", "birth_year": 1982},
+    "bernard-cazeneuve": {"party": "La Convention", "birth_year": 1963},
+    "sarah-knafo": {"party": "Reconquête", "birth_year": 1993},
+    "anne-hidalgo": {"party": "PS", "birth_year": 1959},
+    "valerie-pecresse": {"party": "LR", "birth_year": 1967},
+    "bruno-le-maire": {"party": "Renaissance", "birth_year": 1969},
+    "karim-bouamrane": {"party": "PS", "birth_year": 1973},
+    "sandrine-rousseau": {"party": "Les Écologistes", "birth_year": 1972},
+    "francois-bayrou": {"party": "MoDem", "birth_year": 1951},
+    "xavier-bertrand": {"party": "LR", "birth_year": 1965},
+    "natacha-polony": {"party": null, "birth_year": 1975},
+    "sebastien-lecornu": {"party": "Renaissance", "birth_year": 1986},
+    "segolene-royal": {"party": "PS", "birth_year": 1953},
+    "christine-lagarde": {"party": null, "birth_year": 1956},
+    "carole-delga": {"party": "PS", "birth_year": 1971},
+    "elisabeth-borne": {"party": "Renaissance", "birth_year": 1961},
+    "jean-castex": {"party": null, "birth_year": 1965},
+    "yael-braun-pivet": {"party": "Renaissance", "birth_year": 1970},
+    "michel-barnier": {"party": "LR", "birth_year": 1951},
+    "philippe-de-villiers": {"party": "MPF", "birth_year": 1949},
+    "jerome-guedj": {"party": "PS", "birth_year": 1972},
+    "emmanuel-maurel": {"party": "GRS", "birth_year": 1973},
+    "teddy-riner": {"party": null, "birth_year": 1989},
+    "francois-asselineau": {"party": "UPR", "birth_year": 1957},
+    "bonnal": {"party": null, "birth_year": null}
+  },
+  "historical": {
+    "charles-de-gaulle": {"name": "Charles de Gaulle", "party": "UNR", "birth_year": 1890, "tags": ["president"]},
+    "georges-pompidou": {"name": "Georges Pompidou", "party": "UDR", "birth_year": 1911, "tags": ["president"]},
+    "valery-giscard-d-estaing": {"name": "Valéry Giscard d'Estaing", "party": "UDF", "birth_year": 1926, "tags": ["president"]},
+    "francois-mitterrand": {"name": "François Mitterrand", "party": "PS", "birth_year": 1916, "tags": ["president"]},
+    "jacques-chirac": {"name": "Jacques Chirac", "party": "RPR", "birth_year": 1932, "tags": ["president"]},
+    "nicolas-sarkozy": {"name": "Nicolas Sarkozy", "party": "UMP", "birth_year": 1955, "tags": ["president"]},
+    "emmanuel-macron": {"name": "Emmanuel Macron", "party": "Renaissance", "birth_year": 1977, "tags": ["president"], "note": "In a few 2027 poll scenarios but barred from a third consecutive term: tracked as historical."}
+  },
+  "orbit": {
+    "louis-aliot": {
+      "name": "Louis Aliot",
+      "birth_year": 1969,
+      "party": "RN",
+      "orbit_of": "marine-le-pen",
+      "orbit_weight": 0.5,
+      "justification": "Vice-président du RN, maire de Perpignan, compagnon de longue date et lieutenant historique de Marine Le Pen.",
+      "wiki": "Louis_Aliot",
+      "source": "https://fr.wikipedia.org/wiki/Louis_Aliot"
+    },
+    "sebastien-chenu": {
+      "name": "Sébastien Chenu",
+      "birth_year": 1973,
+      "party": "RN",
+      "orbit_of": "marine-le-pen",
+      "orbit_weight": 0.4,
+      "justification": "Vice-président du RN et de l'Assemblée, porte-voix du parti sur les sujets de société.",
+      "wiki": "Sébastien_Chenu",
+      "source": "https://fr.wikipedia.org/wiki/Sébastien_Chenu"
+    },
+    "jean-philippe-tanguy": {
+      "name": "Jean-Philippe Tanguy",
+      "birth_year": 1986,
+      "party": "RN",
+      "orbit_of": "marine-le-pen",
+      "orbit_weight": 0.4,
+      "justification": "Député, porte-parole économique du RN : sa parole fixe la ligne budgétaire et fiscale de Marine Le Pen.",
+      "wiki": "Jean-Philippe_Tanguy",
+      "source": "https://fr.wikipedia.org/wiki/Jean-Philippe_Tanguy"
+    },
+    "laure-lavalette": {
+      "name": "Laure Lavalette",
+      "birth_year": 1976,
+      "party": "RN",
+      "orbit_of": "marine-le-pen",
+      "orbit_weight": 0.3,
+      "justification": "Députée, fidèle de Marine Le Pen, porte-parole du groupe RN.",
+      "wiki": "Laure_Lavalette",
+      "source": "https://fr.wikipedia.org/wiki/Laure_Lavalette"
+    },
+    "thierry-mariani": {
+      "name": "Thierry Mariani",
+      "birth_year": 1958,
+      "party": "RN",
+      "orbit_of": "marine-le-pen",
+      "orbit_weight": 0.3,
+      "justification": "Eurodéputé RN, cadre du parti sur l'international et l'immigration.",
+      "wiki": "Thierry_Mariani",
+      "source": "https://fr.wikipedia.org/wiki/Thierry_Mariani"
+    },
+    "eric-ciotti": {
+      "name": "Éric Ciotti",
+      "birth_year": 1965,
+      "party": "UDR",
+      "orbit_of": "jordan-bardella",
+      "orbit_weight": 0.3,
+      "justification": "Président de l'UDR, allié du RN depuis l'accord de juin 2024 conclu avec Jordan Bardella.",
+      "wiki": "Éric_Ciotti",
+      "source": "https://fr.wikipedia.org/wiki/Éric_Ciotti"
+    },
+    "edwige-diaz": {
+      "name": "Edwige Diaz",
+      "birth_year": 1987,
+      "party": "RN",
+      "orbit_of": "jordan-bardella",
+      "orbit_weight": 0.4,
+      "justification": "Vice-présidente du RN, députée, proche de Jordan Bardella (campagne européenne 2024).",
+      "wiki": "Edwige_Diaz",
+      "source": "https://fr.wikipedia.org/wiki/Edwige_Diaz"
+    },
+    "laurent-jacobelli": {
+      "name": "Laurent Jacobelli",
+      "birth_year": 1969,
+      "party": "RN",
+      "orbit_of": "jordan-bardella",
+      "orbit_weight": 0.4,
+      "justification": "Député, porte-parole du RN, relais quotidien de la ligne de Jordan Bardella.",
+      "wiki": "Laurent_Jacobelli",
+      "source": "https://fr.wikipedia.org/wiki/Laurent_Jacobelli"
+    },
+    "julien-odoul": {
+      "name": "Julien Odoul",
+      "birth_year": 1985,
+      "party": "RN",
+      "orbit_of": "jordan-bardella",
+      "orbit_weight": 0.3,
+      "justification": "Député, porte-parole du RN.",
+      "wiki": "Julien_Odoul",
+      "source": "https://fr.wikipedia.org/wiki/Julien_Odoul"
+    },
+    "thomas-menage": {
+      "name": "Thomas Ménagé",
+      "birth_year": 1992,
+      "party": "RN",
+      "orbit_of": "jordan-bardella",
+      "orbit_weight": 0.3,
+      "justification": "Député, porte-parole et responsable des questions sociales du RN.",
+      "wiki": "Thomas_Ménagé",
+      "source": "https://fr.wikipedia.org/wiki/Thomas_Ménagé"
+    },
+    "christophe-bechu": {
+      "name": "Christophe Béchu",
+      "birth_year": 1974,
+      "party": "Horizons",
+      "orbit_of": "edouard-philippe",
+      "orbit_weight": 0.5,
+      "justification": "Secrétaire général d'Horizons, devenu président du parti le 1er octobre 2026 quand Édouard Philippe a quitté la présidence pour sa candidature.",
+      "wiki": "Christophe_Béchu",
+      "source": "https://fr.wikipedia.org/wiki/Christophe_Béchu"
+    },
+    "gilles-boyer": {
+      "name": "Gilles Boyer",
+      "birth_year": 1971,
+      "party": "Horizons",
+      "orbit_of": "edouard-philippe",
+      "orbit_weight": 0.5,
+      "justification": "Délégué général d'Horizons, conseiller et ami proche d'Édouard Philippe depuis Matignon.",
+      "wiki": "Gilles_Boyer",
+      "source": "https://fr.wikipedia.org/wiki/Gilles_Boyer"
+    },
+    "naima-moutchou": {
+      "name": "Naïma Moutchou",
+      "birth_year": 1980,
+      "party": "Horizons",
+      "orbit_of": "edouard-philippe",
+      "orbit_weight": 0.4,
+      "justification": "Porte-parole d'Horizons, députée.",
+      "wiki": "Naïma_Moutchou",
+      "source": "https://fr.wikipedia.org/wiki/Naïma_Moutchou"
+    },
+    "laurent-marcangeli": {
+      "name": "Laurent Marcangeli",
+      "birth_year": 1980,
+      "party": "Horizons",
+      "orbit_of": "edouard-philippe",
+      "orbit_weight": 0.4,
+      "justification": "Président du groupe Horizons à l'Assemblée nationale depuis mars 2026.",
+      "wiki": "Laurent_Marcangeli",
+      "source": "https://fr.wikipedia.org/wiki/Laurent_Marcangeli"
+    },
+    "pierre-yves-bournazel": {
+      "name": "Pierre-Yves Bournazel",
+      "birth_year": 1977,
+      "party": "Horizons",
+      "orbit_of": "edouard-philippe",
+      "orbit_weight": 0.3,
+      "justification": "Secrétaire général adjoint d'Horizons, député de Paris.",
+      "wiki": "Pierre-Yves_Bournazel",
+      "source": "https://fr.wikipedia.org/wiki/Pierre-Yves_Bournazel"
+    },
+    "manuel-bompard": {
+      "name": "Manuel Bompard",
+      "birth_year": 1986,
+      "party": "LFI",
+      "orbit_of": "jean-luc-melenchon",
+      "orbit_weight": 0.5,
+      "justification": "Coordinateur de La France insoumise, directeur de campagne de Jean-Luc Mélenchon.",
+      "wiki": "Manuel_Bompard",
+      "source": "https://fr.wikipedia.org/wiki/Manuel_Bompard"
+    },
+    "mathilde-panot": {
+      "name": "Mathilde Panot",
+      "birth_year": 1989,
+      "party": "LFI",
+      "orbit_of": "jean-luc-melenchon",
+      "orbit_weight": 0.5,
+      "justification": "Présidente du groupe LFI à l'Assemblée nationale.",
+      "wiki": "Mathilde_Panot",
+      "source": "https://fr.wikipedia.org/wiki/Mathilde_Panot"
+    },
+    "clemence-guette": {
+      "name": "Clémence Guetté",
+      "birth_year": 1991,
+      "party": "LFI",
+      "orbit_of": "jean-luc-melenchon",
+      "orbit_weight": 0.4,
+      "justification": "Députée, coordinatrice du programme L'Avenir en commun.",
+      "wiki": "Clémence_Guetté",
+      "source": "https://fr.wikipedia.org/wiki/Clémence_Guetté"
+    },
+    "eric-coquerel": {
+      "name": "Éric Coquerel",
+      "birth_year": 1958,
+      "party": "LFI",
+      "orbit_of": "jean-luc-melenchon",
+      "orbit_weight": 0.4,
+      "justification": "Député, cadre historique de LFI, président de la commission des finances.",
+      "wiki": "Éric_Coquerel",
+      "source": "https://fr.wikipedia.org/wiki/Éric_Coquerel"
+    },
+    "manon-aubry": {
+      "name": "Manon Aubry",
+      "birth_year": 1989,
+      "party": "LFI",
+      "orbit_of": "jean-luc-melenchon",
+      "orbit_weight": 0.4,
+      "justification": "Eurodéputée, coprésidente du groupe de la Gauche au Parlement européen.",
+      "wiki": "Manon_Aubry",
+      "source": "https://fr.wikipedia.org/wiki/Manon_Aubry"
+    },
+    "sophia-chikirou": {
+      "name": "Sophia Chikirou",
+      "birth_year": 1979,
+      "party": "LFI",
+      "orbit_of": "jean-luc-melenchon",
+      "orbit_weight": 0.3,
+      "justification": "Députée de Paris, conseillère en communication de Jean-Luc Mélenchon.",
+      "wiki": "Sophia_Chikirou",
+      "source": "https://fr.wikipedia.org/wiki/Sophia_Chikirou"
+    },
+    "aurore-lalucq": {
+      "name": "Aurore Lalucq",
+      "birth_year": 1979,
+      "party": "Place publique",
+      "orbit_of": "raphael-glucksmann",
+      "orbit_weight": 0.5,
+      "justification": "Coprésidente de Place publique avec Raphaël Glucksmann, eurodéputée (présidente de la commission ECON).",
+      "wiki": "Aurore_Lalucq",
+      "source": "https://fr.wikipedia.org/wiki/Aurore_Lalucq"
+    },
+    "aurelien-rousseau": {
+      "name": "Aurélien Rousseau",
+      "birth_year": 1976,
+      "party": "Place publique",
+      "orbit_of": "raphael-glucksmann",
+      "orbit_weight": 0.4,
+      "justification": "Député, membre de la commission politique de Place publique, ancien ministre de la Santé.",
+      "wiki": "Aurélien_Rousseau",
+      "source": "https://fr.wikipedia.org/wiki/Aurélien_Rousseau"
+    },
+    "chloe-ridel": {
+      "name": "Chloé Ridel",
+      "birth_year": 1991,
+      "party": "PS",
+      "orbit_of": "raphael-glucksmann",
+      "orbit_weight": 0.3,
+      "justification": "Eurodéputée élue sur la liste Glucksmann en 2024, porte-parole du PS.",
+      "wiki": "Chloé_Ridel",
+      "source": "https://fr.wikipedia.org/wiki/Chloé_Ridel"
+    },
+    "christophe-clergeau": {
+      "name": "Christophe Clergeau",
+      "party": "PS",
+      "orbit_of": "raphael-glucksmann",
+      "orbit_weight": 0.3,
+      "justification": "Eurodéputé élu sur la liste Glucksmann en 2024 (PS-Place publique).",
+      "wiki": "Christophe_Clergeau",
+      "source": "https://fr.wikipedia.org/wiki/Christophe_Clergeau"
+    },
+    "prisca-thevenot": {
+      "name": "Prisca Thevenot",
+      "party": "Renaissance",
+      "orbit_of": "gabriel-attal",
+      "orbit_weight": 0.4,
+      "justification": "Députée, secrétaire générale déléguée de Renaissance, ancienne porte-parole du gouvernement Attal.",
+      "wiki": "Prisca_Thevenot",
+      "source": "https://fr.wikipedia.org/wiki/Prisca_Thevenot"
+    },
+    "pieyre-alexandre-anglade": {
+      "name": "Pieyre-Alexandre Anglade",
+      "birth_year": 1986,
+      "party": "Renaissance",
+      "orbit_of": "gabriel-attal",
+      "orbit_weight": 0.4,
+      "justification": "Député, secrétaire général délégué de Renaissance.",
+      "wiki": "Pieyre-Alexandre_Anglade",
+      "source": "https://fr.wikipedia.org/wiki/Pieyre-Alexandre_Anglade"
+    },
+    "thomas-cazenave": {
+      "name": "Thomas Cazenave",
+      "birth_year": 1978,
+      "party": "Renaissance",
+      "orbit_of": "gabriel-attal",
+      "orbit_weight": 0.3,
+      "justification": "Député, secrétaire général délégué de Renaissance.",
+      "wiki": "Thomas_Cazenave",
+      "source": "https://fr.wikipedia.org/wiki/Thomas_Cazenave"
+    },
+    "marie-lebec": {
+      "name": "Marie Lebec",
+      "birth_year": 1990,
+      "party": "Renaissance",
+      "orbit_of": "gabriel-attal",
+      "orbit_weight": 0.3,
+      "justification": "Députée, secrétaire générale déléguée de Renaissance, ancienne ministre des Relations avec le Parlement.",
+      "wiki": "Marie_Lebec",
+      "source": "https://fr.wikipedia.org/wiki/Marie_Lebec"
+    },
+    "xavier-iacovelli": {
+      "name": "Xavier Iacovelli",
+      "birth_year": 1981,
+      "party": "Renaissance",
+      "orbit_of": "gabriel-attal",
+      "orbit_weight": 0.4,
+      "justification": "Président du groupe RDPI au Sénat, secrétaire général délégué de Renaissance.",
+      "wiki": "Xavier_Iacovelli",
+      "source": "https://fr.wikipedia.org/wiki/Xavier_Iacovelli"
+    },
+    "valerie-hayer": {
+      "name": "Valérie Hayer",
+      "birth_year": 1986,
+      "party": "Renaissance",
+      "orbit_of": "gabriel-attal",
+      "orbit_weight": 0.4,
+      "justification": "Présidente du groupe Renew au Parlement européen, secrétaire générale déléguée de Renaissance.",
+      "wiki": "Valérie_Hayer",
+      "source": "https://fr.wikipedia.org/wiki/Valérie_Hayer"
+    },
+    "mathieu-darnaud": {
+      "name": "Mathieu Darnaud",
+      "birth_year": 1975,
+      "party": "LR",
+      "orbit_of": "bruno-retailleau",
+      "orbit_weight": 0.4,
+      "justification": "Président du groupe LR au Sénat, la famille sénatoriale de Bruno Retailleau.",
+      "wiki": "Mathieu_Darnaud",
+      "source": "https://fr.wikipedia.org/wiki/Mathieu_Darnaud"
+    },
+    "othman-nasrou": {
+      "name": "Othman Nasrou",
+      "birth_year": 1987,
+      "party": "LR",
+      "orbit_of": "bruno-retailleau",
+      "orbit_weight": 0.5,
+      "justification": "Secrétaire général des Républicains.",
+      "wiki": "Othman_Nasrou",
+      "source": "https://fr.wikipedia.org/wiki/Othman_Nasrou"
+    },
+    "francois-xavier-bellamy": {
+      "name": "François-Xavier Bellamy",
+      "birth_year": 1985,
+      "party": "LR",
+      "orbit_of": "bruno-retailleau",
+      "orbit_weight": 0.4,
+      "justification": "Vice-président délégué des Républicains, eurodéputé.",
+      "wiki": "François-Xavier_Bellamy",
+      "source": "https://fr.wikipedia.org/wiki/François-Xavier_Bellamy"
+    },
+    "agnes-evren": {
+      "name": "Agnès Evren",
+      "birth_year": 1970,
+      "party": "LR",
+      "orbit_of": "bruno-retailleau",
+      "orbit_weight": 0.3,
+      "justification": "Porte-parole des Républicains, sénatrice de Paris.",
+      "wiki": "Agnès_Evren",
+      "source": "https://fr.wikipedia.org/wiki/Agnès_Evren"
+    },
+    "gerard-larcher": {
+      "name": "Gérard Larcher",
+      "birth_year": 1949,
+      "party": "LR",
+      "orbit_of": "bruno-retailleau",
+      "orbit_weight": 0.3,
+      "justification": "Président du Sénat, figure tutélaire de la droite sénatoriale.",
+      "wiki": "Gérard_Larcher",
+      "source": "https://fr.wikipedia.org/wiki/Gérard_Larcher"
+    },
+    "stephane-le-foll": {
+      "name": "Stéphane Le Foll",
+      "birth_year": 1960,
+      "party": "PS",
+      "orbit_of": "francois-hollande",
+      "orbit_weight": 0.5,
+      "justification": "Maire du Mans, ancien ministre et porte-parole du gouvernement de François Hollande, ami proche.",
+      "wiki": "Stéphane_Le_Foll",
+      "source": "https://fr.wikipedia.org/wiki/Stéphane_Le_Foll"
+    },
+    "valerie-rabault": {
+      "name": "Valérie Rabault",
+      "birth_year": 1973,
+      "party": "PS",
+      "orbit_of": "francois-hollande",
+      "orbit_weight": 0.3,
+      "justification": "Députée, ancienne rapporteure générale du budget sous le quinquennat Hollande.",
+      "wiki": "Valérie_Rabault",
+      "source": "https://fr.wikipedia.org/wiki/Valérie_Rabault"
+    },
+    "michel-sapin": {
+      "name": "Michel Sapin",
+      "birth_year": 1952,
+      "party": "PS",
+      "orbit_of": "francois-hollande",
+      "orbit_weight": 0.3,
+      "justification": "Ancien ministre des Finances de François Hollande, proche de longue date.",
+      "wiki": "Michel_Sapin",
+      "source": "https://fr.wikipedia.org/wiki/Michel_Sapin"
+    },
+    "francois-rebsamen": {
+      "name": "François Rebsamen",
+      "birth_year": 1951,
+      "party": "PS",
+      "orbit_of": "francois-hollande",
+      "orbit_weight": 0.3,
+      "justification": "Maire de Dijon, ancien ministre du Travail de François Hollande, proche de longue date.",
+      "wiki": "François_Rebsamen",
+      "source": "https://fr.wikipedia.org/wiki/François_Rebsamen"
+    },
+    "alexandra-martin": {
+      "name": "Alexandra Martin",
+      "birth_year": 1968,
+      "party": "Nouvelle Énergie",
+      "orbit_of": "david-lisnard",
+      "orbit_weight": 0.5,
+      "justification": "Députée, secrétaire générale de Nouvelle Énergie.",
+      "wiki": "Alexandra_Martin",
+      "source": "https://fr.wikipedia.org/wiki/Alexandra_Martin"
+    },
+    "cyril-pellevat": {
+      "name": "Cyril Pellevat",
+      "birth_year": 1981,
+      "party": "Nouvelle Énergie",
+      "orbit_of": "david-lisnard",
+      "orbit_weight": 0.4,
+      "justification": "Sénateur de Haute-Savoie, anime le cercle des parlementaires autour de David Lisnard.",
+      "wiki": "Cyril_Pellevat",
+      "source": "https://fr.wikipedia.org/wiki/Cyril_Pellevat"
+    },
+    "etienne-blanc": {
+      "name": "Étienne Blanc",
+      "birth_year": 1954,
+      "party": "Nouvelle Énergie",
+      "orbit_of": "david-lisnard",
+      "orbit_weight": 0.4,
+      "justification": "Sénateur du Rhône (mandat jusqu'en septembre 2026), a rejoint Nouvelle Énergie.",
+      "wiki": "Étienne_Blanc",
+      "source": "https://fr.wikipedia.org/wiki/Étienne_Blanc"
+    },
+    "boris-vallaud": {
+      "name": "Boris Vallaud",
+      "birth_year": 1975,
+      "party": "PS",
+      "orbit_of": "olivier-faure",
+      "orbit_weight": 0.5,
+      "justification": "Président du groupe socialiste à l'Assemblée nationale.",
+      "wiki": "Boris_Vallaud",
+      "source": "https://fr.wikipedia.org/wiki/Boris_Vallaud"
+    },
+    "patrick-kanner": {
+      "name": "Patrick Kanner",
+      "birth_year": 1957,
+      "party": "PS",
+      "orbit_of": "olivier-faure",
+      "orbit_weight": 0.4,
+      "justification": "Président du groupe socialiste au Sénat.",
+      "wiki": "Patrick_Kanner",
+      "source": "https://fr.wikipedia.org/wiki/Patrick_Kanner"
+    },
+    "pierre-jouvet": {
+      "name": "Pierre Jouvet",
+      "party": "PS",
+      "orbit_of": "olivier-faure",
+      "orbit_weight": 0.4,
+      "justification": "Secrétaire général du PS, eurodéputé.",
+      "wiki": "Pierre_Jouvet",
+      "source": "https://fr.wikipedia.org/wiki/Pierre_Jouvet"
+    },
+    "arthur-delaporte": {
+      "name": "Arthur Delaporte",
+      "birth_year": 1991,
+      "party": "PS",
+      "orbit_of": "olivier-faure",
+      "orbit_weight": 0.3,
+      "justification": "Député, porte-parole du PS.",
+      "wiki": "Arthur_Delaporte",
+      "source": "https://fr.wikipedia.org/wiki/Arthur_Delaporte"
+    },
+    "philippe-brun": {
+      "name": "Philippe Brun",
+      "birth_year": 1991,
+      "party": "PS",
+      "orbit_of": "olivier-faure",
+      "orbit_weight": 0.3,
+      "justification": "Député, voix économique du PS.",
+      "wiki": "Philippe_Brun",
+      "source": "https://fr.wikipedia.org/wiki/Philippe_Brun"
+    },
+    "cyrielle-chatelain": {
+      "name": "Cyrielle Chatelain",
+      "birth_year": 1987,
+      "party": "Les Écologistes",
+      "orbit_of": "marine-tondelier",
+      "orbit_weight": 0.5,
+      "justification": "Présidente du groupe Écologiste et social à l'Assemblée nationale.",
+      "wiki": "Cyrielle_Chatelain",
+      "source": "https://fr.wikipedia.org/wiki/Cyrielle_Chatelain"
+    },
+    "guillaume-gontard": {
+      "name": "Guillaume Gontard",
+      "birth_year": 1971,
+      "party": "Les Écologistes",
+      "orbit_of": "marine-tondelier",
+      "orbit_weight": 0.4,
+      "justification": "Président du groupe écologiste au Sénat.",
+      "wiki": "Guillaume_Gontard",
+      "source": "https://fr.wikipedia.org/wiki/Guillaume_Gontard"
+    },
+    "melanie-vogel": {
+      "name": "Mélanie Vogel",
+      "birth_year": 1985,
+      "party": "Les Écologistes",
+      "orbit_of": "marine-tondelier",
+      "orbit_weight": 0.4,
+      "justification": "Sénatrice, coprésidente du Parti vert européen.",
+      "wiki": "Mélanie_Vogel",
+      "source": "https://fr.wikipedia.org/wiki/Mélanie_Vogel"
+    },
+    "marie-toussaint": {
+      "name": "Marie Toussaint",
+      "birth_year": 1987,
+      "party": "Les Écologistes",
+      "orbit_of": "marine-tondelier",
+      "orbit_weight": 0.3,
+      "justification": "Eurodéputée, tête de liste écologiste aux européennes 2024.",
+      "wiki": "Marie_Toussaint",
+      "source": "https://fr.wikipedia.org/wiki/Marie_Toussaint"
+    },
+    "david-cormand": {
+      "name": "David Cormand",
+      "birth_year": 1974,
+      "party": "Les Écologistes",
+      "orbit_of": "marine-tondelier",
+      "orbit_weight": 0.3,
+      "justification": "Eurodéputé, ancien secrétaire national d'EELV.",
+      "wiki": "David_Cormand",
+      "source": "https://fr.wikipedia.org/wiki/David_Cormand"
+    },
+    "clementine-autain": {
+      "name": "Clémentine Autain",
+      "birth_year": 1973,
+      "party": "L'Après",
+      "orbit_of": "francois-ruffin",
+      "orbit_weight": 0.4,
+      "justification": "Députée, ex-LFI, a rejoint Ruffin dans la dissidence de 2024 et l'accompagne dans ses initiatives unitaires.",
+      "wiki": "Clémentine_Autain",
+      "source": "https://fr.wikipedia.org/wiki/Clémentine_Autain"
+    },
+    "alexis-corbiere": {
+      "name": "Alexis Corbière",
+      "birth_year": 1968,
+      "party": "L'Après",
+      "orbit_of": "francois-ruffin",
+      "orbit_weight": 0.3,
+      "justification": "Député, ex-LFI, cofondateur de L'Après, associé à François Ruffin depuis 2024.",
+      "wiki": "Alexis_Corbière",
+      "source": "https://fr.wikipedia.org/wiki/Alexis_Corbière"
+    },
+    "hendrik-davi": {
+      "name": "Hendrik Davi",
+      "birth_year": 1977,
+      "party": "Les Écologistes",
+      "orbit_of": "francois-ruffin",
+      "orbit_weight": 0.3,
+      "justification": "Député, ex-LFI, associé à François Ruffin après les législatives de 2024.",
+      "wiki": "Hendrik_Davi",
+      "source": "https://fr.wikipedia.org/wiki/Hendrik_Davi"
+    },
+    "danielle-simonnet": {
+      "name": "Danielle Simonnet",
+      "birth_year": 1971,
+      "party": "L'Après",
+      "orbit_of": "francois-ruffin",
+      "orbit_weight": 0.3,
+      "justification": "Ex-députée, ex-LFI, cofondatrice de L'Après, associée à François Ruffin.",
+      "wiki": "Danielle_Simonnet",
+      "source": "https://fr.wikipedia.org/wiki/Danielle_Simonnet"
+    },
+    "benoit-jimenez": {
+      "name": "Benoît Jimenez",
+      "party": "La France humaniste",
+      "orbit_of": "dominique-de-villepin",
+      "orbit_weight": 0.5,
+      "justification": "Président de La France humaniste, maire de Garges-lès-Gonesse ; Villepin en est président d'honneur.",
+      "wiki": "Dominique_de_Villepin",
+      "source": "https://fr.wikipedia.org/wiki/Dominique_de_Villepin"
+    },
+    "stephane-peu": {
+      "name": "Stéphane Peu",
+      "birth_year": 1962,
+      "party": "PCF",
+      "orbit_of": "fabien-roussel",
+      "orbit_weight": 0.5,
+      "justification": "Président du groupe GDR à l'Assemblée nationale.",
+      "wiki": "Stéphane_Peu",
+      "source": "https://fr.wikipedia.org/wiki/Stéphane_Peu"
+    },
+    "cecile-cukierman": {
+      "name": "Cécile Cukierman",
+      "birth_year": 1976,
+      "party": "PCF",
+      "orbit_of": "fabien-roussel",
+      "orbit_weight": 0.4,
+      "justification": "Présidente du groupe communiste (CRCE-K) au Sénat, porte-parole du PCF.",
+      "wiki": "Cécile_Cukierman",
+      "source": "https://fr.wikipedia.org/wiki/Cécile_Cukierman"
+    },
+    "ian-brossat": {
+      "name": "Ian Brossat",
+      "party": "PCF",
+      "orbit_of": "fabien-roussel",
+      "orbit_weight": 0.4,
+      "justification": "Sénateur de Paris, porte-parole du PCF.",
+      "wiki": "Ian_Brossat",
+      "source": "https://fr.wikipedia.org/wiki/Ian_Brossat"
+    },
+    "leon-deffontaines": {
+      "name": "Léon Deffontaines",
+      "birth_year": 1996,
+      "party": "PCF",
+      "orbit_of": "fabien-roussel",
+      "orbit_weight": 0.4,
+      "justification": "Eurodéputé, tête de liste communiste en 2024, porte-parole du PCF.",
+      "wiki": "Léon_Deffontaines",
+      "source": "https://fr.wikipedia.org/wiki/Léon_Deffontaines"
+    },
+    "pierre-dharreville": {
+      "name": "Pierre Dharréville",
+      "birth_year": 1975,
+      "party": "PCF",
+      "orbit_of": "fabien-roussel",
+      "orbit_weight": 0.3,
+      "justification": "Député communiste, voix du PCF sur la protection sociale.",
+      "wiki": "Pierre_Dharréville",
+      "source": "https://fr.wikipedia.org/wiki/Pierre_Dharréville"
+    },
+    "elsa-faucillon": {
+      "name": "Elsa Faucillon",
+      "birth_year": 1981,
+      "party": "PCF",
+      "orbit_of": "fabien-roussel",
+      "orbit_weight": 0.3,
+      "justification": "Députée communiste.",
+      "wiki": "Elsa_Faucillon",
+      "source": "https://fr.wikipedia.org/wiki/Elsa_Faucillon"
+    }
+  },
+  "orbit_existing": [
+    {
+      "person": "sarah-knafo",
+      "orbit_of": "eric-zemmour",
+      "orbit_weight": 0.5,
+      "justification": "Eurodéputée, bras droit d'Éric Zemmour ; seule élue Reconquête restée fidèle (Bay, Peltier, Ravier, Rivière et Maréchal ont quitté le parti)."
+    },
+    {
+      "person": "laurent-wauquiez",
+      "orbit_of": "bruno-retailleau",
+      "orbit_weight": 0.4,
+      "justification": "Président du groupe DR à l'Assemblée nationale (déjà suivi comme candidat)."
+    },
+    {
+      "person": "yannick-jadot",
+      "orbit_of": "marine-tondelier",
+      "orbit_weight": 0.3,
+      "justification": "Ancien candidat écologiste, eurodéputé 2009-2024 (déjà suivi comme candidat)."
+    },
+    {
+      "person": "sandrine-rousseau",
+      "orbit_of": "marine-tondelier",
+      "orbit_weight": 0.3,
+      "justification": "Députée écologiste (déjà suivie comme candidate)."
+    }
+  ],
+  "external_ids": {}
+}

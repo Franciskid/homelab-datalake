@@ -762,3 +762,15 @@ defs = Definitions.merge(
     defs,
     Definitions(assets=polls_ingestion.ASSETS, jobs=polls_ingestion.JOBS, schedules=polls_ingestion.SCHEDULES),
 )
+
+# --------------------------------------------------------------------------------
+# Positions collection, added 2026-11-15: the candidates' statements, votes and programmes, collected on a schedule for
+# politico.fraserv.fr's positions pipeline and exported as deltas for the Mac (assets/positions_collection.py).
+# --------------------------------------------------------------------------------
+
+from homelab_datalake.assets import positions_collection  # noqa: E402
+
+defs = Definitions.merge(
+    defs,
+    Definitions(assets=positions_collection.ASSETS, jobs=positions_collection.JOBS, schedules=positions_collection.SCHEDULES),
+)

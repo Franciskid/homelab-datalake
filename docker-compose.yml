@@ -98,6 +98,10 @@ services:
       # politico.fraserv.fr's export (assets/official_statistics.py): the only directory this
       # stack writes outside its own volumes. The politico renderer mounts it read-only.
       - ${OFFICIAL_STATS_EXPORT_HOST_DIR:-/home/francois/dev/politico-data}:/exports/politico
+      # The positions collection (assets/positions_collection.py): its database and download cache live in a named volume;
+      # the delta the Mac pulls (rsync over ssh) goes to a host directory, the only other place it writes.
+      - positions-state:/state/positions
+      - ${POSITIONS_EXPORT_HOST_DIR:-/home/francois/dev/politico-positions-export}:/exports/positions
     environment:
       # Prometheus's published port, reached from this container over the LAN address.
       PROMETHEUS_URL: ${PROMETHEUS_URL:-http://192.168.1.26:9090}
@@ -293,6 +297,10 @@ services:
       # politico.fraserv.fr's export (assets/official_statistics.py): the only directory this
       # stack writes outside its own volumes. The politico renderer mounts it read-only.
       - ${OFFICIAL_STATS_EXPORT_HOST_DIR:-/home/francois/dev/politico-data}:/exports/politico
+      # The positions collection (assets/positions_collection.py): its database and download cache live in a named volume;
+      # the delta the Mac pulls (rsync over ssh) goes to a host directory, the only other place it writes.
+      - positions-state:/state/positions
+      - ${POSITIONS_EXPORT_HOST_DIR:-/home/francois/dev/politico-positions-export}:/exports/positions
     environment:
       # Prometheus's published port, reached from this container over the LAN address.
       PROMETHEUS_URL: ${PROMETHEUS_URL:-http://192.168.1.26:9090}
@@ -306,6 +314,8 @@ volumes:
   geoip:
   exports:
   audit:
+  # Database, raw dumps and extracted texts of the positions collection (assets/positions_collection.py): several GB, rebuildable.
+  positions-state:
   # The status page's own data volume, created by its compose project
   # (Sites perso/status-page). Mounted read-only; this project never owns it.
   status-page-data:

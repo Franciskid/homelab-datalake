@@ -1,0 +1,164 @@
+{
+ "_doc": "Programmes and platforms: one entry per document we try to fetch, with provenance. 'provenance' is 'officiel' (candidate/party site), 'copie-tierce' (a third-party mirror, used only when the official URL is gone) or 'vie-publique' (collected by speeches.py, not listed here). 'attribution' is 'personnelle' (the candidate's own programme) or 'parti' (party platform). Add entries only for URLs actually seen publicly; a failed fetch is recorded, not hidden. Run: collect.py programmes --people ids.",
+ "documents": [
+  {
+   "key": "lepen-2017-144-engagements",
+   "person": "marine-le-pen",
+   "year": 2017,
+   "title": "Projet présidentiel de Marine Le Pen — 144 engagements présidentiels",
+   "url": "https://www.marine2017.fr/wp-content/uploads/2017/02/projet-presidentiel-marine-le-pen.pdf",
+   "format": "pdf",
+   "provenance": "officiel",
+   "attribution": "personnelle",
+   "fallback": "https://www.astrid-online.it/static/upload/proj/projet-presidentiel-marine-le-pen.pdf"
+  },
+  {
+   "key": "macron-2017-programme",
+   "person": "emmanuel-macron",
+   "year": 2017,
+   "title": "Programme d'Emmanuel Macron (En Marche !)",
+   "url": "https://storage.googleapis.com/en-marche-fr/COMMUNICATION/Programme-Emmanuel-Macron.pdf",
+   "format": "pdf",
+   "provenance": "officiel",
+   "attribution": "personnelle",
+   "start_marker": "« Retrouver"
+  },
+  {
+   "key": "lisnard-2027-nouvelle-energie",
+   "person": "david-lisnard",
+   "year": 2027,
+   "title": "Présidentielle 2027 : David Lisnard ouvre le chemin du sursaut français (Nouvelle Énergie)",
+   "url": "https://unenouvelleenergie.fr/presidentielle-2027-david-lisnard-ouvre-le-chemin-du-sursaut-francais/",
+   "format": "html",
+   "provenance": "officiel",
+   "attribution": "personnelle"
+  },
+  {
+   "key": "melenchon-2027-avenir-en-commun",
+   "person": "jean-luc-melenchon",
+   "year": 2027,
+   "title": "L'Avenir en commun — Le programme de la Nouvelle France (melenchon2027.fr, livre en ligne)",
+   "url": "https://melenchon2027.fr/programme/livre",
+   "index_url": "https://melenchon2027.fr/programme/livre",
+   "format": "html-book",
+   "provenance": "officiel",
+   "attribution": "personnelle"
+  }
+ ],
+ "coverage": [
+  {
+   "person": "marine-le-pen",
+   "period": "2012",
+   "status": "partial",
+   "note": "Programme 2012 collected through vie-publique.fr (see speeches)."
+  },
+  {
+   "person": "marine-le-pen",
+   "period": "2022",
+   "status": "not-found",
+   "note": "No full official 2022 programme PDF located (campaign site gone; only the '22 mesures pour 2022' summary circulates through third parties)."
+  },
+  {
+   "person": "marine-le-pen",
+   "period": "2027",
+   "status": "not-published",
+   "note": "As of 2026-11-15 press coverage describes the RN project as still being drafted; no official publication located."
+  },
+  {
+   "person": "jordan-bardella",
+   "period": "2027",
+   "status": "not-published",
+   "note": "No separate programme; RN project (see Marine Le Pen)."
+  },
+  {
+   "person": "edouard-philippe",
+   "period": "2027",
+   "status": "partial",
+   "note": "Press reports only first orientations published on his site; no full programme located."
+  },
+  {
+   "person": "marine-tondelier",
+   "period": "2027",
+   "status": "partial",
+   "note": "Les Écologistes' party project 'Pour une prospérité écologique' (July 2026) reported; document not located."
+  },
+  {
+   "person": "david-lisnard",
+   "period": "2027",
+   "status": "partial",
+   "note": "Candidacy page on unenouvelleenergie.fr; no full programme located."
+  },
+  {
+   "person": "gabriel-attal",
+   "period": "2027",
+   "status": "not-found",
+   "note": "Only third-party summaries (votons-2027.fr) found; no official document located."
+  },
+  {
+   "person": "bruno-retailleau",
+   "period": "2027",
+   "status": "not-found",
+   "note": "Only third-party summaries found; no official document located."
+  },
+  {
+   "person": "dominique-de-villepin",
+   "period": "2027",
+   "status": "not-found",
+   "note": "Only third-party summaries found; no official document located."
+  },
+  {
+   "person": "raphael-glucksmann",
+   "period": "2027",
+   "status": "not-found",
+   "note": "Not searched exhaustively; no official programme located."
+  },
+  {
+   "person": "francois-hollande",
+   "period": "2012",
+   "status": "not-found",
+   "note": "'Le changement c'est maintenant' (60 engagements) URL not located; speeches 2012 are in vie-publique."
+  },
+  {
+   "person": "olivier-faure",
+   "period": "2027",
+   "status": "not-found",
+   "note": "Not searched exhaustively."
+  },
+  {
+   "person": "eric-zemmour",
+   "period": "2022",
+   "status": "not-found",
+   "note": "Not searched exhaustively."
+  },
+  {
+   "person": "francois-ruffin",
+   "period": "2027",
+   "status": "not-found",
+   "note": "Not searched exhaustively."
+  },
+  {
+   "person": "fabien-roussel",
+   "period": "2022",
+   "status": "not-found",
+   "note": "Not searched exhaustively."
+  },
+  {
+   "person": "jean-luc-melenchon",
+   "period": "2022",
+   "status": "unavailable",
+   "note": "The 2022 PDFs (melenchon2022.fr) now redirect to the melenchon2027.fr home page; no 2022 text recovered (Wayback Machine not used)."
+  },
+  {
+   "person": "emmanuel-macron",
+   "period": "2022",
+   "status": "unavailable",
+   "note": "The only copy found (centre-inffo.fr, third-party) times out; avecvous.fr not verified."
+  },
+  {
+   "person": "jean-luc-melenchon",
+   "period": "2027",
+   "status": "partial",
+   "note": "L'Avenir en commun (online book, melenchon2027.fr/programme/livre): chapter pages collected. The site also lists 2022 booklets, the NUPES 2022 and NFP 2024 programmes: not collected."
+  }
+ ]
+}
