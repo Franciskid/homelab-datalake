@@ -3,7 +3,7 @@
 What is read, and from where (every file is public, none needs a key):
 
 * **Insee workbooks** on immigrants and descendants of immigrants (stock since 1911, origin, age, employment,
-  unemployment, jobs, diplomas, living standards, housing), on the Maastricht debt, deficit and interest, and on
+  unemployment, jobs, diplomas, living standards, housing), on the Maastricht debt (since 1978), deficit and interest, on the population at 1 January since 1901 (to put the debt per head), and on
   suspects by nationality. Each workbook is kept *as a grid*: one row per numeric cell, plus the text of every text
   cell, so a table's layout can change without breaking the lake and the renderer picks cells by their labels.
 * **Insee's consumer price index** (all households, base 2015, monthly) turned into annual averages: the deflator of
@@ -61,6 +61,10 @@ WORKBOOKS: tuple[Workbook, ...] = (
              "https://www.insee.fr/en/statistiques/8988914", f"{INSEE}/fichier/8988914/t_3106_en.xlsx".replace("/fr/", "/en/")),
     Workbook("insee_apu_depenses_recettes", "Insee, comptes des administrations publiques : dépenses et recettes depuis 1959 (tableau 3.201, 2024)",
              f"{INSEE}/8574705", f"{INSEE}/fichier/8574705/t_3201.xlsx"),
+    Workbook("insee_dette_longue", "Insee, dette des administrations publiques au sens de Maastricht par sous-secteur, 1978-2025 (comptes nationaux base 2020, en Md€ et en % du PIB)",
+             f"{INSEE}/2830192", f"{INSEE}/fichier/2830192/econ-fin-pub-dette-adm-pub.xlsx"),
+    Workbook("insee_population_longue", "Insee, bilan démographique 2025, tableaux rétrospectifs : population au 1er janvier (France depuis 1982, France métropolitaine depuis 1901)",
+             f"{INSEE}/8721185", f"{INSEE}/fichier/8721185/1_Pop_annu_compo_evol.xlsx", sheets=("FR", "FM")),
     Workbook("insee_securite_auteurs", "Insee Références, Sécurité : mis en cause selon la nationalité, réponse pénale et peines (2019)",
              f"{INSEE}/5763585", f"{INSEE}/fichier/5763585/IREF_SECUR21-F21.xlsx"),
 )

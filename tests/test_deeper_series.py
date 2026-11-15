@@ -84,3 +84,19 @@ def test_the_cnracl_employer_rate_is_known_year_by_year_from_2013_and_the_pap_ha
     missions = {t[1] for t in curated_pensions.PAP_CAS_PENSIONS}
     assert {"Outre-mer", "Travail et emploi"} <= missions and any(m.startswith("Agriculture") for m in missions)
     assert all(r["page"].isdigit() for r in sp.pap_rows())
+
+
+def test_the_long_debt_and_population_workbooks_are_registered():
+    codes = [wb.code for wb in ds.WORKBOOKS]
+    assert len(codes) == len(set(codes))
+    debt = next(wb for wb in ds.WORKBOOKS if wb.code == "insee_dette_longue")
+    pop = next(wb for wb in ds.WORKBOOKS if wb.code == "insee_population_longue")
+    assert debt.url.endswith("/fichier/2830192/econ-fin-pub-dette-adm-pub.xlsx") and debt.page.endswith("/2830192")
+    assert pop.sheets == ("FR", "FM")  # the population workbook has other tabs that are not wanted
+
+
+def test_a_debt_series_laid_out_like_insees_is_read_by_year():
+    content = _wb({"Figure 2": [["Titre"], [], ["en % du PIB"], ["Administrations publiques", 1978, 1979, 2025], ["Ensemble ", 21.6, 21.6, 115.7]]})
+    cells, texts = ds.grid_rows(content, ("Figure 2",))
+    assert {(c["col"], c["value"]) for c in cells if c["row"] == "5"} == {("1", 21.6), ("2", 21.6), ("3", 115.7)}
+    assert {c["value"] for c in cells if c["row"] == "4"} == {1978.0, 1979.0, 2025.0}
