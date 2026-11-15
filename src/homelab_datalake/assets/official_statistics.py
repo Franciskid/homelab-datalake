@@ -39,6 +39,7 @@ from homelab_datalake.parsing import ledger
 from homelab_datalake.parsing import official_statistics as stats
 from homelab_datalake.parsing import deeper_series as deeper
 from homelab_datalake.parsing import public_spending as spending
+from homelab_datalake.assets.crime_nationality import collect_crime
 from homelab_datalake.resources import LakeStorage
 
 LEDGER_KEY = f"{layout.prefix('official_stat_observations')}/data.parquet"
@@ -273,7 +274,9 @@ def collect(log) -> tuple[list[dict], dict[str, dict], list[str]]:
         failed.append(f"ssmsi:{stats.SSMSI_CODE}")
     more_rows, more_blocks, more_failed = collect_spending(fetched_at, log)
     deep_rows, deep_blocks, deep_failed = collect_deeper(fetched_at, log)
-    return rows + more_rows + deep_rows, {**blocks, **more_blocks, **deep_blocks}, failed + more_failed + deep_failed
+    crime_rows, crime_blocks, crime_failed = collect_crime(fetched_at, log)
+    return (rows + more_rows + deep_rows + crime_rows, {**blocks, **more_blocks, **deep_blocks, **crime_blocks},
+            failed + more_failed + deep_failed + crime_failed)
 
 
 @asset(
