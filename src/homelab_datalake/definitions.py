@@ -750,3 +750,15 @@ defs = Definitions.merge(
     Definitions(assets=official_statistics.ASSETS, jobs=official_statistics.JOBS,
                 schedules=official_statistics.SCHEDULES),
 )
+
+# --------------------------------------------------------------------------------
+# Poll ingestion, added 2026-11-15: the latest voting-intention polls for politico.fraserv.fr,
+# discovered, read and validated every morning (assets/polls_ingestion.py).
+# --------------------------------------------------------------------------------
+
+from homelab_datalake.assets import polls_ingestion  # noqa: E402
+
+defs = Definitions.merge(
+    defs,
+    Definitions(assets=polls_ingestion.ASSETS, jobs=polls_ingestion.JOBS, schedules=polls_ingestion.SCHEDULES),
+)

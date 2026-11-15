@@ -16,8 +16,10 @@ WORKDIR /app
 
 # systemd for journalctl only: host_logs_raw reads fraserv's journal files from a
 # read-only mount. Nothing here runs systemd.
+# poppler-utils: pdftotext, which polls_ingestion reads the poll reports with (PDFs are untrusted
+# input and are only ever opened through it).
 RUN apt-get update \
- && apt-get install -y --no-install-recommends git systemd \
+ && apt-get install -y --no-install-recommends git systemd poppler-utils \
  && rm -rf /var/lib/apt/lists/*
 
 # The lock first, on its own layer, so a code change does not reinstall every package.
