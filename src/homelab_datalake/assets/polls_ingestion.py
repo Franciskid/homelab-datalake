@@ -156,7 +156,7 @@ def polls_ingestion(context: AssetExecutionContext) -> MaterializeResult:
 
 
 polls_ingestion_job = define_asset_job(
-    name="polls_ingestion", selection=[polls_ingestion],
+    name="polls_ingestion_daily", selection=[polls_ingestion],
     description="Find new voting-intention polls, read and validate them, export them for politico.fraserv.fr.",
 )
 

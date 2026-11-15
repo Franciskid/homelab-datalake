@@ -192,7 +192,7 @@ def test_only_https_is_fetched():
 
 def test_schedule_is_daily_after_the_official_statistics():
     assert asset.polls_ingestion_schedule.cron_schedule == "10 6 * * *"
-    assert asset.polls_ingestion_job.name == "polls_ingestion"
+    assert asset.polls_ingestion_job.name == "polls_ingestion_daily"  # must differ from the asset name (Dagster rejects the clash)
 
 
 def test_the_vendored_copy_is_the_one_in_politico():
