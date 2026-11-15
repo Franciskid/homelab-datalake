@@ -146,6 +146,14 @@ workbook; and two more Eurostat queries (`gov_10a_main` revenue and interest, an
 known year by year from 2013 and four more State missions are in the curated PAP table. The workbook URLs are edition-specific
 (Insee page ids change each year): `parsing/deeper_series.py` lists them in one place.
 
+Debt history (round 7c): two more Insee workbooks, kept as grids like the others. `insee_dette_longue` (page 2830192) is the
+Maastricht debt of the general government by sub-sector, **1978 to the latest year**, in billions of euros and as a share of GDP
+(national accounts base 2020; Insee recomputes the whole series at constant definition, so there is no break inside it).
+`insee_population_longue` (bilan démographique, tableaux rétrospectifs, page 8721185, file POP1) gives the population at 1 January:
+France since 1982 and France métropolitaine since 1901 (the two tabs `FR` and `FM`), which is what turns the debt into a figure per
+head before 1994. The two populations do not cover the same territory (about 2.3 % apart in 1982): the renderer says where it
+switches. Consumer prices stay from 1990: Insee's BDM index has no earlier annual series.
+
 ### curated
 
 | Path | dbt model | What the layer adds |
