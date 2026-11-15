@@ -5,8 +5,9 @@ finance bills, table "Présentation des crédits par catégorie et contributions
  of which civils incl. ATI (€), of which militaires (€), page of the PDF, url).
 
 LFI 2025 and PLF 2026 come from the PLF 2026 annexes (PAP2026), LFI 2026 and PLF 2027 from the PLF 2027 annexes (PAP2027).
-Missions not listed (Agriculture, Travail, Outre-mer, Anciens combattants...) were not extracted; together they are about
-2 % of the State's social contributions. Access date of every file: 2026-11-15.
+Missions not listed (Pouvoirs publics, Aide publique au développement, Santé, Solidarité…) were not extracted; together they
+are about 1 % of the State's social contributions. Agriculture, Monde combattant, Outre-mer and Travail et emploi (PAP2026) were
+added in Phase 7b. Access date of every file: 2026-11-15.
 """
 
 PAP_CAS_PENSIONS = (
@@ -62,6 +63,16 @@ PAP_CAS_PENSIONS = (
     ('PAP2026', 'Sécurités', '152', '2026', 4511689392, 4041155439, 100311406, 3940844033, 118, 'https://www.assemblee-nationale.fr/dyn/contenu/visualisation/1088035/file/x.pdf'),
     ('PAP2026', 'Sécurités', '161', '2025', 95569650, 72369657, 15317161, 57052496, 177, 'https://www.assemblee-nationale.fr/dyn/contenu/visualisation/1088035/file/x.pdf'),
     ('PAP2026', 'Sécurités', '161', '2026', 97960546, 74900540, 15582047, 59318493, 177, 'https://www.assemblee-nationale.fr/dyn/contenu/visualisation/1088035/file/x.pdf'),
+    ('PAP2026', 'Agriculture, alimentation, forêt et affaires rurales', '206', '2025', 122349580, 84656644, 84656644, None, 117, 'https://www.assemblee-nationale.fr/dyn/contenu/visualisation/1087945/file/x.pdf'),
+    ('PAP2026', 'Agriculture, alimentation, forêt et affaires rurales', '206', '2026', 131033821, 88678850, 88678850, None, 117, 'https://www.assemblee-nationale.fr/dyn/contenu/visualisation/1087945/file/x.pdf'),
+    ('PAP2026', 'Agriculture, alimentation, forêt et affaires rurales', '215', '2025', 198068428, 143529247, 142953068, None, 172, 'https://www.assemblee-nationale.fr/dyn/contenu/visualisation/1087945/file/x.pdf'),
+    ('PAP2026', 'Agriculture, alimentation, forêt et affaires rurales', '215', '2026', 205228015, 149301041, 148726052, None, 172, 'https://www.assemblee-nationale.fr/dyn/contenu/visualisation/1087945/file/x.pdf'),
+    ('PAP2026', 'Monde combattant, mémoire et liens avec la Nation', '158', '2025', 471168, 274373, 274373, None, 79, 'https://www.assemblee-nationale.fr/dyn/contenu/visualisation/1087951/file/x.pdf'),
+    ('PAP2026', 'Monde combattant, mémoire et liens avec la Nation', '158', '2026', 452121, 271038, 271038, None, 79, 'https://www.assemblee-nationale.fr/dyn/contenu/visualisation/1087951/file/x.pdf'),
+    ('PAP2026', 'Outre-mer', '138', '2025', 73687284, 63099601, 1596946, 61502655, 30, 'https://www.assemblee-nationale.fr/dyn/contenu/visualisation/1088011/file/x.pdf'),
+    ('PAP2026', 'Outre-mer', '138', '2026', 73963900, 63386426, 1597345, 61789081, 30, 'https://www.assemblee-nationale.fr/dyn/contenu/visualisation/1088011/file/x.pdf'),
+    ('PAP2026', 'Travail et emploi', '155', '2025', 387772860, 280502689, 280502689, None, 207, 'https://www.assemblee-nationale.fr/dyn/contenu/visualisation/1088047/file/x.pdf'),
+    ('PAP2026', 'Travail et emploi', '155', '2026', 396575973, 287687713, 287687713, None, 207, 'https://www.assemblee-nationale.fr/dyn/contenu/visualisation/1088047/file/x.pdf'),
     ('PAP2027', 'Enseignement scolaire', '140', '2026', 12532384396, 10211500624, 10211500624, None, 51, 'https://www.assemblee-nationale.fr/dyn/contenu/visualisation/1128234/file/x.pdf'),
     ('PAP2027', 'Enseignement scolaire', '140', '2027', 12911983978, 10360718366, 10360718366, None, 51, 'https://www.assemblee-nationale.fr/dyn/contenu/visualisation/1128234/file/x.pdf'),
     ('PAP2027', 'Enseignement scolaire', '141', '2026', 16880920288, 13336950442, 13336950442, None, 101, 'https://www.assemblee-nationale.fr/dyn/contenu/visualisation/1128234/file/x.pdf'),
@@ -108,13 +119,24 @@ CCSS_COTISATIONS_PATRONALES = (
     ("IRCANTEC", "2024", 2937, "CCSS octobre 2024 (prévision)", 252, "https://www.vie-publique.fr/files/rapport/pdf/299216.pdf"),
 )
 
-# CNRACL employer contribution rate (% of the pensionable pay), from the IGAS/IGF report on the CNRACL's finances (2024):
-# 27.4 % in 2012, 30.65 % in 2023, +1 point on 1 January 2024. Years in between are not in the report.
+# CNRACL employer contribution rate (% of the pensionable pay): 27.4 % in 2012 (IGAS/IGF report on the CNRACL's finances, 2024), then
+# year by year from 2013 (CDG 33's technical sheet on the décret n° 2010-1749 schedule, updated October 2026), 31.65 % in 2024.
+# Before 2012 the rate is not sourced here.
 # (year, rate, page, url)
 CNRACL_TAUX_EMPLOYEUR = (
-    ("2012", 27.40, "IGAS/IGF, Situation financière de la CNRACL (2024)", "https://www.vie-publique.fr/files/rapport/pdf/295580.pdf"),
-    ("2023", 30.65, "IGAS/IGF, Situation financière de la CNRACL (2024)", "https://www.vie-publique.fr/files/rapport/pdf/295580.pdf"),
-    ("2024", 31.65, "CCSS octobre 2024, fiche 4.11", "https://www.vie-publique.fr/files/rapport/pdf/299216.pdf"),
+    ('2012', 27.4, 'IGAS/IGF, Situation financière de la CNRACL (2024)', 'https://www.vie-publique.fr/files/rapport/pdf/295580.pdf'),
+    ('2013', 28.85, 'CDG 33, fiche technique « Les cotisations retraite des fonctionnaires CNRACL » (maj. octobre 2026)', 'https://cdg33.fr/wp-content/uploads/ressources/COTISATIONS-RETRAITES-DES-FONCTIONNAIRES.pdf'),
+    ('2014', 30.4, 'CDG 33, fiche technique « Les cotisations retraite des fonctionnaires CNRACL » (maj. octobre 2026)', 'https://cdg33.fr/wp-content/uploads/ressources/COTISATIONS-RETRAITES-DES-FONCTIONNAIRES.pdf'),
+    ('2015', 30.5, 'CDG 33, fiche technique « Les cotisations retraite des fonctionnaires CNRACL » (maj. octobre 2026)', 'https://cdg33.fr/wp-content/uploads/ressources/COTISATIONS-RETRAITES-DES-FONCTIONNAIRES.pdf'),
+    ('2016', 30.6, 'CDG 33, fiche technique « Les cotisations retraite des fonctionnaires CNRACL » (maj. octobre 2026)', 'https://cdg33.fr/wp-content/uploads/ressources/COTISATIONS-RETRAITES-DES-FONCTIONNAIRES.pdf'),
+    ('2017', 30.65, 'CDG 33, fiche technique « Les cotisations retraite des fonctionnaires CNRACL » (maj. octobre 2026)', 'https://cdg33.fr/wp-content/uploads/ressources/COTISATIONS-RETRAITES-DES-FONCTIONNAIRES.pdf'),
+    ('2018', 30.65, 'CDG 33, fiche technique « Les cotisations retraite des fonctionnaires CNRACL » (maj. octobre 2026)', 'https://cdg33.fr/wp-content/uploads/ressources/COTISATIONS-RETRAITES-DES-FONCTIONNAIRES.pdf'),
+    ('2019', 30.65, 'CDG 33, fiche technique « Les cotisations retraite des fonctionnaires CNRACL » (maj. octobre 2026)', 'https://cdg33.fr/wp-content/uploads/ressources/COTISATIONS-RETRAITES-DES-FONCTIONNAIRES.pdf'),
+    ('2020', 30.65, 'CDG 33, fiche technique « Les cotisations retraite des fonctionnaires CNRACL » (maj. octobre 2026)', 'https://cdg33.fr/wp-content/uploads/ressources/COTISATIONS-RETRAITES-DES-FONCTIONNAIRES.pdf'),
+    ('2021', 30.65, 'CDG 33, fiche technique « Les cotisations retraite des fonctionnaires CNRACL » (maj. octobre 2026)', 'https://cdg33.fr/wp-content/uploads/ressources/COTISATIONS-RETRAITES-DES-FONCTIONNAIRES.pdf'),
+    ('2022', 30.65, 'CDG 33, fiche technique « Les cotisations retraite des fonctionnaires CNRACL » (maj. octobre 2026)', 'https://cdg33.fr/wp-content/uploads/ressources/COTISATIONS-RETRAITES-DES-FONCTIONNAIRES.pdf'),
+    ('2023', 30.65, 'CDG 33, fiche technique « Les cotisations retraite des fonctionnaires CNRACL » (maj. octobre 2026)', 'https://cdg33.fr/wp-content/uploads/ressources/COTISATIONS-RETRAITES-DES-FONCTIONNAIRES.pdf'),
+    ('2024', 31.65, 'CCSS octobre 2024, fiche 4.11 ; CDG 33 (maj. octobre 2026)', 'https://www.vie-publique.fr/files/rapport/pdf/299216.pdf'),
 )
 
 # Contributors and beneficiaries (old-age) of two schemes, annual average, CCSS octobre 2024, table 1 of the scheme's fiche.

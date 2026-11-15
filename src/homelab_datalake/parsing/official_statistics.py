@@ -150,6 +150,9 @@ EUROSTAT_QUERIES: tuple[EurostatQuery, ...] = (
        alias="nama_10_gdp_vol", geos=("FR",), na_item="B1GQ", unit="CLV20_MEUR"),
     _q("nama_10_gdp", "1995", "Compensation of employees of the whole economy (income approach): the labour cost social contributions are measured against",
        alias="nama_10_gdp_d1", geos=("FR",), na_item="D1", unit="CP_MEUR"),
+    _q("gov_10a_main", "1995", "General government total revenue and interest payable, EU comparison of the interest burden",
+       alias="gov_10a_main_tr", na_item=["TR", "D41PAY"], unit=["MIO_EUR", "PC_GDP"], sector="S13"),
+    _q("irt_lt_mcby_a", "1990", "Ten-year government bond yields (Maastricht criterion), annual", int_rt="MCBY"),
     _q("nama_10_pe", "1995", "Total employment (domestic concept), thousand persons", geos=("FR",), na_item="EMP_DC", unit="THS_PER"),
     _q("earn_nt_taxwedge", "2001", "Tax wedge on labour costs of a low-wage earner (67 % of the average wage), EU comparison"),
 )
