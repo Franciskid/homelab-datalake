@@ -2,7 +2,8 @@
 
 Each source is all-or-nothing and fails alone: the export then keeps yesterday's block, marked stale. Nothing here is scraped around a
 protection: every file is an open-data API or a download the publisher links from its own page (the BKA's file is served after a cookie
-redirect the standard library follows; the interieur.gouv.fr PDFs are not touched at all).
+redirect the standard library follows). The SSMSI's bilan and Info rapide are in assets/ssmsi_bilan.py: the interieur.gouv.fr HTML pages and the
+IR PDFs behind its 503 are not touched; the bilan PDF is asked for once a year from the files host, which serves it.
 """
 
 import json
@@ -226,4 +227,12 @@ def collect_crime(fetched_at: str, log, only: set[str] | None = None) -> tuple[l
                  c.EUROSTAT_POP_DIMS, c.eurostat_pop_rows(payload), updated=payload.get("updated"))
 
     run("pop", population)
+
+    # -- France, the SSMSI's annual bilan and its Info rapide on domestic violence: manual inputs in the lake, the bilan PDF by a plain request once a year
+    from homelab_datalake.assets.ssmsi_bilan import collect_ssmsi_bilan
+
+    more_rows, more_blocks, more_failed = collect_ssmsi_bilan(fetched_at, log, only=only)
+    rows += more_rows
+    blocks.update(more_blocks)
+    failed += more_failed
     return rows, blocks, failed

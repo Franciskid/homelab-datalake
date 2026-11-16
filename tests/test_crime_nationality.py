@@ -167,7 +167,7 @@ def test_every_source_fails_alone_and_is_reported(monkeypatch):
     rows, blocks, failed = asset.collect_crime("2026-11-15T00:00:00+00:00", log)
     assert rows == [] and blocks == {}
     assert set(failed) == {"crime:ch_sus", "crime:ch_persons", "crime:de_pks_t62", "crime:nl_suspects", "crime:nl_population", "crime:dk_guilty", "crime:dk_population", "crime:it_alleged",
-                           "crime:es_convicted", "crime:fr_mec", "crime:pop"}
+                           "crime:es_convicted", "crime:fr_mec", "crime:pop", "crime:fr_bilan", "crime:fr_conjugal"}
     assert len([w for w in log.warnings if w.startswith('crime ')]) == len(failed)
 
 
@@ -183,5 +183,5 @@ def test_one_source_up_lands_its_blocks_and_ledger_rows(monkeypatch):
 
     monkeypatch.setattr(asset, "request", only_eurostat)
     rows, blocks, failed = asset.collect_crime("2026-11-15T00:00:00+00:00", Log())
-    assert set(blocks) == {"crime:pop_countries", "crime:pop_groups", "crime:pop_birth"} and "crime:pop" not in failed and len(failed) == 10
+    assert set(blocks) == {"crime:pop_countries", "crime:pop_groups", "crime:pop_birth"} and "crime:pop" not in failed and len(failed) == 12
     assert len(rows) == 3 and {r["dataset"] for r in rows} == {"pop_countries", "pop_groups", "pop_birth"}
