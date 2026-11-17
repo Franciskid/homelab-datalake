@@ -33,6 +33,7 @@ from collections import defaultdict
 SERIES_PAGE = "https://www.insee.fr/fr/statistiques/8595113"
 INSEE = "https://www.insee.fr"
 FIRST_YEAR = 1900
+FORMAT = 2  # bumped when the files' content changes for the same edition (the job then rebuilds them)
 MIN_DEP = 200  # a name needs this many births in the départements' file to get a map (below, a map is noise)
 TOP = 20
 SEXES = ("1", "2")  # 1 boys, 2 girls (the Insee's codes)
@@ -74,7 +75,7 @@ def csv_in_zip(content: bytes) -> str:
         return z.read(names[0]).decode("utf-8-sig")
 
 
-def read_nat(text: str) -> list[tuple[str, str, int, int]]:
+def read_nat(text: str) -> list[tuple[str, str, int, int, int]]:
     reader = csv.DictReader(io.StringIO(text), delimiter=";")
     if {"sexe", "prenom", "periode", "valeur"} - set(reader.fieldnames or ()):
         raise ValueError("fichier des prénoms (national): columns are gone")
@@ -82,7 +83,8 @@ def read_nat(text: str) -> list[tuple[str, str, int, int]]:
     for r in reader:
         if r["sexe"] not in SEXES or not r["periode"].isdigit() or not r["valeur"].isdigit():
             continue
-        out.append((r["prenom"].strip(), r["sexe"], int(r["periode"]), int(r["valeur"])))
+        # `rang` is the Insee's rank, computed on the counts before rounding (the rounded ones tie)
+        out.append((r["prenom"].strip(), r["sexe"], int(r["periode"]), int(r["valeur"]), int(r["rang"]) if (r.get("rang") or "").isdigit() else 0))
     return out
 
 
@@ -102,7 +104,7 @@ def read_dpt(text: str) -> list[tuple[str, str, int, str, int]]:
 
 def build(nat: list, dpt: list, edition: int, source: dict) -> dict[str, dict]:
     """File name -> JSON-able content. `manifest.json` is last in the dict so that a writer that writes in order ends with it."""
-    years = sorted({y for _, _, y, _ in nat})
+    years = sorted({y for _, _, y, _, _ in nat})
     if not years or years[0] > FIRST_YEAR + 5 or years[-1] < edition - 1:
         raise ValueError(f"the national file covers {years[:1]}..{years[-1:]} for edition {edition}")
     y0, y1 = years[0], years[-1]
@@ -110,7 +112,7 @@ def build(nat: list, dpt: list, edition: int, source: dict) -> dict[str, dict]:
 
     series: dict[tuple[str, str], list[int]] = {}
     totals = {s: [0] * ny for s in SEXES}
-    for name, sex, year, n in nat:
+    for name, sex, year, n, _ in nat:
         if name.startswith("_"):  # a grouped line of rare names counts in the totals only
             totals[sex][year - y0] += n
             continue
@@ -158,16 +160,16 @@ def build(nat: list, dpt: list, edition: int, source: dict) -> dict[str, dict]:
     for yi, year in enumerate(range(y0, y1 + 1)):
         tops[str(year)] = {}
     by_year: dict[tuple[int, str], list] = defaultdict(list)
-    for name, sex, year, n in nat:
+    for name, sex, year, n, rank in nat:
         if not name.startswith("_"):
-            by_year[(year, sex)].append((n, name))
+            by_year[(year, sex)].append((rank or 10**6, -n, name, n))
     for (year, sex), lst in by_year.items():
-        lst.sort(key=lambda t: (-t[0], t[1]))
-        tops[str(year)][sex] = [[name, n] for n, name in lst[:TOP]]
+        lst.sort()
+        tops[str(year)][sex] = [[name, n] for _, _, name, n in lst[:TOP]]
 
     overall = sorted(((sum(arr), name, sex) for (name, sex), arr in series.items()), reverse=True)[:50]
     manifest = {
-        "edition": edition, "source": source, "years": [y0, y1], "decades": [FIRST_YEAR + 10 * i for i in range(nd)], "deps": deps,
+        "format": FORMAT, "edition": edition, "source": source, "years": [y0, y1], "decades": [FIRST_YEAR + 10 * i for i in range(nd)], "deps": deps,
         "letters": letters, "min_dep": MIN_DEP, "rounding": 5, "births": {s: totals[s] for s in SEXES},
         "overall": [[name, int(sex), total] for total, name, sex in overall], "names": {"nat": len(series), "dep": sum(len(v) for v in dep_letter.values())},
         "files": {"tops": "tops.json", "dep_births": "dep-births.json"},

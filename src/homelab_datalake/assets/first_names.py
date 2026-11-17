@@ -46,9 +46,11 @@ def find_edition(get_text=lambda url: _get(url).decode("utf-8")) -> dict:
     return best
 
 
-def exported_edition(directory: Path) -> int | None:
+def exported_edition(directory: Path) -> tuple[int, int] | None:
+    """(edition, format of the files) of what the export holds, or None."""
     try:
-        return json.loads((directory / EXPORT_SUBDIR / "manifest.json").read_text(encoding="utf-8")).get("edition")
+        m = json.loads((directory / EXPORT_SUBDIR / "manifest.json").read_text(encoding="utf-8"))
+        return m.get("edition"), m.get("format")
     except (OSError, ValueError):
         return None
 
@@ -72,7 +74,7 @@ def write_directory(directory: Path, files: dict[str, dict]) -> Path:
 
 def run(directory: Path, lake: LakeStorage | None, log, *, find=find_edition, get=_get, force: bool = False) -> dict:
     found = find()
-    if not force and exported_edition(directory) == found["edition"]:
+    if not force and exported_edition(directory) == (found["edition"], fn.FORMAT):
         log.info("first names: edition %s already exported", found["edition"])
         return {"edition": found["edition"], "skipped": True}
     nat_zip, dpt_zip = get(found["nat"]), get(found["dpt"])
