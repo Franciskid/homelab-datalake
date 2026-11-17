@@ -752,6 +752,17 @@ defs = Definitions.merge(
 )
 
 # --------------------------------------------------------------------------------
+# First names, added 2026-11-17: the Insee's Fichier des prénoms, cut for politico.fraserv.fr (assets/first_names.py).
+# --------------------------------------------------------------------------------
+
+from homelab_datalake.assets import first_names  # noqa: E402
+
+defs = Definitions.merge(
+    defs,
+    Definitions(assets=first_names.ASSETS, jobs=first_names.JOBS, schedules=first_names.SCHEDULES),
+)
+
+# --------------------------------------------------------------------------------
 # Poll ingestion, added 2026-11-15: the latest voting-intention polls for politico.fraserv.fr,
 # discovered, read and validated every morning (assets/polls_ingestion.py).
 # --------------------------------------------------------------------------------
