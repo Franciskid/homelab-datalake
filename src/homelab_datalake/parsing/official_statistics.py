@@ -34,10 +34,12 @@ SSMSI_DATASET_ID = "621df2954fa5a3b5a023e23c"
 SSMSI_DATASET_API = f"https://www.data.gouv.fr/api/1/datasets/{SSMSI_DATASET_ID}/"
 SSMSI_PAGE = f"https://www.data.gouv.fr/datasets/{SSMSI_DATASET_ID}"
 SSMSI_CODE = "delinquance_departementale"
+SSMSI_DEP_CODE = "delinquance_dep_taux"
 
 EU27 = ("AT", "BE", "BG", "CY", "CZ", "DE", "DK", "EE", "EL", "ES", "FI", "FR", "HR", "HU",
         "IE", "IT", "LT", "LU", "LV", "MT", "NL", "PL", "PT", "RO", "SE", "SI", "SK")
 GEOS = (*EU27, "EU27_2020")
+CTZ_GEOS = ("FR", "EU27_2020")  # the by-citizenship queries: France and the EU as a whole
 
 KEY_COLUMNS = ("source", "dataset", "series_key", "geo", "period")
 # Metadata that moves without the figure moving: a dataset's "last updated" stamp changes
@@ -90,6 +92,16 @@ EUROSTAT_QUERIES: tuple[EurostatQuery, ...] = (
        citizen="TOTAL", agedef="COMPLET", age="TOTAL", sex="T", unit="NR"),
     _q("migr_pop1ctz", "2007", "Population by citizenship (foreigners = total minus nationals)",
        citizen=["TOTAL", "NAT"], age="TOTAL", sex="T", unit="NR"),
+    # The same four datasets broken down by citizenship (every citizenship Eurostat publishes), for France and the EU
+    # as a whole: the "where do they come from" maps. The queries above stay as they are, restricted to the total.
+    _q("migr_resfirst", "2008", "First residence permits by citizenship (all citizenships), France and EU27",
+       alias="migr_resfirst_ctz", geos=CTZ_GEOS, reason="TOTAL", duration="TOTAL", unit="PER"),
+    _q("migr_asyappctza", "2008", "First-time asylum applicants by citizenship (all citizenships), France and EU27",
+       alias="migr_asyappctza_ctz", geos=CTZ_GEOS, applicant="FRST", sex="T", age="TOTAL", unit="PER"),
+    _q("migr_acq", "2008", "Acquisitions of citizenship by previous citizenship (all citizenships), France and EU27",
+       alias="migr_acq_ctz", geos=CTZ_GEOS, agedef="COMPLET", age="TOTAL", sex="T", unit="NR"),
+    _q("migr_pop1ctz", "2007", "Population on 1 January by citizenship (every citizenship published), France and EU27",
+       alias="migr_pop1ctz_ctz", geos=CTZ_GEOS, age="TOTAL", sex="T", unit="NR"),
     _q("lfsa_ergacob", "2015", "Employment rate of 20-64 year-olds by country of birth",
        sex="T", age="Y20-64", c_birth=["NAT", "FOR", "NEU27_2020_FOR"], unit="PC"),
     _q("lfsa_urgacob", "2015", "Unemployment rate of 15-74 year-olds by country of birth",
@@ -298,6 +310,59 @@ def ssmsi_block(rows: list[dict], resource: dict, fetched_at: str) -> dict:
         "labels": {"geo": {"FR": "France"}},
         "rows": sorted([[r["indicateur"], r["unite_de_compte"], "FR", r["time"], r["value"]] for r in national]),
     }
+
+
+def ssmsi_dep_rows(csv_text: str) -> list[dict]:
+    """Every département's recorded crime with the rate the SSMSI publishes and its denominators.
+
+    One row per (indicator, unit of count, measure, département, year): `nombre`, `taux_pour_mille`
+    (per 1 000 inhabitants, except burglaries of dwellings, which the SSMSI rates per 1 000 dwellings),
+    plus the population and the number of dwellings (`population`, `logements`) once per département and
+    year, filed under the pseudo-indicator `_denominateur`. A missing figure (`NA`) is simply absent.
+    """
+    reader = csv.DictReader(io.StringIO(csv_text.lstrip("\ufeff")), delimiter=";")
+    need = {"Code_departement", "annee", "indicateur", "unite_de_compte", "nombre", "taux_pour_mille", "insee_pop", "insee_log"}
+    if need - set(reader.fieldnames or ()):
+        raise ValueError(f"SSMSI departmental file: columns {sorted(need - set(reader.fieldnames or ()))} are gone")
+    out: list[dict] = []
+    seen: set[tuple[str, str]] = set()
+    for r in reader:
+        geo, year = r["Code_departement"].strip(), r["annee"].strip()
+        indicator, unit = r["indicateur"].strip(), r["unite_de_compte"].strip()
+        for measure, key in (("nombre", "nombre"), ("taux_pour_mille", "taux_pour_mille")):
+            value = _number(r[key])
+            if value is not None:
+                out.append({"indicateur": indicator, "unite": unit, "mesure": measure, "geo": geo, "time": year, "value": value})
+        if (geo, year) not in seen:
+            seen.add((geo, year))
+            for measure, key in (("population", "insee_pop"), ("logements", "insee_log")):
+                value = _number(r[key])
+                if value is not None:
+                    out.append({"indicateur": "_denominateur", "unite": "", "mesure": measure, "geo": geo, "time": year, "value": value})
+    return out
+
+
+def ssmsi_dep_block(rows: list[dict], resource: dict, fetched_at: str) -> dict:
+    return {
+        "source": "ssmsi", "code": SSMSI_DEP_CODE,
+        "label": f"{resource.get('title')} : taux pour 1 000 habitants par département",
+        "updated": resource.get("last_modified"), "url": SSMSI_PAGE, "file": resource.get("url"),
+        "fetched_at": fetched_at, "status": "ok", "dims": ["indicateur", "unite", "mesure", "geo", "time"], "labels": {},
+        "rows": sorted([[r["indicateur"], r["unite"], r["mesure"], r["geo"], r["time"], r["value"]] for r in rows]),
+    }
+
+
+def ssmsi_dep_ledger_rows(rows: list[dict], resource: dict) -> list[dict]:
+    """Rates and denominators go to the ledger (the counts already do, as `delinquance_departementale`)."""
+    keep = [r for r in rows if r["mesure"] != "nombre"]
+    return [{
+        "source": "ssmsi", "dataset": SSMSI_DEP_CODE,
+        "series_key": series_key({"indicateur": r["indicateur"], "unite_de_compte": r["unite"], "mesure": r["mesure"]}),
+        "geo": f"FR-D{r['geo']}", "period": r["time"], "value": r["value"], "status": None, "unit": r["unite"],
+        "dims_json": json.dumps({"indicateur": r["indicateur"], "unite_de_compte": r["unite"], "mesure": r["mesure"]},
+                                sort_keys=True, ensure_ascii=False),
+        "dataset_label": resource.get("title"), "source_updated": resource.get("last_modified"), "source_url": SSMSI_PAGE,
+    } for r in keep]
 
 
 # ---------------------------------------------------------------- export

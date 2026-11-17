@@ -30,10 +30,10 @@ PAYLOAD = {
 QUERY = stats.EurostatQuery("migr_eiord", {"unit": ("PER",)}, "2010", "test")
 
 SSMSI_CSV = (
-    "﻿\"Code_departement\";\"Code_region\";\"annee\";\"indicateur\";\"unite_de_compte\";\"nombre\";\"taux_pour_mille\"\n"
-    "\"01\";\"84\";\"2025\";\"Homicides\";\"Victime\";\"5\";\"0,0078\"\n"
-    "\"02\";\"32\";\"2025\";\"Homicides\";\"Victime\";\"10\";\"0,0186\"\n"
-    "\"03\";\"84\";\"2025\";\"Homicides\";\"Victime\";\"NA\";\"NA\"\n"
+    "﻿\"Code_departement\";\"Code_region\";\"annee\";\"indicateur\";\"unite_de_compte\";\"nombre\";\"taux_pour_mille\";\"insee_pop\";\"insee_log\"\n"
+    "\"01\";\"84\";\"2025\";\"Homicides\";\"Victime\";\"5\";\"0,0078\";\"640000\";\"310000\"\n"
+    "\"02\";\"32\";\"2025\";\"Homicides\";\"Victime\";\"10\";\"0,0186\";\"537000\";\"265000\"\n"
+    "\"03\";\"84\";\"2025\";\"Homicides\";\"Victime\";\"NA\";\"NA\";\"338000\";\"205000\"\n"
 )
 
 
@@ -107,7 +107,8 @@ def test_the_asset_lands_the_ledger_and_writes_the_export(tmp_path, monkeypatch)
     monkeypatch.setattr(asset, "collect_spending", lambda fetched_at, log: ([], {}, []))
     monkeypatch.setattr(asset, "collect_crime", lambda fetched_at, log: ([], {}, []))
     monkeypatch.setattr(asset, "fetch_ssmsi", lambda: (stats.ssmsi_rows(SSMSI_CSV),
-                                                       {"title": "DEP - Base", "last_modified": "2026-07-09", "url": "u"}))
+                                                       {"title": "DEP - Base", "last_modified": "2026-07-09", "url": "u"},
+                                                       stats.ssmsi_dep_rows(SSMSI_CSV)))
     export_dir = tmp_path / "export"
     export_dir.mkdir()
     monkeypatch.setenv("OFFICIAL_STATS_EXPORT_DIR", str(export_dir))
@@ -115,7 +116,31 @@ def test_the_asset_lands_the_ledger_and_writes_the_export(tmp_path, monkeypatch)
     result = asset.official_statistics_raw(build_asset_context(), lake)
     assert all(check.passed for check in result.check_results)
     landed = lake.read_table(f"{layout.prefix('official_stat_observations')}/data.parquet")
-    assert landed.num_rows == 3 + 3  # three Eurostat values, two départements and France
+    assert landed.num_rows == 3 + 3 + 8  # three Eurostat values, two départements and France, then the rates and denominators of 3 départements
     export = json.loads((export_dir / asset.EXPORT_NAME).read_text())
-    assert set(export["datasets"]) == {"eurostat:migr_eiord", "ssmsi:delinquance_departementale"}
+    assert set(export["datasets"]) == {"eurostat:migr_eiord", "ssmsi:delinquance_departementale", "ssmsi:delinquance_dep_taux"}
     assert export["datasets"]["ssmsi:delinquance_departementale"]["rows"] == [["Homicides", "Victime", "FR", "2025", 15.0]]
+
+
+def test_ssmsi_departments_carry_the_published_rate_and_the_denominators():
+    rows = stats.ssmsi_dep_rows(SSMSI_CSV)
+    got = {(r["indicateur"], r["mesure"], r["geo"]): r["value"] for r in rows}
+    assert got[("Homicides", "taux_pour_mille", "01")] == 0.0078
+    assert got[("Homicides", "nombre", "02")] == 10.0
+    assert ("Homicides", "nombre", "03") not in got  # a suppressed count is absent, not zero
+    assert got[("_denominateur", "population", "03")] == 338000.0 and got[("_denominateur", "logements", "01")] == 310000.0
+    block = stats.ssmsi_dep_block(rows, {"title": "DEP - Base", "last_modified": "2026-07-09", "url": "u"}, "now")
+    assert block["dims"] == ["indicateur", "unite", "mesure", "geo", "time"]
+    assert ["Homicides", "Victime", "taux_pour_mille", "01", "2025", 0.0078] in block["rows"]
+    ledger_rows = stats.ssmsi_dep_ledger_rows(rows, {"title": "DEP"})
+    assert {r["geo"] for r in ledger_rows} == {"FR-D01", "FR-D02", "FR-D03"}
+    assert all("mesure=nombre" not in r["series_key"] for r in ledger_rows)  # counts are in the other dataset already
+
+
+def test_the_citizenship_queries_keep_every_citizenship_for_france_and_the_eu():
+    by_alias = {q.key: q for q in stats.EUROSTAT_QUERIES}
+    for code in ("migr_resfirst", "migr_asyappctza", "migr_acq", "migr_pop1ctz"):
+        q = by_alias[f"{code}_ctz"]
+        assert q.code == code and "citizen" not in q.filters and q.geos == ("FR", "EU27_2020")
+        assert "citizen=" not in q.url() and "geo=FR" in q.url()
+        assert "citizen" in by_alias[code].filters, "the original total-only query is unchanged"

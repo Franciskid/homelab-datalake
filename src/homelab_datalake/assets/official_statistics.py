@@ -77,10 +77,11 @@ def fetch_eurostat(query: stats.EurostatQuery) -> dict:
     return payload
 
 
-def fetch_ssmsi() -> tuple[list[dict], dict]:
+def fetch_ssmsi() -> tuple[list[dict], dict, list[dict]]:
+    """The national totals (geo FR), the file's resource and every département with its rates and denominators."""
     resource = stats.ssmsi_resource(json.loads(_get(stats.SSMSI_DATASET_API)))
     text = _get(resource["url"]).decode("utf-8")
-    return stats.ssmsi_rows(text), resource
+    return stats.ssmsi_rows(text), resource, stats.ssmsi_dep_rows(text)
 
 
 def fetch_text(url: str) -> str:
@@ -266,9 +267,11 @@ def collect(log) -> tuple[list[dict], dict[str, dict], list[str]]:
         rows.extend(stats.eurostat_ledger_rows(query, payload))
         blocks[stats.dataset_key("eurostat", query.key)] = stats.eurostat_block(query, payload, fetched_at)
     try:
-        ssmsi, resource = fetch_ssmsi()
+        ssmsi, resource, departments = fetch_ssmsi()
         rows.extend(stats.ssmsi_ledger_rows(ssmsi, resource))
         blocks[stats.dataset_key("ssmsi", stats.SSMSI_CODE)] = stats.ssmsi_block(ssmsi, resource, fetched_at)
+        rows.extend(stats.ssmsi_dep_ledger_rows(departments, resource))
+        blocks[stats.dataset_key("ssmsi", stats.SSMSI_DEP_CODE)] = stats.ssmsi_dep_block(departments, resource, fetched_at)
     except Exception as error:  # noqa: BLE001
         log.warning("ssmsi failed: %s", error)
         failed.append(f"ssmsi:{stats.SSMSI_CODE}")

@@ -116,7 +116,7 @@ def test_the_asset_lands_the_spending_blocks_and_exports_them(tmp_path, monkeypa
                              "time": {"category": {"index": {"2024": 0}}}}, "value": {"0": 1}}
     monkeypatch.setattr(stats, "EUROSTAT_QUERIES", (stats.EurostatQuery("gov_10a_exp", {}, "1995", "t", alias="gov_10a_exp_fr"),))
     monkeypatch.setattr(asset, "fetch_eurostat", lambda q: payload)
-    monkeypatch.setattr(asset, "fetch_ssmsi", lambda: ([], {"title": "DEP", "last_modified": "2026-07-09", "url": "u"}))
+    monkeypatch.setattr(asset, "fetch_ssmsi", lambda: ([], {"title": "DEP", "last_modified": "2026-07-09", "url": "u"}, []))
 
     def fake(url):
         if "recettes" in url:
