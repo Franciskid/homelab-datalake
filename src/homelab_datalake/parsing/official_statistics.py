@@ -102,6 +102,12 @@ EUROSTAT_QUERIES: tuple[EurostatQuery, ...] = (
        alias="migr_acq_ctz", geos=CTZ_GEOS, agedef="COMPLET", age="TOTAL", sex="T", unit="NR"),
     _q("migr_pop1ctz", "2007", "Population on 1 January by citizenship (every citizenship published), France and EU27",
        alias="migr_pop1ctz_ctz", geos=CTZ_GEOS, age="TOTAL", sex="T", unit="NR"),
+    # départements (NUTS 3): density, population by age group, fertility. No `geo` filter: the API answers for every region of Europe and the
+    # renderer keeps the French ones (codes FRxxx), whose labels are the départements' names.
+    _q("demo_r_d3dens", "2024", "Population density by NUTS 3 region (persons per km2)", alias="demo_r_d3dens_nuts3", geos=()),
+    _q("demo_r_pjangrp3", "2014", "Population on 1 January by age group, NUTS 3 regions (total and 65 and over by 5-year groups)",
+       alias="demo_r_pjangrp3_nuts3", geos=(), sex="T", unit="NR", age=["TOTAL", "Y65-69", "Y70-74", "Y75-79", "Y80-84", "Y_GE85"]),
+    _q("demo_r_find3", "2019", "Total fertility rate by NUTS 3 region", alias="demo_r_find3_nuts3", geos=(), indic_de="TOTFERRT"),
     _q("lfsa_ergacob", "2015", "Employment rate of 20-64 year-olds by country of birth",
        sex="T", age="Y20-64", c_birth=["NAT", "FOR", "NEU27_2020_FOR"], unit="PC"),
     _q("lfsa_urgacob", "2015", "Unemployment rate of 15-74 year-olds by country of birth",

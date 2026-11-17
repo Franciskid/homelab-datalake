@@ -762,6 +762,14 @@ defs = Definitions.merge(
     Definitions(assets=first_names.ASSETS, jobs=first_names.JOBS, schedules=first_names.SCHEDULES),
 )
 
+# Indicators by département for « Croiser deux chiffres », added 2026-11-17 (assets/department_indicators.py).
+from homelab_datalake.assets import department_indicators  # noqa: E402
+
+defs = Definitions.merge(
+    defs,
+    Definitions(assets=department_indicators.ASSETS, jobs=department_indicators.JOBS, schedules=department_indicators.SCHEDULES),
+)
+
 # --------------------------------------------------------------------------------
 # Poll ingestion, added 2026-11-15: the latest voting-intention polls for politico.fraserv.fr,
 # discovered, read and validated every morning (assets/polls_ingestion.py).

@@ -144,3 +144,10 @@ def test_the_citizenship_queries_keep_every_citizenship_for_france_and_the_eu():
         assert q.code == code and "citizen" not in q.filters and q.geos == ("FR", "EU27_2020")
         assert "citizen=" not in q.url() and "geo=FR" in q.url()
         assert "citizen" in by_alias[code].filters, "the original total-only query is unchanged"
+
+
+def test_the_département_queries_ask_for_every_nuts3_region_and_the_renderer_filters():
+    by_alias = {q.key: q for q in stats.EUROSTAT_QUERIES}
+    for code in ("demo_r_d3dens", "demo_r_pjangrp3", "demo_r_find3"):
+        q = by_alias[f"{code}_nuts3"]
+        assert q.code == code and q.geos == () and "geo=" not in q.url()
