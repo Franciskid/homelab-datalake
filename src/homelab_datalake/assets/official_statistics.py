@@ -38,6 +38,7 @@ from homelab_datalake import lakeio, layout
 from homelab_datalake.parsing import ledger
 from homelab_datalake.parsing import official_statistics as stats
 from homelab_datalake.parsing import deeper_series as deeper
+from homelab_datalake.parsing import insee_origins as origins
 from homelab_datalake.parsing import public_spending as spending
 from homelab_datalake.assets.crime_nationality import collect_crime
 from homelab_datalake.resources import LakeStorage
@@ -172,6 +173,22 @@ def collect_deeper(fetched_at: str, log) -> tuple[list[dict], dict[str, dict], l
     except Exception as error:  # noqa: BLE001
         log.warning("Banque de France holders failed: %s", error)
         failed.append("bdf:non_residents_debt")
+    try:
+        parsed = []
+        for year, u in origins.IMG.items():
+            parsed += origins.immigrants_rows(year, _get(u["v1"]), _get(u["v2"]), _get(u["pop"]))
+        table("insee", origins.IMM_CODE, "Insee, recensements de la population 2018 et 2021 : immigrés par département et pays de naissance (IMG1B, 11 et 47 postes), population (IMG1A)",
+              origins.IMG["2021"]["page"], parsed, ["pays", "geo", "time"])
+    except Exception as error:  # noqa: BLE001
+        log.warning("Insee immigrants by département failed: %s", error)
+        failed.append(f"insee:{origins.IMM_CODE}")
+    try:
+        parsed = origins.births_2024_rows(fetch_text(origins.BIRTHS_2024_URL))
+        table("insee", origins.BIRTHS_DEP_CODE, "Insee, état civil, Les naissances en 2024 : N7DBIS, naissances vivantes selon le pays de naissance de la mère par département",
+              origins.BIRTHS_2024_PAGE, parsed, ["pays_mere", "geo", "time"], {"file": origins.BIRTHS_2024_URL})
+    except Exception as error:  # noqa: BLE001
+        log.warning("Insee births by mother's country failed: %s", error)
+        failed.append(f"insee:{origins.BIRTHS_DEP_CODE}")
     try:
         import json as _json
         resource = deeper.ssmsi_regional_resource(_json.loads(fetch_text(deeper.SSMSI_DATASET_API)))

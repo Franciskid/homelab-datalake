@@ -65,6 +65,15 @@ WORKBOOKS: tuple[Workbook, ...] = (
              f"{INSEE}/2830192", f"{INSEE}/fichier/2830192/econ-fin-pub-dette-adm-pub.xlsx"),
     Workbook("insee_population_longue", "Insee, bilan démographique 2025, tableaux rétrospectifs : population au 1er janvier (France depuis 1982, France métropolitaine depuis 1901)",
              f"{INSEE}/8721185", f"{INSEE}/fichier/8721185/1_Pop_annu_compo_evol.xlsx", sheets=("FR", "FM")),
+    # Origins of immigration and of births (parsing/insee_origins.py reads the département tables)
+    Workbook("insee_immigres_pays_1968_2019", "Insee, recensements : immigrés par pays de naissance détaillé, 1968-1999 (recensements) et 2006-2019 (annuel)",
+             f"{INSEE}/6478091", f"{INSEE}/fichier/6478091/pays_naissance_detaille_1968_2019.xlsx", sheets=("2006-2019", "1968-1999")),
+    Workbook("insee_immigres_groupes_2006_2025", "Insee, recensements : immigrés par groupe de pays de naissance, 2006-2025 (effectifs en milliers)",
+             f"{INSEE}/2381755", f"{INSEE}/fichier/2381755/demo-etran-repart-immig-pays.xlsx", sheets=("Figure 1",)),
+    Workbook("insee_naissances_pays_mere_nat", "Insee, état civil, Les naissances en 2025 : T38BIS, naissances vivantes selon le pays de naissance de la mère, 1977-2025",
+             f"{INSEE}/9000183", f"{INSEE}/fichier/9000183/t38bis.xlsx", sheets=("FM", "FR")),
+    Workbook("insee_naissances_dep_pays_mere_2025", "Insee, état civil, Les naissances en 2025 : N7DBIS, naissances vivantes selon le pays de naissance de la mère par département",
+             f"{INSEE}/9000191", f"{INSEE}/fichier/9000191/n7dbis-v2.xlsx"),
     Workbook("insee_securite_auteurs", "Insee Références, Sécurité : mis en cause selon la nationalité, réponse pénale et peines (2019)",
              f"{INSEE}/5763585", f"{INSEE}/fichier/5763585/IREF_SECUR21-F21.xlsx"),
 )
