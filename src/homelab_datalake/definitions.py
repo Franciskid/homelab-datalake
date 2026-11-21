@@ -19,23 +19,30 @@ alerting stack to maintain is not.
 """
 
 import datetime
-import os
 
 from dagster import (
+    AssetKey,
     AssetSelection,
+    DagsterRunStatus,
     DefaultScheduleStatus,
     DefaultSensorStatus,
     Definitions,
     MultiPartitionKey,
     RunRequest,
+    RunsFilter,
     ScheduleEvaluationContext,
+    SensorEvaluationContext,
+    SkipReason,
     define_asset_job,
     load_assets_from_modules,
     run_failure_sensor,
+    run_status_sensor,
     schedule,
+    sensor,
 )
 from dagster_dbt import DbtCliResource
 
+from homelab_datalake import alerting, build_report
 from homelab_datalake.alerting import alert_payload
 from homelab_datalake.assets import (
     ai_platform,
@@ -207,7 +214,9 @@ ai_platform_sweep_job = define_asset_job(
     selection=AssetSelection.assets(*ai_platform.sweep_asset_keys),
     partitions_def=ai_platform.ai_platform_partitions,
     # One at a time: datalake_ro has CONNECTION LIMIT 3. See run_queue in dagster.yaml.
-    tags={"datalake/queue": "ai_platform_sweep"},
+    # max_runtime: a sweep takes under a minute. One whose process died used to sit
+    # STARTED forever, holding the queue's only slot; run monitoring now fails it.
+    tags={"datalake/queue": "ai_platform_sweep", "dagster/max_runtime": "900"},
     description="Re-extract one older day of every AI-platform table that can change.",
 )
 
@@ -265,6 +274,7 @@ jellyfin_daily_job = define_asset_job(
             jellyfin.jellyfin_users_raw, jellyfin.jellyfin_library_items_raw,
             jellyfin.jellyfin_activity_history_raw,
             jellyfin.jellyfin_playback_history_raw,
+            jellyfin.jellyfin_playback_recent_raw,
             jellyfin.jellyfin_searches_raw,
         )
     ),
@@ -299,6 +309,14 @@ jellyfin_playback_history_job = define_asset_job(
     name="jellyfin_playback_history",
     selection=AssetSelection.assets(jellyfin.jellyfin_playback_history_raw),
     description="One-time, one-pass load of the full Playback Reporting history.",
+)
+
+# Gives long sessions their final duration; see RECENT_PLAYBACK_HOURS in
+# assets/jellyfin.py. Run it by hand with a larger `hours_back` to repair history.
+jellyfin_playback_recent_job = define_asset_job(
+    name="jellyfin_playback_recent",
+    selection=AssetSelection.assets(jellyfin.jellyfin_playback_recent_raw),
+    description="Re-read the last 48 hours of Playback Reporting rows and settle every hour in them.",
 )
 
 jellyfin_playback_job = define_asset_job(
@@ -387,6 +405,21 @@ def jellyfin_playback_hourly_schedule(context: ScheduleEvaluationContext):
             run_key=f"jellyfin-playback-{hour:%Y-%m-%d-%H}-{context.scheduled_execution_time:%Y%m%d%H%M}",
             partition_key=hour.strftime("%Y-%m-%d-%H:%M"),
         )
+
+
+@schedule(
+    job=jellyfin_playback_recent_job,
+    cron_schedule="20 */2 * * *",
+    # RUNNING: a schedule nobody starts is how a fix ships and never runs.
+    default_status=DefaultScheduleStatus.RUNNING,
+    description=(
+        "Every two hours at :20, re-read the last 48 hours of playback so a session that "
+        "ran longer than the hourly asset's three-hour re-read still lands with its real "
+        "duration."
+    ),
+)
+def jellyfin_playback_recent_schedule(context: ScheduleEvaluationContext):
+    yield RunRequest(run_key=f"jellyfin-playback-recent-{context.scheduled_execution_time:%Y-%m-%dT%H}")
 
 
 @schedule(
@@ -562,7 +595,14 @@ analytics_job = define_asset_job(
     selection=AssetSelection.groups("warehouse") | AssetSelection.assets(dbt_marts.dbt_marts),
     # One at a time: an overrun used to meet the next hour's run on DuckDB's write lock,
     # and both failed. The next one now waits its turn. See run_queue in dagster.yaml.
-    tags={"datalake/queue": "analytics"},
+    # max_runtime: 291 successful runs took at most 1,190 s. On 16 Nov 2026 a run whose
+    # process had died stayed STARTED for five days, and every later run queued behind
+    # it, because the queue allows one. Run monitoring (dagster.yaml) now fails a run
+    # past 90 minutes, worker or no worker, and the next one starts.
+    tags={"datalake/queue": "analytics", "dagster/max_runtime": "5400"},
+    # At most two steps at once. Unbounded, a full rebuild ran its DuckDB-heavy steps
+    # side by side and filled the host's memory; see src/homelab_datalake/duck.py.
+    config={"execution": {"config": {"multiprocess": {"max_concurrent": 2}}}},
     description=(
         "Reload the raw tables whose objects changed in the lake, build and test the dbt "
         "models downstream of them, publish the serving copy the MCP layer reads. "
@@ -627,47 +667,95 @@ def notify_on_failure(context):
         f"run_id={run.run_id} -- {context.failure_event.message}"
     )
 
-    url = os.environ.get("PLATFORM_ALERT_URL")
-    token = os.environ.get("PLATFORM_ALERT_TOKEN")
-    if not url or not token:
-        context.log.error(
-            "%s (PLATFORM_ALERT_URL/PLATFORM_ALERT_TOKEN not configured, not notifying)",
-            message,
-        )
-        return
-    # Refuse anything but http(s). urlopen also speaks file:// and ftp://, so an
-    # operator typo -- or an env var set from somewhere less trusted -- could turn a
-    # notification into a local file read. The bearer token makes this stricter than
-    # it looks: the wrong scheme here would hand that secret to whatever answered.
-    if not url.startswith(("http://", "https://")):
-        context.log.error("PLATFORM_ALERT_URL must be http(s); refusing to open %r", url)
-        return
+    detail = context.failure_event.message or ""
+    if run.job_name == "analytics_hourly":
+        # The run's own message only names the step that failed. The report names
+        # what actually broke, and says the rest was published.
+        report = build_report.read(run.run_id)
+        if report["failures"]:
+            detail = build_report.summary(report)
+    payload = alert_payload(
+        job_name=run.job_name,
+        partition=partition,
+        run_id=run.run_id,
+        detail=detail,
+    )
+    if alerting.deliver(payload, context.log):
+        context.log.info("opened a platform incident for %s/%s: %s", run.job_name, partition, message)
 
-    try:
-        import json
-        import urllib.request
 
-        request = urllib.request.Request(  # noqa: S310 - scheme checked above
-            url,
-            data=json.dumps(
-                alert_payload(
-                    job_name=run.job_name,
-                    partition=partition,
-                    run_id=run.run_id,
-                    detail=context.failure_event.message,
-                )
-            ).encode(),
-            headers={
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {token}",
-            },
+@run_status_sensor(
+    run_status=DagsterRunStatus.SUCCESS,
+    monitored_jobs=[analytics_job],
+    default_status=DefaultSensorStatus.RUNNING,
+    description="Resolves the analytics_hourly incidents once a run succeeds again.",
+)
+def resolve_on_recovery(context):
+    """Nothing ever resolved these before: the 14 Nov 2026 incident was still open a
+    week later. The platform ignores a resolve for a fingerprint with nothing open."""
+    today = datetime.datetime.now(datetime.UTC).date()
+    alerting.deliver(
+        alerting.resolved_payload(alerting.recovery_fingerprints("analytics_hourly", "-", today)),
+        context.log,
+    )
+
+
+@sensor(
+    minimum_interval_seconds=600,
+    default_status=DefaultSensorStatus.RUNNING,
+    description=(
+        "Alerts when the serving copy every reader uses has not been published for "
+        f"{alerting.STALE_AFTER_HOURS} hours, whatever the cause, and again every day it stays so."
+    ),
+)
+def serving_freshness(context: SensorEvaluationContext):
+    """The alert that was missing from 16 to 21 Nov 2026: nothing failed, runs only
+    queued behind a dead one, and the warehouse froze without a word.
+
+    The cursor holds the days already alerted, so each stale day notifies once, and
+    recovery resolves exactly those.
+    """
+    import json
+
+    now = datetime.datetime.now(datetime.UTC)
+    alerted: list[str] = json.loads(context.cursor) if context.cursor else []
+    event = context.instance.get_latest_materialization_event(AssetKey("warehouse_serving"))
+    last = (
+        datetime.datetime.fromtimestamp(event.timestamp, datetime.UTC) if event else None
+    )
+    stale = last is None or now - last > datetime.timedelta(hours=alerting.STALE_AFTER_HOURS)
+
+    if not stale:
+        if alerted:
+            fingerprints = [alerting.stale_fingerprint(datetime.date.fromisoformat(d)) for d in alerted]
+            if alerting.deliver(alerting.resolved_payload(fingerprints, now), context.log):
+                context.update_cursor(json.dumps([]))
+        return SkipReason(f"serving copy published {last.isoformat()}")
+
+    day = now.date().isoformat()
+    if day in alerted:
+        return SkipReason(f"stale since {last}; already alerted today")
+    queued = context.instance.get_runs_count(
+        RunsFilter(job_name="analytics_hourly", statuses=[DagsterRunStatus.QUEUED])
+    )
+    running = context.instance.get_run_records(
+        RunsFilter(job_name="analytics_hourly", statuses=[DagsterRunStatus.STARTED]), limit=1
+    )
+    failed = context.instance.get_run_records(
+        RunsFilter(job_name="analytics_hourly", statuses=[DagsterRunStatus.FAILURE]), limit=1
+    )
+    detail = f"{queued} analytics_hourly run(s) queued."
+    if running:
+        started = running[0].start_time
+        detail += (
+            f" Run {running[0].dagster_run.run_id} has been STARTED since "
+            f"{datetime.datetime.fromtimestamp(started, datetime.UTC).isoformat() if started else '?'}."
         )
-        urllib.request.urlopen(request, timeout=10).close()  # noqa: S310
-        context.log.info("opened a platform incident for %s/%s", run.job_name, partition)
-    except Exception:
-        # Never raise: that would compound the original run failure by raising a
-        # second one on top of it, and bury the error that started this.
-        context.log.exception("failure notification could not be delivered")
+    if failed:
+        detail += f" Last failed run: {failed[0].dagster_run.run_id}."
+    if alerting.deliver(alerting.stale_payload(day=now.date(), last_publish=last, detail=detail, now=now), context.log):
+        context.update_cursor(json.dumps([*alerted, day]))
+    return SkipReason(f"stale since {last}; alerted")
 
 
 defs = Definitions(
@@ -676,7 +764,7 @@ defs = Definitions(
           ai_platform_snapshot_job, infra_control_edge_job, ai_platform_window_job, ai_platform_sweep_job,
           ai_platform_coverage_job,
           jellyfin_daily_job, jellyfin_library_items_job, jellyfin_playback_job,
-          jellyfin_playback_history_job, jellyfin_activity_job,
+          jellyfin_playback_history_job, jellyfin_playback_recent_job, jellyfin_activity_job,
           jellyfin_activity_history_job, jellyfin_users_job, jellyfin_searches_job,
           camera_daily_job, camera_zones_job, analytics_job],
     schedules=[npm_today_hourly_schedule, infra_control_hourly_schedule, npm_daily_schedule, mcp_api_daily_schedule, litellm_daily_schedule,
@@ -684,10 +772,11 @@ defs = Definitions(
                ai_platform_sweep_schedule,
                ai_platform_coverage_schedule, jellyfin_daily_schedule,
                jellyfin_library_items_schedule, jellyfin_playback_hourly_schedule,
+               jellyfin_playback_recent_schedule,
                jellyfin_activity_schedule, jellyfin_users_schedule,
                jellyfin_searches_hourly_schedule, camera_daily_schedule,
                camera_late_arrival_schedule, camera_zones_schedule, analytics_hourly_schedule],
-    sensors=[notify_on_failure],
+    sensors=[notify_on_failure, resolve_on_recovery, serving_freshness],
     resources={
         "lake": LakeStorage.from_env(),
         "npm_logs": NpmLogSources.from_env(),

@@ -70,7 +70,7 @@ from dagster import (
     sensor,
 )
 
-from homelab_datalake import lakeio, layout
+from homelab_datalake import duck, lakeio, layout
 from homelab_datalake.parsing import prometheus as prom
 from homelab_datalake.resources import LakeStorage
 
@@ -338,7 +338,7 @@ def stream_tick(lake: LakeStorage, client, cursor: str | None, now_ms: int,
 
 
 def _duckdb() -> duckdb.DuckDBPyConnection:
-    con = duckdb.connect()
+    con = duck.connect()
     con.execute("SET TimeZone='UTC';")
     return con
 

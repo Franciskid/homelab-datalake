@@ -17,3 +17,5 @@ homelab_datalake:
       threads: 4
       settings:
         TimeZone: UTC
+        # Bounded to fit the daemon's 8 GB cap; see src/homelab_datalake/duck.py.
+        memory_limit: "{{ env_var('DUCKDB_MEMORY_LIMIT', '2500MB') }}"

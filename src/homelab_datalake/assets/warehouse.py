@@ -25,6 +25,7 @@ from dagster import (
     AssetExecutionContext,
     AssetKey,
     AssetSpec,
+    Failure,
     MaterializeResult,
     MetadataValue,
     Output,
@@ -32,7 +33,7 @@ from dagster import (
     multi_asset,
 )
 
-from homelab_datalake import layout, rebuild_state, serving
+from homelab_datalake import build_report, duck, layout, rebuild_state, serving
 from homelab_datalake.assets.ai_platform import ai_platform_asset_by_table
 from homelab_datalake.assets.camera import (
     _ANNOTATION_SCHEMA,
@@ -301,7 +302,7 @@ def connect() -> duckdb.DuckDBPyConnection:
     setting in profiles.yml; both connections must agree.
     """
     Path(DUCKDB_PATH).parent.mkdir(parents=True, exist_ok=True)
-    con = duckdb.connect(DUCKDB_PATH)
+    con = duck.connect(DUCKDB_PATH)
     con.execute("SET TimeZone='UTC';")
     return con
 
@@ -329,6 +330,7 @@ def warehouse_tables(context: AssetExecutionContext, lake: LakeStorage):
     storage for long: it holds what the lake holds, newest copy of a window table's row
     only, or the run fails.
     """
+    build_report.reset(context.run_id)
     with connect() as con:
         lake.configure_duckdb(con)
         con.execute("CREATE SCHEMA IF NOT EXISTS raw;")
@@ -347,17 +349,32 @@ def warehouse_tables(context: AssetExecutionContext, lake: LakeStorage):
 
         counts: dict[str, int] = {}
         reloaded: set[str] = set()
+        failed: list[dict[str, str]] = []
         for name, prefix, schema, _upstream, _description in _SOURCES:
-            current = rebuild_state.fingerprint(
-                lake.parquet_fingerprint(prefix),
-                load_statement(name, lake.duckdb_scan_target(prefix)),
-            )
-            if known.get(name) != current or name not in existing:
-                load_table(con, lake, name, prefix, schema, context.log)
-                rebuild_state.record_loaded(con, name, current)
-                reloaded.add(name)
+            # One source that will not load costs that source, not the run. Its table
+            # keeps the last good load (CREATE OR REPLACE either finishes or leaves the
+            # old table), it is not recorded as loaded, so the next run tries again, and
+            # analytics_build_health fails the run once everything else is published.
+            try:
+                current = rebuild_state.fingerprint(
+                    lake.parquet_fingerprint(prefix),
+                    load_statement(name, lake.duckdb_scan_target(prefix)),
+                )
+                if known.get(name) != current or name not in existing:
+                    load_table(con, lake, name, prefix, schema, context.log)
+                    rebuild_state.record_loaded(con, name, current)
+                    reloaded.add(name)
+            except Exception as error:
+                context.log.exception("raw.%s did not load; keeping its previous table", name)
+                failed.append({"stage": "load", "name": f"raw.{name}", "detail": str(error)[:300]})
+                if name not in existing:
+                    # dbt binds column names at compile time, so a source with no table
+                    # at all would fail every model, not just its own.
+                    con.execute(empty_table_ddl(f"raw.{name}", schema))
             table = f"raw.{name}"
             counts[name] = con.execute(f"SELECT count(*) FROM {table}").fetchone()[0]  # noqa: S608
+        if failed:
+            build_report.record(context.run_id, failed)
         context.log.info(
             "%s: reloaded %d of %d raw tables: %s",
             "full rebuild" if full else "partial rebuild",
@@ -413,7 +430,10 @@ CHECK_SEMANTIC_COVERAGE = "semantic_layer_covers_the_marts"
     ],
 )
 def warehouse_serving(context: AssetExecutionContext) -> Output[dict]:
-    published, replaced = serving.publish_if_changed(DUCKDB_PATH)
+    held = build_report.read(context.run_id)["quarantined"]
+    if held:
+        context.log.warning("serving these from the previous copy, their own tests failed: %s", held)
+    published, replaced = serving.publish_if_changed(DUCKDB_PATH, keep_previous=frozenset(held))
     context.log.info(
         "%s %d tables, %d rows, %.1f MB at %s",
         "published" if replaced else "no mart changed, kept",
@@ -435,6 +455,7 @@ def warehouse_serving(context: AssetExecutionContext) -> Output[dict]:
             "rows": published.rows,
             "size_mb": round(published.bytes_written / 1e6, 2),
             "replaced": replaced,
+            "held_back": MetadataValue.text(", ".join(held) or "none"),
             "path": MetadataValue.path(published.path),
             "published": MetadataValue.text(", ".join(published.tables)),
         },
@@ -457,3 +478,27 @@ def warehouse_serving(context: AssetExecutionContext) -> Output[dict]:
             "the data does not exist will answer a different question instead."
         ),
     )
+
+
+
+@asset(
+    deps=[warehouse_serving],
+    group_name="warehouse",
+    compute_kind="python",
+    description=(
+        "The last step of analytics_hourly. Fails the run, after the healthy part has "
+        "been published, when any raw load, dbt model or dbt test failed earlier in it, "
+        "so a partial failure still raises an alert instead of passing quietly."
+    ),
+)
+def analytics_build_health(context: AssetExecutionContext) -> MaterializeResult:
+    report = build_report.read(context.run_id)
+    if report["failures"]:
+        raise Failure(
+            description=build_report.summary(report),
+            metadata={
+                "failures": len(report["failures"]),
+                "held_back": MetadataValue.text(", ".join(report["quarantined"]) or "none"),
+            },
+        )
+    return MaterializeResult(metadata={"failures": 0})

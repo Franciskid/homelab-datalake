@@ -26,7 +26,7 @@ import duckdb
 import pyarrow as pa
 from dagster import AssetExecutionContext, MetadataValue, Output, RetryPolicy, asset
 
-from homelab_datalake import layout
+from homelab_datalake import duck, layout
 from homelab_datalake.assets.jellyfin import TITLE_PREFIX, jellyfin_library_raw
 from homelab_datalake.parsing.tmdb import client_from_env
 from homelab_datalake.resources import LakeStorage
@@ -86,7 +86,7 @@ def _wanted_ids(lake: LakeStorage) -> list[int]:
     depends on the library landing and not on the warehouse being rebuilt first.
     """
     pattern = lake.duckdb_scan_target(TITLE_PREFIX).replace("'", "''")
-    con = duckdb.connect()
+    con = duck.connect()
     try:
         lake.configure_duckdb(con)
         rows = con.execute(
@@ -113,7 +113,7 @@ def _wanted_ids(lake: LakeStorage) -> list[int]:
 
 def _existing(lake: LakeStorage) -> dict[int, dict]:
     pattern = lake.duckdb_scan_target(TMDB_PREFIX).replace("'", "''")
-    con = duckdb.connect()
+    con = duck.connect()
     try:
         lake.configure_duckdb(con)
         result = con.execute(

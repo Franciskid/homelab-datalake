@@ -267,6 +267,12 @@ services:
     build: .
     container_name: datalake-daemon
     restart: unless-stopped
+    # Every run executes inside this container, so this caps the whole pipeline. On
+    # 21 Nov 2026 a full rebuild took the host's 31 GB and its swap, and the server
+    # nearly went down. memswap equal to mem: no swap on top. DuckDB is bounded to
+    # match, see src/homelab_datalake/duck.py.
+    mem_limit: 8g
+    memswap_limit: 8g
     env_file: [.env]
     command: ["dagster-daemon", "run", "-w", "/app/workspace.yaml"]
     # Two networks. `default` is this project's own; `fraserv_reseau` is where the

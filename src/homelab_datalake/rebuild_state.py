@@ -38,6 +38,7 @@ from pathlib import Path
 
 import duckdb
 
+from homelab_datalake import duck
 from homelab_datalake.service_origins import inventory_fingerprint_input
 
 SCHEMA = "build_state"
@@ -168,7 +169,7 @@ def record_loaded(con: duckdb.DuckDBPyConnection, name: str, value: str) -> None
 
 def pending(path: str | None = None) -> Pending:
     """What dbt has to build. A warehouse with no state yet needs all of it."""
-    con = duckdb.connect(path or warehouse_path())
+    con = duck.connect(path or warehouse_path())
     try:
         tables = {
             name for (name,) in con.execute(
@@ -188,7 +189,7 @@ def pending(path: str | None = None) -> Pending:
 
 def record_built(path: str | None = None, *, marts_changed: bool) -> None:
     """dbt succeeded: what was loaded is now built. Call nothing here if it failed."""
-    con = duckdb.connect(path or warehouse_path())
+    con = duck.connect(path or warehouse_path())
     try:
         ensure(con)
         con.execute("BEGIN")
@@ -207,7 +208,7 @@ def marts_generation(path: str) -> str | None:
     Attached read-only, like every other step after dbt: they run at the same time, and
     a read-write open would take the lock from them.
     """
-    con = duckdb.connect(":memory:")
+    con = duck.connect(":memory:")
     try:
         escaped = path.replace("'", "''")
         con.execute(f"ATTACH '{escaped}' AS warehouse (READ_ONLY);")

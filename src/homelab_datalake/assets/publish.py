@@ -43,7 +43,7 @@ from dagster import (
     multi_asset,
 )
 
-from homelab_datalake import layout
+from homelab_datalake import duck, layout
 from homelab_datalake.assets.warehouse import DUCKDB_PATH
 from homelab_datalake.resources import LakeStorage
 
@@ -195,7 +195,7 @@ def read_only_warehouse() -> duckdb.DuckDBPyConnection:
     view definitions already use makes them resolve.
     """
     alias = Path(DUCKDB_PATH).stem
-    con = duckdb.connect(":memory:")
+    con = duck.connect(":memory:")
     con.execute("SET TimeZone='UTC';")
     con.execute(
         f"ATTACH '{DUCKDB_PATH.replace(chr(39), chr(39) * 2)}' AS \"{alias}\" (READ_ONLY);"

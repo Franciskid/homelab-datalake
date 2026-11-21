@@ -17,7 +17,7 @@ endpoint stays in one `assets/camera.py`.
 """
 
 import os
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 
 import pyarrow as pa
 from dagster import (
@@ -25,6 +25,7 @@ from dagster import (
     AssetCheckSeverity,
     AssetCheckSpec,
     AssetExecutionContext,
+    Config,
     DailyPartitionsDefinition,
     HourlyPartitionsDefinition,
     MetadataValue,
@@ -985,6 +986,105 @@ def jellyfin_playback_history_raw(context: AssetExecutionContext, lake: LakeStor
         },
     )
 
+
+
+# The plugin keeps updating a session's PlayDuration for as long as the player is
+# open, and jellyfin_playback_raw only re-reads the current hour and the three before
+# it. A session still playing past that point kept the duration of its last read:
+# Frankenstein on 2026-11-09 started at 18:53, was last read at 21:05 (7,912 s) and
+# really ran to 21:26 (9,170 s in the plugin); a Dr House session on 2026-11-12 kept
+# 7,405 s of its 21,135 s. This re-reads a trailing window in one query and settles
+# every hour in it, so a session gets its final duration once it ends, however long
+# it ran. 48 hours by default; set `hours_back` higher to repair older history.
+RECENT_PLAYBACK_HOURS = 48
+
+# The columns whose value a later read can correct. `_extracted_at` is not one of
+# them: rewriting an hour only to move that timestamp would change the object, and
+# every changed object makes the next analytics run reload and rebuild the playback
+# marts for nothing.
+_PLAYBACK_CONTENT = [f.name for f in _PLAYBACK_SCHEMA if f.name != "_extracted_at"]
+
+
+class RecentPlaybackConfig(Config):
+    hours_back: int = RECENT_PLAYBACK_HOURS
+
+
+def _playback_content(rows: list[dict]) -> dict:
+    return {
+        _playback_key(row): tuple(row.get(name) for name in _PLAYBACK_CONTENT)
+        for row in rows
+        if _playback_key(row) is not None
+    }
+
+
+def _settle_playback_hour(
+    lake: LakeStorage, hour: datetime, rows: list[dict], extracted_at: datetime
+) -> bool:
+    """Merge one hour of a fresh read into the lake, writing only if a row changed.
+
+    Same merge as `_write_playback_history_hour` (newest read wins, rows the plugin no
+    longer offers are kept), but compared before writing: an hour whose sessions all
+    read back the same is left untouched. Returns whether the object was rewritten.
+    """
+    stamped = [
+        {**row, "partition_hour": hour, "dt": row["started_at"].date(), "_extracted_at": extracted_at}
+        for row in rows
+    ]
+    projected, _unmapped = project(stamped, _PLAYBACK_SCHEMA)
+    prefix = f"{PLAYBACK_PREFIX}/partition_hour={hour:%Y-%m-%dT%H:00:00}"
+    key = f"{prefix}/data.parquet"
+    existing = _read_raw_rows(lake, key, _PLAYBACK_SCHEMA)
+    merged, _retained = _merge_playback(existing, projected, _PLAYBACK_SCHEMA)
+    if _playback_content(merged) == _playback_content(existing):
+        return False
+    lake.delete_prefix(prefix)
+    lake.write_table(key, pa.Table.from_pylist(merged, schema=_PLAYBACK_SCHEMA))
+    return True
+
+
+@asset(
+    group_name="jellyfin",
+    compute_kind="python",
+    retry_policy=RetryPolicy(max_retries=2, delay=30),
+    description=(
+        "Re-reads the last `hours_back` hours (48 by default) of Playback Reporting rows "
+        "in one query and merges them into jellyfin_playback_raw's hourly partitions, "
+        "rewriting only the hours where a session changed. This is what gives a long "
+        "session its final duration: the hourly asset stops re-reading an hour after "
+        "three hours, while the plugin goes on updating the session until it ends."
+    ),
+)
+def jellyfin_playback_recent_raw(
+    context: AssetExecutionContext, config: RecentPlaybackConfig, lake: LakeStorage
+):
+    if config.hours_back < 1:
+        raise ValueError("hours_back must be at least 1")
+    end = datetime.now(UTC)
+    start = (end - timedelta(hours=config.hours_back)).replace(minute=0, second=0, microsecond=0)
+    parsed = jellyfin_source.playback_window(start, end)
+    extracted_at = datetime.now(UTC)
+
+    by_hour: dict[datetime, list[dict]] = {}
+    for row in parsed.rows:
+        if row.get("started_at") is not None:
+            by_hour.setdefault(_playback_hour(row["started_at"]), []).append(row)
+
+    rewritten = [hour for hour in sorted(by_hour) if _settle_playback_hour(lake, hour, by_hour[hour], extracted_at)]
+    context.log.info(
+        "re-read %s .. %s: %d sessions across %d hours, %d hours had changed and were rewritten",
+        start, end, len(parsed.rows), len(by_hour), len(rewritten),
+    )
+    yield Output(
+        {"sessions": len(parsed.rows), "hours_rewritten": len(rewritten)},
+        metadata={
+            "window_start": MetadataValue.text(start.isoformat()),
+            "window_end": MetadataValue.text(end.isoformat()),
+            "sessions_read": len(parsed.rows),
+            "hours_read": len(by_hour),
+            "hours_rewritten": len(rewritten),
+            "rewritten": MetadataValue.text(", ".join(f"{h:%Y-%m-%dT%H}" for h in rewritten) or "none"),
+        },
+    )
 
 # --------------------------------------------------------------------------------
 # the server activity log

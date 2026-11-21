@@ -36,7 +36,7 @@ from pathlib import Path
 
 import duckdb
 
-from homelab_datalake import rebuild_state
+from homelab_datalake import duck, rebuild_state
 from homelab_datalake.mcp.semantic import create_dataset_views, validate
 
 logger = logging.getLogger(__name__)
@@ -92,8 +92,17 @@ def mart_tables(con: duckdb.DuckDBPyConnection, database: str | None = None) -> 
     ]
 
 
-def publish(source_path: str, serving_path: str = SERVING_PATH) -> Published:
+def publish(
+    source_path: str,
+    serving_path: str = SERVING_PATH,
+    keep_previous: frozenset[str] = frozenset(),
+) -> Published:
     """Copy the marts out of the warehouse into a fresh serving file, atomically.
+
+    `keep_previous` names marts to copy from the copy being replaced instead of the
+    warehouse: ones whose own dbt test failed this run, so the warehouse holds the very
+    rows that failed it (see build_report). One that the previous copy does not hold
+    is left out rather than published unchecked.
 
     Written to a temporary name and renamed into place, so a reader opening the file
     at any instant gets either the whole previous copy or the whole new one. A
@@ -112,7 +121,7 @@ def publish(source_path: str, serving_path: str = SERVING_PATH) -> Published:
     # lake layers race for the same file -- whichever started second failed with
     # "Conflicting lock is held". Nothing here writes to the warehouse, so nothing
     # here should hold that lock; several read-only handles coexist happily.
-    con = duckdb.connect(":memory:")
+    con = duck.connect(":memory:")
     try:
         con.execute("SET TimeZone='UTC';")
         # Attached under the file's own name, not a readable alias. DuckDB stores a
@@ -135,14 +144,23 @@ def publish(source_path: str, serving_path: str = SERVING_PATH) -> Published:
         # collide with the copy being built from it.
         con.execute(f"ATTACH '{str(staged).replace(chr(39), chr(39) * 2)}' AS publishing;")
         con.execute(f"CREATE SCHEMA IF NOT EXISTS publishing.{MART_SCHEMA_SUFFIX};")
+        held = {t for _schema, t in tables if t in keep_previous}
+        if held and previous:
+            con.execute(f"ATTACH '{str(target).replace(chr(39), chr(39) * 2)}' AS previous_copy (READ_ONLY);")
 
         counts = {}
         for schema, table in tables:
             # Both identifiers come from DuckDB's own catalogue, not from input, and
             # are quoted anyway so an unusual model name cannot change the statement.
+            if table in held:
+                if table not in previous:
+                    continue
+                origin = f'previous_copy."{MART_SCHEMA_SUFFIX}"."{table}"'
+            else:
+                origin = f'"{alias}"."{schema}"."{table}"'
             con.execute(
                 f'CREATE TABLE publishing."{MART_SCHEMA_SUFFIX}"."{table}" AS '  # noqa: S608
-                f'SELECT * FROM "{alias}"."{schema}"."{table}"'
+                f"SELECT * FROM {origin}"
             )
             counts[table] = con.execute(
                 f'SELECT count(*) FROM publishing."{MART_SCHEMA_SUFFIX}"."{table}"'  # noqa: S608
@@ -172,7 +190,7 @@ def publish(source_path: str, serving_path: str = SERVING_PATH) -> Published:
     # produce a serving database that publishes cleanly and fails only when somebody
     # asks the question that touches the renamed column. Failing the deploy instead
     # leaves the previous good copy serving.
-    check = duckdb.connect(str(staged), read_only=True)
+    check = duck.connect(str(staged), read_only=True)
     try:
         check.execute("SET TimeZone='UTC';")
         problems = validate(check)
@@ -194,7 +212,11 @@ def publish(source_path: str, serving_path: str = SERVING_PATH) -> Published:
     )
 
 
-def publish_if_changed(source_path: str, serving_path: str = SERVING_PATH) -> tuple[Published, bool]:
+def publish_if_changed(
+    source_path: str,
+    serving_path: str = SERVING_PATH,
+    keep_previous: frozenset[str] = frozenset(),
+) -> tuple[Published, bool]:
     """Publish unless the copy being served already holds these marts. Says which it did.
 
     A publish rewrites the whole file, so it is what is left of the hourly write once
@@ -222,8 +244,10 @@ def publish_if_changed(source_path: str, serving_path: str = SERVING_PATH) -> tu
             False,
         )
 
-    published = publish(source_path, serving_path)
-    if generation is not None:
+    published = publish(source_path, serving_path, keep_previous)
+    # A copy that held a mart back is not the copy of this generation: the next run
+    # must publish again once that mart passes, so no marker is written for it.
+    if generation is not None and not keep_previous:
         staged = marker.with_suffix(".building")
         staged.write_text(generation)
         staged.replace(marker)
@@ -237,7 +261,7 @@ def _row_counts(path: Path) -> dict[str, int]:
     """
     if not path.exists():
         return {}
-    con = duckdb.connect(":memory:")
+    con = duck.connect(":memory:")
     try:
         escaped = str(path).replace("'", "''")
         con.execute(f"ATTACH '{escaped}' AS previous (READ_ONLY);")
@@ -284,7 +308,7 @@ def connect(serving_path: str = SERVING_PATH) -> duckdb.DuckDBPyConnection:
             f"no serving database at {serving_path!r}. It is published by the "
             "warehouse_serving asset after dbt builds; run that first."
         )
-    con = duckdb.connect(":memory:")
+    con = duck.connect(":memory:")
     # The path comes from configuration, never from a caller, and is escaped anyway.
     escaped = str(path).replace("'", "''")
     con.execute(f"ATTACH '{escaped}' AS {SERVING_ALIAS} (READ_ONLY);")

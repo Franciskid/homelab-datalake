@@ -115,3 +115,15 @@ retention:
       skipped: 3
       failure: 30
       success: 30
+
+# Fails a run that outlives its max runtime, whether or not its process is still
+# there. Without it, a run whose worker died (container restart, OOM) stayed STARTED
+# forever: on 16 Nov 2026 one analytics_hourly run did, and because that queue allows
+# one run at a time, 141 runs queued behind it for five days while the serving copy
+# stayed frozen. analytics_hourly and ai_platform_sweep set a tighter
+# dagster/max_runtime tag on their jobs; this is the ceiling for everything else.
+run_monitoring:
+  enabled: true
+  start_timeout_seconds: 600
+  max_runtime_seconds: 21600
+  poll_interval_seconds: 120

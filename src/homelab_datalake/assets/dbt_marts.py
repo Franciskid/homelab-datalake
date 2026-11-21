@@ -26,9 +26,9 @@ from graphlib import TopologicalSorter
 from pathlib import Path
 
 from dagster import AssetExecutionContext, Output
-from dagster_dbt import DbtCliResource, DbtProject, dbt_assets
+from dagster_dbt import DagsterDbtTranslator, DbtCliResource, DbtProject, dbt_assets
 
-from homelab_datalake import rebuild_state
+from homelab_datalake import build_report, rebuild_state
 
 DBT_PROJECT_DIR = Path(__file__).resolve().parents[3] / "dbt"
 
@@ -39,7 +39,100 @@ dbt_project = DbtProject(project_dir=DBT_PROJECT_DIR)
 dbt_project.prepare_if_dev()
 
 
-@dbt_assets(manifest=dbt_project.manifest_path)
+class _NonBlockingTests(DagsterDbtTranslator):
+    """dbt tests as asset checks that report but do not block.
+
+    dagster-dbt makes every severity=error test a *blocking* check, and a failed
+    blocking check fails the whole step: one bad source took the publish, and so every
+    dataset, down with it. Blocking is not what protects readers here. `dbt build`
+    already skips everything downstream of a failed test, and the publish serves a
+    mart whose own test failed from the previous copy (see build_report).
+    """
+
+    def get_asset_check_spec(self, asset_spec, manifest, unique_id, project):
+        spec = super().get_asset_check_spec(asset_spec, manifest, unique_id, project)
+        if spec is None or not spec.blocking:
+            return spec
+        from dagster._record import replace
+
+        return replace(spec, blocking=False)
+
+
+_FAILED = {"error", "fail", "runtime error"}
+
+
+def _failures(invocation) -> tuple[list[dict[str, str]], list[str]]:
+    """What this dbt invocation failed, and which models must not be published as built.
+
+    A model whose own test failed has already been rebuilt with the rows that failed
+    it, so that table is held back. A model that errored kept its previous table,
+    and one skipped because something upstream failed was never touched: both are
+    safe to serve as they are.
+    """
+    try:
+        results = invocation.get_artifact("run_results.json").get("results", [])
+    except Exception as error:  # noqa: BLE001 - no artifact at all: dbt never got going
+        return [{"stage": "dbt", "name": "dbt build", "detail": f"no run_results.json: {error}"}], []
+    manifest = invocation.manifest
+    nodes = manifest.get("nodes", {})
+    failures: list[dict[str, str]] = []
+    held: set[str] = set()
+    for result in results:
+        status = str(result.get("status", "")).lower()
+        if status not in _FAILED:
+            continue
+        unique_id = result.get("unique_id", "")
+        node = nodes.get(unique_id, {})
+        failures.append({
+            "stage": "dbt",
+            "name": node.get("name") or unique_id,
+            "detail": f"{status}: {str(result.get('message') or '')[:300]}",
+        })
+        if unique_id.startswith("test."):
+            for parent in manifest.get("parent_map", {}).get(unique_id, []):
+                if parent.startswith("model."):
+                    model = nodes.get(parent, {})
+                    held.add(model.get("alias") or model.get("name") or parent.split(".")[-1])
+    if not failures and not invocation.is_successful():
+        failures.append({"stage": "dbt", "name": "dbt build", "detail": "dbt exited non-zero with no failed node"})
+    return failures, sorted(held)
+
+
+def _build(context, dbt: DbtCliResource, args: list[str]):
+    """Run dbt without letting a failure end the step. Returns (outputs produced, invocation)."""
+    invocation = dbt.cli(args, context=context, raise_on_error=False)
+    produced: set[str] = set()
+    for event in invocation.stream():
+        if isinstance(event, Output):
+            produced.add(event.output_name)
+        yield event
+    return produced, invocation
+
+
+def _settle(context, definition, already: set[str], invocation):
+    """Placeholders for every model dbt did not build, then record what failed.
+
+    Without an output, a model that failed or was skipped reads to Dagster as a
+    skipped step and takes the publish down with it. Its table is still the last
+    good one, so it gets an output saying it was not rebuilt.
+    """
+    failures, held = _failures(invocation)
+    outputs = {key: name for name, key in definition.keys_by_output_name.items()}
+    graph = {key: definition.asset_deps[key] & outputs.keys() for key in outputs}
+    for key in TopologicalSorter(graph).static_order():
+        name = outputs[key]
+        if name not in already:
+            yield Output(None, output_name=name, metadata={"rebuilt": False})
+    if failures:
+        build_report.record(context.run_id, failures, held)
+        context.log.error(
+            "dbt: %d failure(s); everything else was built. Held back: %s. %s",
+            len(failures), held or "none", "; ".join(f["name"] for f in failures[:20]),
+        )
+    return failures
+
+
+@dbt_assets(manifest=dbt_project.manifest_path, dagster_dbt_translator=_NonBlockingTests())
 def dbt_marts(context: AssetExecutionContext, dbt: DbtCliResource):
     """Build and test the models downstream of what changed. See rebuild_state.
 
@@ -52,14 +145,18 @@ def dbt_marts(context: AssetExecutionContext, dbt: DbtCliResource):
     if definition.keys_by_output_name != definition.node_keys_by_output_name:
         # Someone materialised a few models by hand. They asked for those, and building
         # a few says nothing about the state of the rest.
-        yield from dbt.cli(["build"], context=context).stream()
+        produced, invocation = yield from _build(context, dbt, ["build"])
+        yield from _settle(context, definition, produced, invocation)
         return
 
     plan = rebuild_state.pending()
     if plan.full:
         context.log.info("full build")
-        yield from dbt.cli(["build"], context=context).stream()
-        rebuild_state.record_built(marts_changed=True)
+        produced, invocation = yield from _build(context, dbt, ["build"])
+        failures = yield from _settle(context, definition, produced, invocation)
+        # Left pending on a failure, so the next run tries the same build again.
+        if not failures:
+            rebuild_state.record_built(marts_changed=True)
         return
 
     build = rebuild_state.plan_build(dbt_project.manifest_path, plan.sources)
@@ -70,9 +167,11 @@ def dbt_marts(context: AssetExecutionContext, dbt: DbtCliResource):
     # its upstream, and nothing left alone is downstream of anything being rebuilt.
     outputs = {key: name for name, key in definition.keys_by_output_name.items()}
     graph = {key: definition.asset_deps[key] & outputs.keys() for key in outputs}
+    produced: set[str] = set()
     for key in TopologicalSorter(graph).static_order():
         if key.path[-1] in build.untouched_models:
             yield Output(None, output_name=outputs[key], metadata={"rebuilt": False})
+            produced.add(outputs[key])
 
     if build.rebuilds_anything:
         context.log.info(
@@ -87,7 +186,10 @@ def dbt_marts(context: AssetExecutionContext, dbt: DbtCliResource):
         args = ["build", "--indirect-selection", "empty"]
         if build.exclude:
             args += ["--exclude", " ".join(build.exclude)]
-        yield from dbt.cli(args, context=context).stream()
+        built, invocation = yield from _build(context, dbt, args)
+        failures = yield from _settle(context, definition, produced | built, invocation)
+        if failures:
+            return
     else:
         context.log.info("no source dbt reads has changed; nothing to build")
 
