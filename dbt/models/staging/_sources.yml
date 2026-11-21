@@ -2413,7 +2413,7 @@ sources:
           the publisher is a new version; the previous one keeps its _last_seen_at.
         columns:
           - name: source
-            description: The publisher -- eurostat or ssmsi.
+            description: The publisher -- eurostat, ssmsi, budget, drees, insee, oecd, bdf, cor, sre, workbook or curated.
           - name: dataset
             description: The publisher's dataset code (migr_eiord, delinquance_departementale...).
           - name: series_key
@@ -2436,3 +2436,9 @@ sources:
             description: When the publisher last updated the dataset, as it says.
           - name: source_url
             description: The publisher's page for the dataset.
+          - name: _version_hash
+            description: Hash of the row's tracked values; a new hash is a new version.
+          - name: _first_seen_at
+            description: When the lake first saw this version of the row.
+          - name: _last_seen_at
+            description: When the lake last saw this version of the row from the publisher.

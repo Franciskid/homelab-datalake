@@ -10,9 +10,12 @@ models:
         description: source, dataset, series_key, geo and period joined with |.
         tests: [not_null, unique]
       - name: source
-        description: The publisher -- eurostat, ssmsi, budget (data.economie.gouv.fr) or drees.
+        description: >
+          The publisher -- eurostat, ssmsi, budget (data.economie.gouv.fr), drees, insee, oecd,
+          bdf (Banque de France), cor, sre (Service des retraites de l'Etat), workbook (a
+          publisher's downloadable workbook) or curated (figures transcribed from a report).
         tests:
-          - accepted_values: {values: ['eurostat', 'ssmsi', 'budget', 'drees']}
+          - accepted_values: {values: ['eurostat', 'ssmsi', 'budget', 'drees', 'insee', 'oecd', 'bdf', 'cor', 'sre', 'workbook', 'curated']}
       - name: dataset
         description: The publisher's dataset code.
       - name: series_key
