@@ -27,7 +27,10 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/*
 
 COPY --from=firecrawl /usr/local/cargo/bin/firecrawl-local /usr/local/bin/firecrawl-local
-ENV POLLS_FIRECRAWL_LOCAL=/usr/local/bin/firecrawl-local FIRECRAWL_CHROME_PATH=/usr/bin/chromium
+# Chromium's namespace sandbox cannot start within Docker's default profile.
+# Only the restricted polls renderer uses this launcher.
+RUN printf '%s\n' '#!/bin/sh' 'exec /usr/bin/chromium --no-sandbox --disable-dev-shm-usage "$@"' \
+    > /usr/local/bin/polls-chromium && chmod 755 /usr/local/bin/polls-chromium
 
 # The lock first, on its own layer, so a code change does not reinstall every package.
 # Then the project itself with --no-deps: its dependencies are exactly the locked ones,

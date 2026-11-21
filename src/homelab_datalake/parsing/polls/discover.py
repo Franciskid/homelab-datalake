@@ -1,4 +1,4 @@
-# Vendored from the politico repository (scripts/pollslib/discover.py, 6db2c47). Do not edit here: change it there and run scripts/vendor-pollslib.py.
+# Vendored from the politico repository (scripts/pollslib/discover.py, 7f8ae77). Do not edit here: change it there and run scripts/vendor-pollslib.py.
 """Where new reports show up: the Commission des sondages list, the institutes' pages, the French Wikipedia table.
 
 Everything here parses text it is given (no network, no files): the caller fetches, so the same code runs on fixtures in
@@ -130,9 +130,9 @@ SOURCES = [
     {"institute": "Elabe", "listing": ["https://elabe.fr/tag/presidentielle-2027/"], "article": r"/presidentielle-2027"},
     {"institute": "Ifop", "listing": ["https://www.ifopgroup.com/?s=pr%C3%A9sidentielle+2027"], "article": r"/article/.*(intentions-de-vote|presidentielle-2027)"},
     {"institute": "OpinionWay", "listing": ["https://www.opinion-way.com/fr/publications/?publication_format_terms=69"], "article": r"publications/(presitrack|.*presidentielle|.*intentions)"},
-    {"institute": "Harris", "listing": ["https://tolunacorporate.com/fr/"], "article": r"/fr/(intentions-de-vote|.*presidentielle)"},
+    {"institute": "Harris", "listing": ["https://tolunacorporate.com/fr/category/opinion-polls/"], "article": r"/fr/(intentions-de-vote|.*presidentielle)"},
     {"institute": "Cluster17", "listing": ["https://cluster17.com/nos-sondages/"], "article": r"/(.*presidentielle|.*intentions|wp-content/uploads/.*\.pdf)"},
-    {"institute": "Ipsos", "listing": ["https://www.ipsos.com/fr-fr/search?keys=intentions%20de%20vote%20pr%C3%A9sidentielle%202027"], "article": r"presidentielle|intentions[- ]de[- ]vote"},
+    {"institute": "Ipsos", "listing": ["https://www.ipsos.com/fr-fr/topic/election"], "article": r"presidentielle|intentions[- ]de[- ]vote"},
     {"institute": "Odoxa", "listing": ["https://www.odoxa.fr/sondages/politique/"], "article": r"presidentielle|premier tour|intentions de vote"},
     {"institute": "Verian", "listing": ["https://www.veriangroup.com/fr/news-and-insights/page/1"], "article": r"(presidentielle|barometre)"},
     {"institute": "YouGov", "listing": ["https://yougov.com/fr-fr/articles?category=politics"], "article": r"presidentielle|intentions[- ]de[- ]vote"},

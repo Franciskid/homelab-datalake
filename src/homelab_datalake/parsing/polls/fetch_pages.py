@@ -1,4 +1,4 @@
-# Vendored from the politico repository (scripts/pollslib/fetch_pages.py, 6db2c47). Do not edit here: change it there and run scripts/vendor-pollslib.py.
+# Vendored from the politico repository (scripts/pollslib/fetch_pages.py, 7f8ae77). Do not edit here: change it there and run scripts/vendor-pollslib.py.
 """Render public listing pages when ordinary HTTP does not expose their links."""
 import json
 import os
@@ -43,14 +43,7 @@ class PageFetcher:
             pass
 
         try:
-            binary = os.environ.get("POLLS_FIRECRAWL_LOCAL", str(Path.home() / ".cargo/bin/firecrawl-local"))
-            result = subprocess.run(
-                [binary, "scrape", "--public-only", "--browser", "always", "--format", "rawHtml", "--timeout", "20000", url],
-                env={**os.environ, "FIRECRAWL_CLOUD": "off"}, capture_output=True, timeout=30,
-            )
-            if re.search(rb"blocked|captcha|\b(?:401|403|429|451)\b", result.stderr, re.I):
-                raise BlockedSource("Firecrawl Local reported a publisher block")
-            payload = json.loads(result.stdout)
+            payload = self.render_local(url)
             page = self.page(payload, usable)
             if page is not None:
                 self.log(f"polls: rendered {url} with Firecrawl Local")
@@ -82,7 +75,34 @@ class PageFetcher:
         raise OSError("listing could not be read over HTTP or Firecrawl")
 
     @staticmethod
+    def render_local(url):
+        endpoint = os.environ.get("POLLS_FIRECRAWL_URL")
+        if endpoint:
+            request = Request(
+                endpoint + "/v2/scrape",
+                json.dumps({"url": url, "formats": ["rawHtml"], "timeout": 20000}).encode(),
+                {"Authorization": "Bearer " + os.environ["POLLS_FIRECRAWL_LOCAL_TOKEN"],
+                 "Content-Type": "application/json"},
+            )
+            try:
+                with urlopen(request, timeout=25) as response:
+                    return json.load(response)
+            except HTTPError as error:
+                check_access(b"", error.code)
+                raise
+        binary = os.environ.get("POLLS_FIRECRAWL_LOCAL", str(Path.home() / ".cargo/bin/firecrawl-local"))
+        result = subprocess.run(
+            [binary, "scrape", "--public-only", "--browser", "always", "--format", "rawHtml", "--timeout", "20000", url],
+            env={**os.environ, "FIRECRAWL_CLOUD": "off"}, capture_output=True, timeout=30,
+        )
+        if re.search(rb"blocked|captcha|\b(?:401|403|429|451)\b", result.stderr, re.I):
+            raise BlockedSource("Firecrawl Local reported a publisher block")
+        return json.loads(result.stdout)
+
+    @staticmethod
     def page(payload, usable):
+        if payload.get("code") in ("BLOCKED", "BLOCKED_TARGET", "ROBOTS_DENIED"):
+            raise BlockedSource("Firecrawl reported a publisher block")
         data = payload.get("data") or {}
         meta = data.get("metadata") or {}
         raw = (data.get("rawHtml") or "").encode()
