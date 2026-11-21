@@ -1,4 +1,4 @@
-# Vendored from the politico repository (scripts/pollslib/pipeline.py, 9070b83). Do not edit here: change it there and run scripts/vendor-pollslib.py.
+# Vendored from the politico repository (scripts/pollslib/pipeline.py, 6db2c47). Do not edit here: change it there and run scripts/vendor-pollslib.py.
 """From a downloaded report to validated poll records: parse, validate, de-duplicate, classify, merge.
 
 Used by the homelab datalake's daily job (vendored copy) and by scripts/polls-ingest.py in this repository.
@@ -9,12 +9,12 @@ import re
 import subprocess
 from datetime import date, datetime, timezone
 
-from . import auto, elabe, validate
+from . import auto, elabe, validate, yougov
 from . import tables as pt
 
 DETAILS_VERSION = 1
 # Parsers whose result is published without review when every check passes.
-AUTO_PARSERS = {"elabe-full"}
+AUTO_PARSERS = {"elabe-full", yougov.FORMAT}
 # Generic table reader: first-round hypotheses of these institutes passed the regression against hand-checked records
 # (scripts/polls-regression.py). Anything else, and every runoff read this way, is review-needed.
 AUTO_GENERIC_INSTITUTES = {"Ifop", "OpinionWay", "YouGov"}
@@ -44,7 +44,7 @@ def generic_meta(text: str, published: str | None = None) -> dict:
                 m2n_ = pd.month if int(d2) <= pd.day else (pd.month - 2) % 12 + 1
                 m2, y = next(k for k, v in MONTHS.items() if v == m2n_), str(pd.year - (1 if m2n_ > pd.month else 0))
         try:
-            m2n = MONTHS[pt.norm(m2)]
+            m2n = MONTHS[pt.norm(m2 or "")]
             m1n = MONTHS[pt.norm(m1)] if m1 and pt.norm(m1) in MONTHS else m2n
             out["start"] = f"{int(y) - (1 if m1n > m2n else 0)}-{m1n:02d}-{int(d1):02d}"
             out["end"] = f"{int(y)}-{m2n:02d}-{int(d2):02d}"
@@ -74,6 +74,23 @@ def parse_document(pdf, text: str, institute: str, source: str, names: dict, hin
     problems = []
     if not (m.get("start") and m.get("end") and m.get("sample")):
         problems.append("fieldwork dates or sample size not found; give them in the notice")
+    if institute.lower() == "yougov" and yougov.is_notice(pages):
+        sample, registered = yougov.sample_sizes(pages)
+        problems = []
+        if not (m.get("start") and m.get("end") and sample and 0 < registered <= sample):
+            problems.append("YouGov notice: fieldwork dates or sample sizes missing")
+        rounds, table_problems = yougov.read_pages(pages, names, sample)
+        polls = []
+        for ri, hypotheses in enumerate(rounds):
+            if not hypotheses:
+                continue
+            pid = make_id(institute, m.get("start", "?"), m.get("end", "?"), sample, ri)
+            scenarios = [{**s, "id": f"{pid}-h{n}"} for n, s in sorted(hypotheses.items())]
+            polls.append((ri, {"id": pid, "institute": institute, "start": m.get("start"), "end": m.get("end"),
+                               "sample": sample, "registered": registered, "client": "Le HuffPost", "source": source,
+                               "scenarios": scenarios, "extraction": "primary-pdf", "reviewed": False}))
+        return {"parser": yougov.FORMAT, "polls": polls, "details": None,
+                "problems": problems + table_problems}
     polls = []
     flags = {"ambiguous": False, "unconfident": False}
     for ri in (0, 1):

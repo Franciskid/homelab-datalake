@@ -1,4 +1,8 @@
-FROM python:3.12-slim
+FROM rust:1.95-slim-trixie AS firecrawl
+RUN apt-get update && apt-get install -y --no-install-recommends pkg-config libssl-dev \
+ && cargo install --locked --version 0.1.0 firecrawl-local
+
+FROM python:3.12-slim-trixie
 
 # 3.12 rather than 3.13: dbt-core's dependency tree still has rough edges on 3.13,
 # and pinning the image is how the container avoids the problem the README documents
@@ -19,8 +23,11 @@ WORKDIR /app
 # poppler-utils: pdftotext, which polls_ingestion reads the poll reports with (PDFs are untrusted
 # input and are only ever opened through it).
 RUN apt-get update \
- && apt-get install -y --no-install-recommends git systemd poppler-utils \
+ && apt-get install -y --no-install-recommends git systemd poppler-utils chromium \
  && rm -rf /var/lib/apt/lists/*
+
+COPY --from=firecrawl /usr/local/cargo/bin/firecrawl-local /usr/local/bin/firecrawl-local
+ENV POLLS_FIRECRAWL_LOCAL=/usr/local/bin/firecrawl-local FIRECRAWL_CHROME_PATH=/usr/bin/chromium
 
 # The lock first, on its own layer, so a code change does not reinstall every package.
 # Then the project itself with --no-deps: its dependencies are exactly the locked ones,

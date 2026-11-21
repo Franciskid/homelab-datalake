@@ -1,4 +1,4 @@
-# Vendored from the politico repository (scripts/pollslib/ingest.py, 9070b83). Do not edit here: change it there and run scripts/vendor-pollslib.py.
+# Vendored from the politico repository (scripts/pollslib/ingest.py, 6db2c47). Do not edit here: change it there and run scripts/vendor-pollslib.py.
 """One run of the daily poll ingestion: discover, download, extract, validate, classify, export.
 
 The network is injected (`fetch(url) -> (bytes, content_type)`), so the same function runs on fixtures in tests, on live pages
@@ -14,8 +14,10 @@ import re
 import tempfile
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from . import discover, pipeline, validate
+from .fetch_pages import PageFetcher, check_access
 
 SCHEMA = 1
 MAX_PDF_BYTES = 60_000_000
@@ -52,26 +54,33 @@ def has_candidate_table(text: str, names: dict) -> bool:
 def index_of(rounds: list[dict]) -> dict:
     """Compact picture of the polls the site already has: enough to de-duplicate and to know the candidate ids."""
     return {"candidates": rounds[0].get("candidates", {}),
-            "rounds": [[{"id": p["id"], "institute": p["institute"], "start": p["start"], "end": p["end"], "source": p.get("source"),
+            "rounds": [[{"id": p["id"], "institute": p["institute"], "start": p["start"], "end": p["end"], "source": p.get("source"), "sample": p.get("sample"),
                          "scenarios": [{"scores": s["scores"]} for s in p["scenarios"][:3]]} for p in r["polls"]] for r in rounds]}
 
 
-def discover_candidates(fetch, today: date, since_days: int, previous_urls: set[str], sources=None, log=print) -> tuple[list[dict], list[dict], list[dict]]:
-    """(documents to try, source reports, wikipedia rows)."""
+def discover_candidates(fetch, today: date, since_days: int, previous_urls: set[str], sources=None, log=print) -> tuple[list[dict], list[dict], list[dict], list[dict], int]:
+    """Return document candidates, source reports, Wikipedia rows, Commission notices and cloud credits."""
     cands: list[dict] = []
     seen_urls: set[str] = set()
     sources_report: list[dict] = []
     cutoff = today - timedelta(days=since_days)
+
+    def relevant_pdf(url):
+        archive = re.search(r"/(20\d{2})/(0[1-9]|1[0-2])/", url)
+        return not archive or f"{archive[1]}-{archive[2]}" >= cutoff.isoformat()[:7]
 
     def add(c):
         if c["url"] not in seen_urls and c["url"] not in previous_urls:
             seen_urls.add(c["url"])
             cands.append(c)
 
+    pages = PageFetcher(fetch, log)
+    notices, recent = [], []
+    decode = lambda raw: raw.decode("utf-8", "replace")
     # 1. the Commission's list: every notice of voting intentions published in the window
     try:
-        data, _ = fetch("https://www.commission-des-sondages.fr/notices/")
-        notices = discover.parse_commission_notices(data.decode("utf-8", "replace"))
+        data = pages(discover.COMMISSION_URL, lambda raw: bool(discover.parse_commission_notices(decode(raw))))
+        notices = discover.parse_commission_notices(decode(data))
         recent = [n for n in notices if n["vote_intentions"] and date.fromisoformat(n["published"]) >= cutoff]
         for n in recent:
             add({"url": n["url"], "institute": n["institute"], "via": "commission", "published": n["published"], "title": n["title"]})
@@ -79,42 +88,45 @@ def discover_candidates(fetch, today: date, since_days: int, previous_urls: set[
     except Exception as e:  # noqa: BLE001 -- a source that fails must not stop the others
         sources_report.append({"source": "commission-des-sondages", "ok": False, "error": str(e)[:200]})
     # 2. the institutes' own pages: listing -> article -> PDF
-    for src in sources or discover.SOURCES:
-        found, err = 0, None
+    for src in discover.SOURCES if sources is None else sources:
+        found, err, reached = 0, None, False
         try:
             for listing in src["listing"]:
-                page, _ = fetch(listing)
-                page = page.decode("utf-8", "replace")
+                page = decode(pages(listing, lambda raw: len(discover.links(decode(raw), listing)) >= 3))
+                reached = True
                 direct = discover.pdf_links(page, listing)
                 arts = [u for u in discover.article_links(page, listing, src["article"]) if u not in direct][:MAX_ARTICLES_PER_SOURCE]
                 for u in direct:
-                    if discover.REPORT_URL.search(u):
+                    if discover.REPORT_URL.search(u) and relevant_pdf(u):
                         add({"url": u, "institute": src["institute"], "via": "institute-page", "page": listing})
                         found += 1
                 for art in arts:
                     if art in previous_urls:
                         continue
                     try:
-                        html, _ = fetch(art)
-                        for u in discover.pdf_links(html.decode("utf-8", "replace"), art):
-                            if not discover.REPORT_URL.search(u):
-                                continue
+                        html = pages(art, lambda raw: bool(discover.pdf_links(decode(raw), art)) or len(discover.links(decode(raw), art)) >= 3)
+                        pdfs = [url for url in discover.pdf_links(decode(html), art) if relevant_pdf(url)]
+                        for u in pdfs:
                             add({"url": u, "institute": src["institute"], "via": "institute-page", "page": art})
                             found += 1
                     except Exception as e:  # noqa: BLE001
                         err = f"{art}: {e}"[:200]
         except Exception as e:  # noqa: BLE001
             err = str(e)[:200]
-        sources_report.append({"source": src["institute"], "ok": err is None or found > 0, "found": found, **({"error": err} if err else {})})
+        sources_report.append({"source": src["institute"], "ok": reached, "found": found, **({"error": err} if err else {})})
     # 3. Wikipedia: a signal only (it has no primary document), compared with what we have afterwards
     wiki = []
     try:
         data, _ = fetch(discover.WIKI_URL)
-        wiki = [w for w in discover.parse_wikipedia_polls(data.decode("utf-8", "replace")) if date.fromisoformat(w["end"]) >= cutoff]
+        check_access(data)
+        rows = discover.parse_wikipedia_polls(decode(data))
+        if not rows:
+            raise ValueError("no Wikipedia poll rows parsed")
+        wiki = [w for w in rows if date.fromisoformat(w["end"]) >= cutoff]
         sources_report.append({"source": "wikipedia", "ok": True, "found": len(wiki)})
     except Exception as e:  # noqa: BLE001
         sources_report.append({"source": "wikipedia", "ok": False, "error": str(e)[:200]})
-    return cands[:MAX_DOCUMENTS], sources_report, wiki
+    return cands[:MAX_DOCUMENTS], sources_report, wiki, recent, pages.cloud_credits
 
 
 def process_document(cand: dict, data: bytes, names: dict, known: list[list[dict]], today: date, since_days: int, workdir: Path | None = None) -> dict:
@@ -140,6 +152,15 @@ def process_document(cand: dict, data: bytes, names: dict, known: list[list[dict
     out["parser"] = parsed["parser"]
     cutoff = today - timedelta(days=since_days)
     if not parsed["polls"]:
+        if cand.get("via") == "commission":
+            # Technical notices sometimes have a different table layout from the institute's
+            # report. Match only a record that already has the exact dates and sample.
+            meta = pipeline.generic_meta(text, cand.get("published"))
+            if all(meta.get(field) for field in ("start", "end", "sample")):
+                for poll in known[0]:
+                    if poll["institute"] == inst and all(poll.get(k) == v for k, v in meta.items()):
+                        out["polls"].append({"round": 0, "poll": poll, "status": "duplicate", "duplicate_of": poll["id"]})
+                        return {**out, "status": "duplicate"}
         if not has_candidate_table(text, names):
             return {**out, "status": "not-a-poll", "reasons": ["no table of candidates with figures"]}
         return {**out, "status": "review", "reasons": parsed["problems"] or ["a table of candidates was found but no hypothesis passed the checks (sum 100 ± 2, at least 5 candidates, known ids)"]}
@@ -152,10 +173,11 @@ def process_document(cand: dict, data: bytes, names: dict, known: list[list[dict
             d = pipeline.details_for(parsed["details"], poll) if parsed["details"] else None
             derrs, dwarn = validate.details_problems(d or {}, poll)
             verdict, reasons = pipeline.classify(parsed, ri, poll, names, derrs, today, reference=known[ri])
-            if poll.get("end") and poll["end"] < cutoff.isoformat():
+            if not cand.get("published") and poll.get("end") and poll["end"] < cutoff.isoformat():
                 verdict, reasons = "review", reasons + [f"fieldwork ended {poll['end']}, before the {since_days}-day window"]
             entry.update({"status": "ingested" if verdict == "auto" else "review", "reasons": reasons, "warnings": dwarn[:5], "details": d})
-            known[ri].append(poll)  # a second document of the same poll in this run is a duplicate
+            if verdict == "auto":
+                known[ri].append(poll)
         out["polls"].append(entry)
     states = {e["status"] for e in out["polls"]}
     out["status"] = "ingested" if "ingested" in states else "review" if "review" in states else "duplicate"
@@ -176,20 +198,23 @@ def run(fetch, baseline: dict, previous: dict | None, today: date, since_days: i
     prev_polls = [list(r.get("polls", [])) for r in previous.get("rounds", [{}, {}])]
     for ri in (0, 1):
         known[ri] += [p for p in (prev_polls[ri] if ri < len(prev_polls) else []) if p["id"] not in {k["id"] for k in known[ri]}]
-    previous_urls = {u for u, d in prev_docs.items() if d.get("status") in FINAL}
-    cands, sources_report, wiki = discover_candidates(fetch, today, since_days, previous_urls, sources, log)
+    previous_urls = {u for u, d in prev_docs.items() if d.get("status") in FINAL
+                     and not ("commission-des-sondages.fr/notices/" in u and "first_round" not in d)}
+    cands, sources_report, wiki, notices, cloud_credits = discover_candidates(fetch, today, since_days, previous_urls, sources, log)
     documents = {u: d for u, d in prev_docs.items()}
     new_rounds = [list(p) for p in prev_polls] + [[] for _ in range(2 - len(prev_polls))]
     new_details = {"polls": dict(previous.get("details", {}).get("polls", {})), "people": dict(previous.get("details", {}).get("people", {}))}
     review = {r["poll_id"]: r for r in previous.get("review", [])}
     baseline_ids = {p["id"] for r in known for p in r}
-    failed, seen_sha = [], {d.get("sha256"): u for u, d in prev_docs.items() if d.get("sha256")}
+    failed = []
+    seen_sha = {d["sha256"]: u for u, d in prev_docs.items() if d.get("sha256") and d.get("first_round")}
     counts = {"discovered": len(cands), "downloaded": 0, "ingested": 0, "review": 0, "duplicates": 0, "not_polls": 0}
     for cand in cands:
         try:
             data, ctype = fetch(cand["url"])
+            check_access(data if not is_pdf(data) else b"")
             if len(data) > MAX_PDF_BYTES or not is_pdf(data, ctype):
-                documents[cand["url"]] = {"url": cand["url"], "status": "not-a-poll", "reasons": ["not a PDF or too large"], "at": now.isoformat(timespec="seconds")}
+                documents[cand["url"]] = {"url": cand["url"], "status": "not-a-poll", "reasons": ["not a PDF or too large"], "first_round": [], "at": now.isoformat(timespec="seconds")}
                 counts["not_polls"] += 1
                 continue
         except Exception as e:  # noqa: BLE001
@@ -198,23 +223,27 @@ def run(fetch, baseline: dict, previous: dict | None, today: date, since_days: i
         counts["downloaded"] += 1
         h = sha256(data)
         if h in seen_sha:
-            documents[cand["url"]] = {"url": cand["url"], "status": "duplicate", "sha256": h, "reasons": [f"same file as {seen_sha[h]}"], "at": now.isoformat(timespec="seconds")}
+            documents[cand["url"]] = {"url": cand["url"], "status": "duplicate", "sha256": h, "reasons": [f"same file as {seen_sha[h]}"], "via": cand["via"],
+                                      "first_round": documents[seen_sha[h]]["first_round"], "at": now.isoformat(timespec="seconds")}
             counts["duplicates"] += 1
             continue
-        seen_sha[h] = cand["url"]
         try:
             res = process_document(cand, data, names, known, today, since_days)
         except Exception as e:  # noqa: BLE001 -- one bad document must not stop the run
             res = {"status": "review", "reasons": [f"unexpected error: {str(e)[:160]}"], "polls": [], "institute": cand.get("institute")}
-        ids = []
+        ids, first_round = [], []
         for e in res["polls"]:
             poll = e["poll"]
             if e["status"] == "duplicate":
                 counts["duplicates"] += 1
+                if e["round"] == 0:
+                    first_round.append(e["duplicate_of"])
             elif e["status"] == "ingested":
                 counts["ingested"] += 1
                 stamped = pipeline.stamp(poll, "auto", res["parser"], "auto", [], now)
                 stamped["document"] = h[:12]
+                if cand.get("published"):
+                    stamped["published"] = cand["published"]
                 new_rounds[e["round"]].append(stamped)
                 if e["details"]:
                     d = {k: v for k, v in e["details"].items() if k != "people" and v}
@@ -222,6 +251,8 @@ def run(fetch, baseline: dict, previous: dict | None, today: date, since_days: i
                         new_details["polls"][poll["id"]] = d
                     new_details["people"].update(e["details"].get("people") or {})
                 ids.append(poll["id"])
+                if e["round"] == 0:
+                    first_round.append(poll["id"])
             else:
                 counts["review"] += 1
                 review[poll["id"]] = {"poll_id": poll["id"], "round": e["round"], "institute": poll["institute"], "end": poll["end"], "source": poll["source"],
@@ -235,16 +266,33 @@ def run(fetch, baseline: dict, previous: dict | None, today: date, since_days: i
             review[f"doc:{h[:12]}"] = {"poll_id": f"doc:{h[:12]}", "round": None, "institute": res.get("institute"), "end": None, "source": cand["url"], "status": "review",
                                        "reasons": res["reasons"], "found_at": now.isoformat(timespec="seconds")}
         documents[cand["url"]] = {"url": cand["url"], "status": res["status"], "institute": res.get("institute"), "sha256": h, "via": cand.get("via"), "parser": res.get("parser"),
-                                  "polls": ids, "reasons": res["reasons"], "at": now.isoformat(timespec="seconds")}
+                                  "polls": ids, "reasons": res["reasons"], "first_round": first_round, "at": now.isoformat(timespec="seconds")}
+        if first_round:
+            seen_sha[h] = cand["url"]
     # a review item whose poll the site now has (after a deploy) or that a later run ingested is no longer pending
     review = {k: v for k, v in review.items() if k not in baseline_ids and k not in {p["id"] for r in new_rounds for p in r}}
     # Wikipedia rows with no poll of ours on those dates: a hint that a report is missing
     allp = [p for r in known + new_rounds for p in r]
     wiki_only = [w for w in wiki if not any(p["institute"] == w["institute"] and abs((date.fromisoformat(p["end"]) - date.fromisoformat(w["end"])).days) <= 1 for p in allp)]
-    return {"schema": SCHEMA, "generated_at": now.isoformat(timespec="seconds"),
+    # Keep unresolved notices even after they leave the Commission's list or the scan window.
+    pending = {n["no"]: n for n in previous.get("pending_notices", [])}
+    pending.update({n["no"]: n for n in notices})
+    accepted = {p["id"] for p in known[0] + new_rounds[0]}
+    accepted_urls = {p.get("source") for p in known[0] + new_rounds[0]}
+    pending = [n for n in pending.values() if n["url"] not in accepted_urls
+               and not accepted.intersection(documents.get(n["url"], {}).get("first_round", []))]
+    # Notices give a date only. Count 48 hours from the end of that date in Paris.
+    paris = ZoneInfo("Europe/Paris")
+    overdue = [n for n in pending if now >= datetime.fromisoformat(n["published"]).replace(tzinfo=paris) + timedelta(days=3)]
+    monitoring = []
+    if not any(source["ok"] for source in sources_report):
+        monitoring.append("no polling source reachable")
+    monitoring += [f"Commission notice {n['no']} overdue (published {n['published']}): {n['url']}" for n in overdue]
+    return {"schema": SCHEMA, "pending_notices": pending, "generated_at": now.isoformat(timespec="seconds"),
             "rounds": [{"candidates": names, "polls": sorted(new_rounds[0], key=lambda p: (p["end"], p["id"]))},
                        {"candidates": names, "polls": sorted(new_rounds[1], key=lambda p: (p["end"], p["id"]))}],
             "details": {"version": pipeline.DETAILS_VERSION, **new_details},
             "review": sorted(review.values(), key=lambda r: (r.get("end") or "", r["poll_id"])),
             "documents": sorted(documents.values(), key=lambda d: d.get("at", "")),
-            "job": {**counts, "since_days": since_days, "sources": sources_report, "failed": failed, "wikipedia_only": wiki_only}}
+            "job": {**counts, "since_days": since_days, "sources": sources_report, "failed": failed, "wikipedia_only": wiki_only,
+                    "monitoring": monitoring, "firecrawl_cloud_credits": cloud_credits}}

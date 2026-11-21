@@ -1,4 +1,4 @@
-# Vendored from the politico repository (scripts/pollslib/discover.py, 282ab13). Do not edit here: change it there and run scripts/vendor-pollslib.py.
+# Vendored from the politico repository (scripts/pollslib/discover.py, 6db2c47). Do not edit here: change it there and run scripts/vendor-pollslib.py.
 """Where new reports show up: the Commission des sondages list, the institutes' pages, the French Wikipedia table.
 
 Everything here parses text it is given (no network, no files): the caller fetches, so the same code runs on fixtures in
@@ -8,12 +8,13 @@ source that "found nothing"; it never raises into the job.
 import html as _html
 import re
 from datetime import date
-from urllib.parse import urljoin, urlsplit
+from html.parser import HTMLParser
+from urllib.parse import parse_qs, quote, unquote, urljoin, urlsplit
 
 MONTHS = {"janvier": 1, "fevrier": 2, "mars": 3, "avril": 4, "mai": 5, "juin": 6, "juillet": 7, "aout": 8, "septembre": 9,
           "octobre": 10, "novembre": 11, "decembre": 12}
 INSTITUTES = [("ifop", "Ifop"), ("elabe", "Elabe"), ("ipsos", "Ipsos"), ("opinionway", "OpinionWay"), ("harris", "Harris"), ("toluna", "Harris"),
-              ("odoxa", "Odoxa"), ("cluster17", "Cluster17"), ("verian", "Verian"), ("kantar", "Verian"), ("yougov", "YouGov"), ("bva", "BVA"), ("csa", "CSA")]
+              ("odoxa", "Odoxa"), ("cluster17", "Cluster17"), ("verian", "Verian"), ("kantar", "Verian"), ("yougov", "YouGov"), ("bva", "BVA"), ("csa", "CSA"), ("viavoice", "Viavoice")]
 
 
 def _norm(s: str) -> str:
@@ -36,7 +37,10 @@ def text_of(fragment: str) -> str:
 
 # ---- Commission des sondages -----------------------------------------------------------------
 
-def parse_commission_notices(page: str, base: str = "https://www.commission-des-sondages.fr/notices/") -> list[dict]:
+COMMISSION_URL = "https://www.commission-des-sondages.fr/notices/"
+
+
+def parse_commission_notices(page: str, base: str = COMMISSION_URL) -> list[dict]:
     """[{no, title, institute, published, url, vote_intentions}] — `published` is the date in the title, in the month's heading."""
     out = []
     for block in re.split(r'<h2 class="notices-mois-titre"[^>]*>', page)[1:]:
@@ -57,7 +61,8 @@ def parse_commission_notices(page: str, base: str = "https://www.commission-des-
             label = t.group(2)
             out.append({"no": int(t.group(1)), "title": title, "institute": institute_of(label), "published": published.isoformat(),
                         "url": urljoin(base, a.group(1)),
-                        "vote_intentions": bool(re.match(r"(?i)pres\b", label) and re.search(r"(?i)\bIV\b", label))})
+                        "vote_intentions": bool(re.match(r"pres(?:identielle)?\b", _norm(label)) and
+                                                re.search(r"\b(?:iv|presitrack|intentions? de vote)\b", _norm(label)))})
     return out
 
 
@@ -67,38 +72,73 @@ REPORT_URL = re.compile(r"presidentielle|presitrack|2027|intentions|intenzioni|e
 REPORT_WORDS = re.compile(r"intentions?[- ]de[- ]vote|presidentielle|présidentielle|presitrack|barometre|baromètre|sondage|election", re.I)
 
 
+class PageLinks(HTMLParser):
+    def __init__(self, base):
+        super().__init__(convert_charrefs=True)
+        self.base = base
+        self.href = None
+        self.label = []
+        self.links = {}
+
+    def handle_starttag(self, tag, attrs):
+        if tag == "a":
+            self.href = dict(attrs).get("href")
+            self.label = []
+
+    def handle_data(self, data):
+        if self.href:
+            self.label.append(data)
+
+    def handle_endtag(self, tag):
+        if tag != "a" or not self.href:
+            return
+        if not self.href.startswith("#"):
+            url = quote(urljoin(self.base, self.href), safe=":/?#[]@!$&'()*+,;=%")
+            if urlsplit(url).scheme == "https":
+                label = " ".join("".join(self.label).split())
+                if not self.links.get(url):
+                    self.links[url] = label
+        self.href = None
+
+
 def links(page: str, base: str) -> list[tuple[str, str]]:
-    out, seen = [], set()
-    for m in re.finditer(r'<a\b[^>]*?href="([^"#]+)"[^>]*>(.*?)</a>', page, re.S):
-        u = urljoin(base, _html.unescape(m.group(1)))
-        if urlsplit(u).scheme in ("http", "https") and u not in seen:
-            seen.add(u)
-            out.append((u, text_of(m.group(2))))
-    return out
+    parser = PageLinks(base)
+    parser.feed(page)
+    return list(parser.links.items())
 
 
 def pdf_links(page: str, base: str) -> list[str]:
-    """Links to PDFs on a page (extension, or Elabe's /fichier-pdf/ and the Commission's /fichiers/ downloads)."""
-    return [u for u, _ in links(page, base) if re.search(r"\.pdf(?:$|\?)|/fichier-pdf/|/medias/fichiers/", u, re.I)]
+    """Include embedded PDF-viewer download URLs (used by Odoxa)."""
+    urls = []
+    for url, _ in links(page, base):
+        parsed = urlsplit(url)
+        for target in [url, *parse_qs(parsed.query).get("file", [])]:
+            if urlsplit(target).scheme == "https" and re.search(r"\.pdf$|/fichier-pdf/|/medias/fichiers/", urlsplit(target).path, re.I):
+                urls.append(target)
+    return list(dict.fromkeys(urls))
 
 
 def article_links(page: str, base: str, pattern: str) -> list[str]:
     rx = re.compile(pattern, re.I)
-    return [u for u, t in links(page, base) if rx.search(u) or rx.search(t)]
+    return [url for url, label in links(page, base)
+            if urlsplit(url).path != urlsplit(base).path and urlsplit(url).netloc.removeprefix("www.") == urlsplit(base).netloc.removeprefix("www.")
+            and rx.search(_norm(unquote(urlsplit(url).path) + " " + label))]
 
 
 # Listing pages and the links worth following. Each is read alone: one that fails or changes layout is reported, not fatal.
 SOURCES = [
-    {"institute": "Elabe", "listing": ["https://elabe.fr/tag/presidentielle-2027/"], "article": r"elabe\.fr/presidentielle-2027"},
-    {"institute": "Ifop", "listing": ["https://www.ifopgroup.com/?s=pr%C3%A9sidentielle+2027"], "article": r"ifopgroup\.com/article/.*(intentions-de-vote|presidentielle-2027)"},
+    {"institute": "Elabe", "listing": ["https://elabe.fr/tag/presidentielle-2027/"], "article": r"/presidentielle-2027"},
+    {"institute": "Ifop", "listing": ["https://www.ifopgroup.com/?s=pr%C3%A9sidentielle+2027"], "article": r"/article/.*(intentions-de-vote|presidentielle-2027)"},
     {"institute": "OpinionWay", "listing": ["https://www.opinion-way.com/fr/publications/?publication_format_terms=69"], "article": r"publications/(presitrack|.*presidentielle|.*intentions)"},
-    {"institute": "Harris", "listing": ["https://tolunacorporate.com/fr/"], "article": r"tolunacorporate\.com/fr/(intentions-de-vote|.*presidentielle)"},
-    {"institute": "Cluster17", "listing": ["https://cluster17.com/nos-sondages/"], "article": r"cluster17\.com/(.*presidentielle|.*intentions|wp-content/uploads/.*\.pdf)"},
-    {"institute": "Ipsos", "listing": ["https://www.ipsos.com/fr-fr/search?keys=intentions%20de%20vote%20pr%C3%A9sidentielle%202027"], "article": r"ipsos\.com/fr-fr/.*(presidentielle|intentions)"},
-    {"institute": "Odoxa", "listing": ["https://www.odoxa.fr/"], "article": r"odoxa\.fr/.*(presidentielle|sondage)"},
-    {"institute": "Verian", "listing": ["https://www.veriangroup.com/"], "article": r"(presidentielle|barometre)"},
-    {"institute": "YouGov", "listing": ["https://yougov.com/fr-fr/"], "article": r"yougov\.com/fr-fr/.*(presidentielle|intentions)"},
-    {"institute": "BVA", "listing": ["https://www.bva-xsight.com/"], "article": r"(presidentielle|intentions-de-vote)"},
+    {"institute": "Harris", "listing": ["https://tolunacorporate.com/fr/"], "article": r"/fr/(intentions-de-vote|.*presidentielle)"},
+    {"institute": "Cluster17", "listing": ["https://cluster17.com/nos-sondages/"], "article": r"/(.*presidentielle|.*intentions|wp-content/uploads/.*\.pdf)"},
+    {"institute": "Ipsos", "listing": ["https://www.ipsos.com/fr-fr/search?keys=intentions%20de%20vote%20pr%C3%A9sidentielle%202027"], "article": r"presidentielle|intentions[- ]de[- ]vote"},
+    {"institute": "Odoxa", "listing": ["https://www.odoxa.fr/sondages/politique/"], "article": r"presidentielle|premier tour|intentions de vote"},
+    {"institute": "Verian", "listing": ["https://www.veriangroup.com/fr/news-and-insights/page/1"], "article": r"(presidentielle|barometre)"},
+    {"institute": "YouGov", "listing": ["https://yougov.com/fr-fr/articles?category=politics"], "article": r"presidentielle|intentions[- ]de[- ]vote"},
+    {"institute": "BVA", "listing": ["https://www.bva-xsight.com/?s=pr%C3%A9sidentielle"], "article": r"(presidentielle|intentions-de-vote)"},
+    {"institute": "CSA", "listing": ["https://csa.eu/news/"], "article": r"presidentielle|intentions[- ]de[- ]vote"},
+    {"institute": "Viavoice", "listing": ["https://www.institut-viavoice.com/publications/"], "article": r"presidentielle|intentions[- ]de[- ]vote"},
 ]
 
 
@@ -129,14 +169,32 @@ def _wiki_dates(cell: str):
 def parse_wikipedia_polls(page: str) -> list[dict]:
     """First-round and runoff rows of the French Wikipedia list: [{institute, start, end, sample}] (one entry per poll)."""
     seen, out = set(), []
-    for row in re.findall(r"<tr[^>]*>(.*?)</tr>", page, re.S):
+    year = None
+    for heading, row in re.findall(r"<h[234]\b[^>]*>(.*?)</h[234]>|<tr[^>]*>(.*?)</tr>", page, re.S):
+        if heading:
+            match = re.search(r"\b(20\d\d)\s*$", text_of(heading))
+            if match:
+                year = match.group(1)
+            continue
         cells = [text_of(c) for c in re.findall(r"<t[dh][^>]*>(.*?)</t[dh]>", row, re.S)]
+        if cells:
+            header = re.fullmatch(r"(?:[A-Za-zÀ-ÿ]+ )?(20\d\d)", cells[0])
+            if header:
+                year = header.group(1)
+                cells.pop(0)
         if len(cells) < 3:
             continue
         inst = None
         for c in cells[:2]:
             inst = institute_of(c.rsplit(">", 1)[-1]) or inst
-        dates = next((_wiki_dates(c) for c in cells[:4] if _wiki_dates(c)), None)
+        dates = None
+        for c in cells[:4]:
+            try:
+                dates = _wiki_dates(c) or (_wiki_dates(f"{c} {year}") if year else None)
+            except ValueError:
+                continue
+            if dates:
+                break
         if not inst or not dates:
             continue
         sample = next((int(re.sub(r"\D", "", c)) for c in cells[1:5] if re.fullmatch(r"\d{1,3}(?:[  ]\d{3})*|\d{3,6}", c) and 300 <= int(re.sub(r"\D", "", c)) <= 50000), None)

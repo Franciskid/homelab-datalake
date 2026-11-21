@@ -13,9 +13,12 @@ memory: a report already read is not downloaded again.
 Without the export directory (a test, a laptop) the job still runs and reports the export as skipped.
 """
 
+import fcntl
 import json
 import os
 import time
+import tempfile
+from urllib.error import HTTPError
 import urllib.request
 from datetime import UTC, datetime
 from pathlib import Path
@@ -36,6 +39,7 @@ from dagster import (
 )
 
 from homelab_datalake.parsing.polls import ingest
+from homelab_datalake.parsing.polls.fetch_pages import check_access
 
 DEFAULT_EXPORT_DIR = "/exports/politico"
 EXPORT_NAME = "polls-export.json"
@@ -61,10 +65,13 @@ def http_fetch(url: str) -> tuple[bytes, str]:
                 url, headers={"User-Agent": ingest.USER_AGENT, "Accept": "text/html,application/pdf,application/json,*/*"})
             with urllib.request.urlopen(request, timeout=REQUEST_TIMEOUT_SECONDS) as response:  # noqa: S310
                 return response.read(ingest.MAX_PDF_BYTES + 1), response.headers.get("Content-Type", "")
-        except Exception as error:  # noqa: BLE001 -- retried, then re-raised with its cause
+        except HTTPError as error:
+            check_access(b"", error.code)
+            raise
+        except OSError as error:
             last = error
             time.sleep(3 * (attempt + 1))
-    raise RuntimeError(f"{url} failed {ATTEMPTS} times") from last
+    raise OSError(f"{url} failed {ATTEMPTS} times") from last
 
 
 def read_json(path: Path) -> dict | None:
@@ -76,12 +83,18 @@ def read_json(path: Path) -> dict | None:
         return None
 
 
-def write_export(directory: Path, export: dict) -> Path:
+def write_export(directory: Path, export: dict, name: str = EXPORT_NAME) -> Path:
     """Write the file whole, then rename it over the old one: the site never reads half."""
-    path = directory / EXPORT_NAME
-    tmp = directory / f".{EXPORT_NAME}.tmp"
-    tmp.write_text(json.dumps(export, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
-    os.replace(tmp, path)
+    path = directory / name
+    with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=directory, prefix=f".{name}.", delete=False) as handle:
+        tmp = Path(handle.name)
+        try:
+            json.dump(export, handle, ensure_ascii=False, separators=(",", ":"))
+            handle.close()
+            tmp.chmod(0o644)
+            tmp.replace(path)
+        finally:
+            tmp.unlink(missing_ok=True)
     return path
 
 
@@ -127,18 +140,26 @@ def run_job(fetch, directory: Path | None, today: datetime, log) -> dict:
 def polls_ingestion(context: AssetExecutionContext) -> MaterializeResult:
     now = datetime.now(UTC)
     directory = Path(os.environ.get("POLLS_EXPORT_DIR", os.environ.get("OFFICIAL_STATS_EXPORT_DIR", DEFAULT_EXPORT_DIR)))
-    usable = directory if directory.is_dir() else None
-    export = run_job(http_fetch, usable, now, context.log)
+    if not directory.is_dir():
+        raise RuntimeError(f"poll export directory {directory} is not mounted")
+    with (directory / ".polls.lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        export = run_job(http_fetch, directory, now, context.log)
+        exported = str(write_export(directory, export))
+        queue = str(write_export(directory, {"generated_at": export["generated_at"], "review": export["review"],
+                                            "pending_notices": export["pending_notices"]}, "polls-review.json"))
     job = export["job"]
-    exported = None
-    if usable:
-        exported = str(write_export(usable, export))
-    else:
-        context.log.warning("export directory %s is not mounted; export skipped", directory)
     sources_failed = [s["source"] for s in job["sources"] if not s.get("ok")]
     context.log.info("polls: %d reports found, %d ingested, %d to review, %d duplicates, sources failed: %s, Wikipedia-only: %d",
                      job["discovered"], job["ingested"], job["review"], job["duplicates"], sources_failed or "none", len(job["wikipedia_only"]))
     review = len(export["review"])
+    context.log.info("polls: %d total waiting for review in %s, Firecrawl cloud estimated credits: %d",
+                     review, queue, job["firecrawl_cloud_credits"])
+    for source in job["sources"]:
+        if source.get("error"):
+            context.log.warning("poll source %s: %s", source["source"], source["error"])
+    if job["monitoring"]:
+        raise RuntimeError("poll monitoring failed: " + "; ".join(job["monitoring"]))
     return MaterializeResult(
         metadata={"discovered": job["discovered"], "downloaded": job["downloaded"], "ingested": job["ingested"], "review": review,
                   "duplicates": job["duplicates"], "published_polls": sum(len(r["polls"]) for r in export["rounds"]),

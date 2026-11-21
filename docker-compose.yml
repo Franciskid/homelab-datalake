@@ -98,6 +98,7 @@ services:
       # politico.fraserv.fr's export (assets/official_statistics.py): the only directory this
       # stack writes outside its own volumes. The politico renderer mounts it read-only.
       - ${OFFICIAL_STATS_EXPORT_HOST_DIR:-/home/francois/dev/politico-data}:/exports/politico
+      - ${POLLS_FIRECRAWL_KEY_DIR:-/home/francois/.config/politico}:/root/.config/politico:ro
       # The positions collection (assets/positions_collection.py): its database and download cache live in a named volume;
       # the delta the Mac pulls (rsync over ssh) goes to a host directory, the only other place it writes.
       - positions-state:/state/positions
@@ -297,6 +298,7 @@ services:
       # politico.fraserv.fr's export (assets/official_statistics.py): the only directory this
       # stack writes outside its own volumes. The politico renderer mounts it read-only.
       - ${OFFICIAL_STATS_EXPORT_HOST_DIR:-/home/francois/dev/politico-data}:/exports/politico
+      - ${POLLS_FIRECRAWL_KEY_DIR:-/home/francois/.config/politico}:/root/.config/politico:ro
       # The positions collection (assets/positions_collection.py): its database and download cache live in a named volume;
       # the delta the Mac pulls (rsync over ssh) goes to a host directory, the only other place it writes.
       - positions-state:/state/positions
