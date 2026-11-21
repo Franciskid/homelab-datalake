@@ -200,4 +200,4 @@ def test_the_vendored_copy_is_the_one_in_politico():
     src = Path(pt.__file__).parent
     for f in ("elabe.py", "ingest.py", "validate.py"):
         assert (src / f).read_text(encoding="utf-8").startswith("# Vendored from the politico repository"), f
-    assert pipeline.AUTO_PARSERS == {"elabe-full"} and ingest.SCHEMA == 1
+    assert pipeline.AUTO_PARSERS == {"elabe-full", "yougov-huffpost-notice"} and ingest.SCHEMA == 1
