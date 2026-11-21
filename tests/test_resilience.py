@@ -265,3 +265,42 @@ def test_a_streamed_publish_is_byte_identical_run_to_run_and_to_the_old_writer(t
         "new/data.parquet", con.execute("SELECT * FROM t").to_arrow_reader(PUBLISH_BATCH_ROWS), str(tmp_path / "spill")
     )
     assert again == first
+
+
+# --- runs that died with the container ------------------------------------------
+
+def _proc(tmp_path, cmdline=b"/usr/local/bin/python3.12\0/usr/local/bin/dagster-daemon\0run\0", start_ticks=360000, btime=1795000000):
+    root = tmp_path / "proc"
+    (root / "1").mkdir(parents=True)
+    (root / "1" / "cmdline").write_bytes(cmdline)
+    fields = ["S"] + ["0"] * 18 + [str(start_ticks)] + ["0"] * 10
+    (root / "1" / "stat").write_text("1 (dagster daemon) " + " ".join(fields))
+    (root / "stat").write_text(f"cpu  1 2 3\nbtime {btime}\n")
+    return str(root)
+
+
+def test_the_container_start_comes_from_pid_1(tmp_path):
+    import os
+
+    from homelab_datalake import orphans
+
+    started = orphans.container_started_at(_proc(tmp_path))
+    assert started == 1795000000 + 360000 / os.sysconf("SC_CLK_TCK")
+
+
+def test_outside_the_daemon_nothing_is_an_orphan(tmp_path):
+    from homelab_datalake import orphans
+
+    assert orphans.container_started_at(_proc(tmp_path, cmdline=b"dagster-webserver\0")) is None
+
+
+def test_only_runs_older_than_the_container_are_orphans():
+    """16 Nov 2026: a run STARTED before a restart held the analytics queue for days."""
+    from homelab_datalake import orphans
+
+    started = 1795300000.0
+    before = SimpleNamespace(start_time=started - 3600)
+    racing = SimpleNamespace(start_time=started - 5)
+    after = SimpleNamespace(start_time=started + 60)
+    unknown = SimpleNamespace(start_time=None)
+    assert orphans.orphaned([before, racing, after, unknown], started) == [before]

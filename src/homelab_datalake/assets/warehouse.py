@@ -13,6 +13,7 @@ than one somebody answers by reading two projects side by side.
 """
 
 import os
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -292,6 +293,9 @@ def _duckdb_type(dtype: pa.DataType) -> str:
     return _DUCKDB_TYPES[dtype]
 
 
+LOAD_RETRY_SECONDS = 20
+
+
 def connect() -> duckdb.DuckDBPyConnection:
     """Open the warehouse with its session timezone pinned to UTC.
 
@@ -361,7 +365,17 @@ def warehouse_tables(context: AssetExecutionContext, lake: LakeStorage):
                     load_statement(name, lake.duckdb_scan_target(prefix)),
                 )
                 if known.get(name) != current or name not in existing:
-                    load_table(con, lake, name, prefix, schema, context.log)
+                    try:
+                        load_table(con, lake, name, prefix, schema, context.log)
+                    except Exception:  # noqa: BLE001 - retried once, then the outer handler records it
+                        # Once, after a pause. An ingest rewriting an hour of the same
+                        # prefix while this reads it fails the read with whatever
+                        # half-written bytes it got (21 Nov 2026, 22:05: the hourly
+                        # playback ingest under a late analytics run). The next read
+                        # sees whole objects.
+                        context.log.warning("raw.%s failed to load; retrying once in 20 s", name)
+                        time.sleep(LOAD_RETRY_SECONDS)
+                        load_table(con, lake, name, prefix, schema, context.log)
                     rebuild_state.record_loaded(con, name, current)
                     reloaded.add(name)
             except Exception as error:

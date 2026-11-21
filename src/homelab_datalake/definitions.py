@@ -42,7 +42,7 @@ from dagster import (
 )
 from dagster_dbt import DbtCliResource
 
-from homelab_datalake import alerting, build_report
+from homelab_datalake import alerting, build_report, orphans
 from homelab_datalake.alerting import alert_payload
 from homelab_datalake.assets import (
     ai_platform,
@@ -704,6 +704,32 @@ def resolve_on_recovery(context):
 
 
 @sensor(
+    minimum_interval_seconds=60,
+    default_status=DefaultSensorStatus.RUNNING,
+    description="Fails runs whose process died with the container (a deploy or a crash) right away.",
+)
+def fail_orphaned_runs(context: SensorEvaluationContext):
+    """See orphans.py. Marking the run failed is what lets the queue move on, and it
+    goes through notify_on_failure like any other failed run."""
+    started_at = orphans.container_started_at()
+    if started_at is None:
+        return SkipReason("not running in the daemon container")
+    records = context.instance.get_run_records(
+        RunsFilter(statuses=[DagsterRunStatus.STARTED, DagsterRunStatus.STARTING])
+    )
+    dead = orphans.orphaned(records, started_at)
+    when = datetime.datetime.fromtimestamp(started_at, datetime.UTC).isoformat()
+    for record in dead:
+        context.instance.report_run_failed(
+            record.dagster_run,
+            f"Its process died with the datalake container, which restarted at {when}.",
+        )
+    if not dead:
+        return SkipReason("no orphaned runs")
+    return SkipReason(f"failed {len(dead)} orphaned run(s): {[r.dagster_run.run_id for r in dead]}")
+
+
+@sensor(
     minimum_interval_seconds=600,
     default_status=DefaultSensorStatus.RUNNING,
     description=(
@@ -779,7 +805,7 @@ defs = Definitions(
                jellyfin_activity_schedule, jellyfin_users_schedule,
                jellyfin_searches_hourly_schedule, camera_daily_schedule,
                camera_late_arrival_schedule, camera_zones_schedule, analytics_hourly_schedule],
-    sensors=[notify_on_failure, resolve_on_recovery, serving_freshness],
+    sensors=[notify_on_failure, resolve_on_recovery, serving_freshness, fail_orphaned_runs],
     resources={
         "lake": LakeStorage.from_env(),
         "npm_logs": NpmLogSources.from_env(),
