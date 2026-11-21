@@ -600,9 +600,12 @@ analytics_job = define_asset_job(
     # it, because the queue allows one. Run monitoring (dagster.yaml) now fails a run
     # past 90 minutes, worker or no worker, and the next one starts.
     tags={"datalake/queue": "analytics", "dagster/max_runtime": "5400"},
-    # At most two steps at once. Unbounded, a full rebuild ran its DuckDB-heavy steps
-    # side by side and filled the host's memory; see src/homelab_datalake/duck.py.
-    config={"execution": {"config": {"multiprocess": {"max_concurrent": 2}}}},
+    # One step at a time. Unbounded, a full rebuild ran its DuckDB-heavy steps side by
+    # side and filled the host's memory. Measured under the 8 GB cap on 21 Nov 2026 at
+    # two at a time, the two lake publishes together peaked at 7.5 GB, too close to the
+    # cap with the hourly ingest jobs sharing the container. One at a time costs a few
+    # minutes a run. See src/homelab_datalake/duck.py.
+    config={"execution": {"config": {"multiprocess": {"max_concurrent": 1}}}},
     description=(
         "Reload the raw tables whose objects changed in the lake, build and test the dbt "
         "models downstream of them, publish the serving copy the MCP layer reads. "

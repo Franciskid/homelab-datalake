@@ -4,9 +4,10 @@ The datalake daemon runs under an 8 GB memory cap (docker-compose.yml). DuckDB d
 not know about it: unbounded, each connection takes up to 80% of the host's RAM, and
 on 21 Nov 2026 a full rebuild ran two steps side by side, filled the server's 31 GB
 and its swap, and nearly brought the host down. So each connection gets an explicit
-memory limit and a temp directory on disk to spill to, and the analytics job runs at
-most two steps at a time (definitions.py): two connections at this limit, plus the
-daemon itself, stay under the cap.
+memory limit and a temp directory on disk to spill to, and the analytics job runs one
+step at a time (definitions.py). DuckDB's limit covers its buffer manager, not every
+allocation: dbt with a 2.5 GB limit still reached about 5 GB of RSS, so the limit is
+set well below the share of the cap a step can use.
 """
 
 import os
@@ -14,7 +15,7 @@ from pathlib import Path
 
 import duckdb
 
-MEMORY_LIMIT = os.environ.get("DUCKDB_MEMORY_LIMIT", "2500MB")
+MEMORY_LIMIT = os.environ.get("DUCKDB_MEMORY_LIMIT", "2GB")
 THREADS = int(os.environ.get("DUCKDB_THREADS", "4"))
 TEMP_DIRECTORY = os.environ.get("DUCKDB_TEMP_DIRECTORY") or str(
     Path(os.environ.get("DUCKDB_PATH", "warehouse/datalake.duckdb")).resolve().parent / "duckdb_tmp"

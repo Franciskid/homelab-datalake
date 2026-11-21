@@ -226,7 +226,7 @@ def test_every_connection_is_bounded(tmp_path, monkeypatch):
     temp = con.execute("SELECT current_setting('temp_directory')").fetchone()[0]
     con.close()
     value, unit = limit.split()
-    assert unit == "GiB" and float(value) < 3, limit
+    assert unit == "GiB" and float(value) < 2, limit
     assert temp == str(tmp_path / "spill")
 
 
