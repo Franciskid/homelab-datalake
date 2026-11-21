@@ -241,3 +241,27 @@ def test_a_read_only_mount_still_connects(tmp_path, monkeypatch):
         duck.connect().close()
     finally:
         blocked.chmod(0o700)
+
+
+# --- publishing without holding the table ---------------------------------------
+
+def test_a_streamed_publish_is_byte_identical_run_to_run_and_to_the_old_writer(tmp_path):
+    """The bucket is versioned: changed bytes on an unchanged mart are a new version
+    every hour. A mart under one batch must also match what write_table produced, or
+    the switch to streaming rewrites every object once."""
+    from homelab_datalake.assets.publish import PUBLISH_BATCH_ROWS
+
+    lake = LakeStorage(local_root=str(tmp_path / "lake"))
+    con = duckdb.connect()
+    con.execute("CREATE TABLE t AS SELECT range AS id, 'host-' || (range % 7) AS host FROM range(5000)")
+    old = lake.write_table("old/data.parquet", con.execute("SELECT * FROM t").to_arrow_table())
+    first, rows = lake.write_parquet_batches(
+        "new/data.parquet", con.execute("SELECT * FROM t").to_arrow_reader(PUBLISH_BATCH_ROWS), str(tmp_path / "spill")
+    )
+    root = tmp_path / "lake"
+    assert rows == 5000 and first == old
+    assert (root / "new/data.parquet").read_bytes() == (root / "old/data.parquet").read_bytes()
+    again, _ = lake.write_parquet_batches(
+        "new/data.parquet", con.execute("SELECT * FROM t").to_arrow_reader(PUBLISH_BATCH_ROWS), str(tmp_path / "spill")
+    )
+    assert again == first

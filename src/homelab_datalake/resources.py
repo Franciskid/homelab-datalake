@@ -106,6 +106,38 @@ class LakeStorage(ConfigurableResource):
             tmp.replace(path)  # atomic on POSIX, mirroring the single-PUT guarantee
         return len(payload)
 
+    def write_parquet_batches(self, key: str, batches, spill_dir: str) -> tuple[int, int]:
+        """Write one Parquet object from a RecordBatchReader without holding the table.
+
+        `write_table` needs the whole table as Arrow in memory, plus the encoded bytes
+        twice over. On 21 Nov 2026 that took a publish step to 4.2 GB for one mart and
+        the memory cap killed it. Here the batches go straight to a file on disk and
+        only the compressed object is read back, to compare and upload. Batches of a
+        fixed size keep the bytes identical from one run to the next, which is what
+        lets `_holds` skip an unchanged object. Returns (bytes, rows).
+        """
+        import tempfile
+
+        Path(spill_dir).mkdir(parents=True, exist_ok=True)
+        rows = 0
+        with tempfile.NamedTemporaryFile(dir=spill_dir, suffix=".parquet", delete=True) as handle:
+            with pq.ParquetWriter(handle.name, batches.schema, compression="zstd", use_dictionary=True) as writer:
+                for batch in batches:
+                    writer.write_batch(batch)
+                    rows += batch.num_rows
+            payload = Path(handle.name).read_bytes()
+        if self._holds(key, payload):
+            return len(payload), rows
+        if self.uses_s3:
+            self._client().put_object(Bucket=self.bucket, Key=key, Body=payload)
+        else:
+            path = Path(self.local_root) / key
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_suffix(path.suffix + ".tmp")
+            tmp.write_bytes(payload)
+            tmp.replace(path)
+        return len(payload), rows
+
     def write_bytes(self, key: str, data: bytes, content_type: str = "application/octet-stream") -> int:
         """Write one opaque object, as opposed to `write_table`, which always writes
         Parquet. Two callers share this, deliberately, rather than each keeping its

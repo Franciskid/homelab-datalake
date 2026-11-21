@@ -35,7 +35,12 @@ for tree in src dbt/models dbt/tests tests; do
 done
 rsync -a --no-perms --no-owner --no-group docker-compose.yml Dockerfile pyproject.toml \
       dagster.yaml workspace.yaml "$FRA:$DIR/"
-echo "  OK    docker-compose.yml, Dockerfile, pyproject.toml, dagster.yaml, workspace.yaml"
+# The dbt project and profile are baked into the image like the models, but the loop
+# above only covers models/ and tests/. A change to profiles.yml (21 Nov 2026: the
+# DuckDB memory limit) built an image without it and dbt ran unbounded.
+rsync -a --no-perms --no-owner --no-group dbt/profiles.yml dbt/dbt_project.yml dbt/packages.yml \
+      "$FRA:$DIR/dbt/"
+echo "  OK    docker-compose.yml, Dockerfile, pyproject.toml, dagster.yaml, workspace.yaml, dbt profile"
 # The two Dagster files are bind-mounted rather than baked in, so a change to them never
 # reached the host before: dagster.yaml's sensor retention was the first to need it.
 # infra/ holds SQL an operator runs on the host (the Keycloak grants), same reason as scripts/.

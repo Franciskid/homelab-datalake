@@ -47,6 +47,10 @@ from homelab_datalake import duck, layout
 from homelab_datalake.assets.warehouse import DUCKDB_PATH
 from homelab_datalake.resources import LakeStorage
 
+# Rows per Arrow batch and Parquet row group when publishing. Fixed, so the same rows
+# encode to the same bytes every run.
+PUBLISH_BATCH_ROWS = 262_144
+
 
 @dataclass
 class PublishedDataset:
@@ -99,22 +103,22 @@ def publish_dataset(con, lake: LakeStorage, dataset: layout.Dataset) -> Publishe
     written: dict[str, int] = {}
     rows = 0
 
+    # Streamed in fixed-size batches, never fetched whole: see write_parquet_batches.
     if dataset.partition_column is None:
-        table = con.execute(f"SELECT * FROM {quoted}").to_arrow_table()  # noqa: S608
         key = f"{dataset.prefix}/data.parquet"
-        written[key] = lake.write_table(key, table)
-        rows = table.num_rows
+        reader = con.execute(f"SELECT * FROM {quoted}").to_arrow_reader(PUBLISH_BATCH_ROWS)  # noqa: S608
+        written[key], rows = lake.write_parquet_batches(key, reader, duck.TEMP_DIRECTORY)
     else:
         column = dataset.partition_column
         for value in _partition_values(con, schema, dataset.table, column):
             # The value is a DATE from the catalogue, never a string from a caller,
             # and it is passed as a parameter rather than interpolated anyway.
-            table = con.execute(
+            reader = con.execute(
                 f'SELECT * FROM {quoted} WHERE "{column}" = ?', [value]  # noqa: S608
-            ).to_arrow_table()
+            ).to_arrow_reader(PUBLISH_BATCH_ROWS)
             key = f"{dataset.prefix}/{column}={value.isoformat()}/data.parquet"
-            written[key] = lake.write_table(key, table)
-            rows += table.num_rows
+            written[key], count = lake.write_parquet_batches(key, reader, duck.TEMP_DIRECTORY)
+            rows += count
 
     removed = _remove_stale(lake, dataset.prefix, set(written))
     return PublishedDataset(
