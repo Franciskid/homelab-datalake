@@ -1,4 +1,4 @@
-# Vendored from the politico repository (scripts/pollslib/pipeline.py, 6db2c47). Do not edit here: change it there and run scripts/vendor-pollslib.py.
+# Vendored from the politico repository (scripts/pollslib/pipeline.py, 4025557). Do not edit here: change it there and run scripts/vendor-pollslib.py.
 """From a downloaded report to validated poll records: parse, validate, de-duplicate, classify, merge.
 
 Used by the homelab datalake's daily job (vendored copy) and by scripts/polls-ingest.py in this repository.
@@ -114,14 +114,15 @@ def parse_document(pdf, text: str, institute: str, source: str, names: dict, hin
 
 
 def is_duplicate(poll: dict, existing: list[dict]) -> dict | None:
-    """The poll already in `existing`: same id, or same institute with the same fieldwork dates, or the same first scores."""
+    """The poll already in `existing`: same id, or same institute with the same fieldwork dates and sample, or the same first scores."""
     first = poll["scenarios"][0]["scores"] if poll.get("scenarios") else None
     if not poll.get("end") or not poll.get("start"):
         return None
     for e in existing:
         if e["id"] == poll["id"]:
             return e
-        if e["institute"] == poll["institute"] and e["start"] == poll["start"] and e["end"] == poll["end"]:
+        same_sample = not e.get("sample") or not poll.get("sample") or e["sample"] == poll["sample"]
+        if same_sample and e["institute"] == poll["institute"] and e["start"] == poll["start"] and e["end"] == poll["end"]:
             return e
         if first and e["institute"] == poll["institute"] and abs((date.fromisoformat(e["end"]) - date.fromisoformat(poll["end"])).days) <= 1 \
                 and any(s["scores"] == first for s in e["scenarios"]):
