@@ -13,9 +13,10 @@ models:
         description: >
           The publisher -- eurostat, ssmsi, budget (data.economie.gouv.fr), drees, insee, oecd,
           bdf (Banque de France), cor, sre (Service des retraites de l'Etat), workbook (a
-          publisher's downloadable workbook) or curated (figures transcribed from a report).
+          publisher's downloadable workbook), curated (figures transcribed from a report) or
+          crime (offenders by nationality from the national statistics offices).
         tests:
-          - accepted_values: {values: ['eurostat', 'ssmsi', 'budget', 'drees', 'insee', 'oecd', 'bdf', 'cor', 'sre', 'workbook', 'curated']}
+          - accepted_values: {values: ['eurostat', 'ssmsi', 'budget', 'drees', 'insee', 'oecd', 'bdf', 'cor', 'sre', 'workbook', 'curated', 'crime']}
       - name: dataset
         description: The publisher's dataset code.
       - name: series_key

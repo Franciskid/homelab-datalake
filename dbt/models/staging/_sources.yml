@@ -2413,7 +2413,7 @@ sources:
           the publisher is a new version; the previous one keeps its _last_seen_at.
         columns:
           - name: source
-            description: The publisher -- eurostat, ssmsi, budget, drees, insee, oecd, bdf, cor, sre, workbook or curated.
+            description: The publisher -- eurostat, ssmsi, budget, drees, insee, oecd, bdf, cor, sre, workbook, curated or crime.
           - name: dataset
             description: The publisher's dataset code (migr_eiord, delinquance_departementale...).
           - name: series_key
